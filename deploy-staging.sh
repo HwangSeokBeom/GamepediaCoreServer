@@ -2,10 +2,10 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BRANCH="main"
-APP_NAME="core-server"
-ENV_NAME="production"
-ENV_FILE=".env.production"
+BRANCH="staging"
+APP_NAME="core-server-staging"
+ENV_NAME="staging"
+ENV_FILE=".env.staging"
 
 echo "Starting ${ENV_NAME} deployment for GamePediaCoreServer"
 echo "Project directory: ${PROJECT_DIR}"
