@@ -23,24 +23,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Detect available scripts
-        id: detect_scripts
-        run: |
-          node -e '
-            const fs = require("fs");
-            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            const scripts = pkg.scripts || {};
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, "has_test=" + Boolean(scripts.test) + "\n");
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, "has_lint=" + Boolean(scripts.lint) + "\n");
-          '
+      - name: Run tests if available
+        run: npm test --if-present
 
-      - name: Run tests
-        if: ${{ steps.detect_scripts.outputs.has_test == 'true' }}
-        run: npm test
-
-      - name: Run lint
-        if: ${{ steps.detect_scripts.outputs.has_lint == 'true' }}
-        run: npm run lint
+      - name: Run lint if available
+        run: npm run lint --if-present
 
   deploy-production:
     if: ${{ github.ref == 'refs/heads/main' }}
@@ -56,6 +43,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd ~/GamePediaCoreServer
+            chmod +x deploy.sh deploy-staging.sh
             ./deploy.sh
 
   deploy-staging:
@@ -71,42 +59,6 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            set -eu
             cd ~/GamePediaCoreServer
-
-            if [ -n "$(git status --porcelain)" ]; then
-              echo "Deployment aborted: working tree is not clean"
-              exit 1
-            fi
-
-            echo "Fetching latest staging code"
-            git fetch --prune origin
-            git checkout staging
-            git pull --ff-only origin staging
-
-            if [ -f package-lock.json ]; then
-              echo "Installing dependencies with npm ci"
-              npm ci
-            else
-              echo "Installing dependencies with npm install"
-              npm install
-            fi
-
-            if [ -f prisma/schema.prisma ]; then
-              echo "Running Prisma generate for staging"
-              NODE_ENV=staging npx prisma generate
-
-              echo "Running Prisma migrate deploy for staging"
-              NODE_ENV=staging npx prisma migrate deploy
-            fi
-
-            if pm2 describe core-server-staging >/dev/null 2>&1; then
-              echo "Restarting PM2 staging process"
-              pm2 restart ecosystem.config.js --only core-server-staging --env staging
-            else
-              echo "Starting PM2 staging process"
-              pm2 start ecosystem.config.js --only core-server-staging --env staging
-            fi
-
-            echo "Saving PM2 process list"
-            pm2 save
+            chmod +x deploy.sh deploy-staging.sh
+            ./deploy-staging.sh
