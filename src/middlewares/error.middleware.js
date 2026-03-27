@@ -1,6 +1,7 @@
 const { Prisma } = require('@prisma/client');
 const multer = require('multer');
 const { env } = require('../config/env');
+const { logger } = require('../utils/logger');
 const { errorResponse } = require('../utils/api-response');
 const { AppError } = require('../utils/error-response');
 
@@ -12,6 +13,15 @@ function isAppleLoginRequest(req) {
   return req.method === 'POST' && (req.originalUrl === '/auth/apple' || req.path === '/auth/apple' || req.path === '/apple');
 }
 
+function buildRequestMeta(req) {
+  return {
+    method: req.method,
+    path: req.originalUrl,
+    ip: req.ip,
+    remoteAddress: req.socket?.remoteAddress ?? null
+  };
+}
+
 function errorHandler(error, req, res, next) {
   if (res.headersSent) {
     next(error);
@@ -19,11 +29,13 @@ function errorHandler(error, req, res, next) {
   }
 
   if (error instanceof AppError) {
-    if (isAppleLoginRequest(req)) {
-      console.error(
-        `[apple-login:error] status=${error.statusCode} code=${error.code} message=${error.message}`
-      );
-    }
+    logger[error.statusCode >= 500 ? 'error' : 'warn']('Request failed', {
+      ...buildRequestMeta(req),
+      statusCode: error.statusCode,
+      code: error.code,
+      details: error.details,
+      context: isAppleLoginRequest(req) ? 'apple-login' : undefined
+    });
 
     res.status(error.statusCode).json(errorResponse(error.code, error.message, error.details));
     return;
@@ -31,9 +43,11 @@ function errorHandler(error, req, res, next) {
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === 'P2002') {
-      if (isAppleLoginRequest(req)) {
-        console.error('[apple-login:error] Prisma unique constraint conflict during Apple login');
-      }
+      logger.warn('Request failed due to Prisma unique constraint', {
+        ...buildRequestMeta(req),
+        code: error.code,
+        context: isAppleLoginRequest(req) ? 'apple-login' : undefined
+      });
 
       res.status(409).json(errorResponse('CONFLICT', 'A record with the same unique value already exists'));
       return;
@@ -41,6 +55,11 @@ function errorHandler(error, req, res, next) {
   }
 
   if (error instanceof multer.MulterError) {
+    logger.warn('Request failed due to upload error', {
+      ...buildRequestMeta(req),
+      code: error.code
+    });
+
     if (error.code === 'LIMIT_FILE_SIZE') {
       res.status(400).json(errorResponse('PROFILE_IMAGE_FILE_TOO_LARGE', 'Profile image file is too large'));
       return;
@@ -56,11 +75,11 @@ function errorHandler(error, req, res, next) {
   }
 
   if (env.nodeEnv !== 'test') {
-    if (isAppleLoginRequest(req)) {
-      console.error(`[apple-login:error] unexpected=${error?.message ?? 'unknown error'}`);
-    }
-
-    console.error(error);
+    logger.error('Unhandled request error', {
+      ...buildRequestMeta(req),
+      context: isAppleLoginRequest(req) ? 'apple-login' : undefined,
+      error
+    });
   }
 
   res.status(500).json(errorResponse('INTERNAL_SERVER_ERROR', 'An unexpected error occurred'));

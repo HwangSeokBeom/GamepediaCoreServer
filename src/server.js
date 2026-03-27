@@ -1,7 +1,9 @@
 const os = require('os');
 const { app } = require('./app');
 const { env } = require('./config/env');
-const { prisma } = require('./config/prisma');
+const { connectDatabase, disconnectDatabase } = require('./config/prisma');
+const { probeRedisConnection } = require('./config/redis');
+const { logger } = require('./utils/logger');
 
 function getLanIpv4Address() {
   const networkInterfaces = os.networkInterfaces();
@@ -29,22 +31,46 @@ function buildServerUrls() {
   };
 }
 
-const server = app.listen(env.port, env.host, () => {
-  const { lanUrl, localhostUrl } = buildServerUrls();
+let server = null;
 
-  console.log(`GamePedia auth server listening on ${env.host}:${env.port}`);
-  console.log(`Local URL: ${localhostUrl}`);
-  console.log(`LAN URL: ${lanUrl ?? 'Unavailable (no external IPv4 interface detected)'}`);
-});
+async function startServer() {
+  try {
+    await connectDatabase();
+    await probeRedisConnection();
+
+    server = app.listen(env.port, env.host, () => {
+      const { lanUrl, localhostUrl } = buildServerUrls();
+
+      logger.info('GamePedia auth server started', {
+        host: env.host,
+        port: env.port,
+        localhostUrl,
+        lanUrl
+      });
+    });
+  } catch (error) {
+    logger.error('GamePedia auth server failed to start', { error });
+    await disconnectDatabase();
+    process.exit(1);
+  }
+}
 
 async function shutdown(signal) {
-  console.log(`${signal} received. Shutting down GamePedia auth server.`);
+  logger.info('Shutdown signal received', { signal });
+
+  if (!server) {
+    await disconnectDatabase();
+    process.exit(0);
+    return;
+  }
 
   server.close(async () => {
-    await prisma.$disconnect();
+    await disconnectDatabase();
     process.exit(0);
   });
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+void startServer();
+
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));

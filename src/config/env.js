@@ -1,32 +1,8 @@
-const fs = require('fs');
-const path = require('path');
-const dotenv = require('dotenv');
+const { loadEnvironment } = require('./load-env');
 
 const DEFAULT_PAPAGO_ENDPOINT = 'https://papago.apigw.ntruss.com/nmt/v1/translation';
 
-function loadEnvFile(filePath, override = false) {
-  if (!fs.existsSync(filePath)) {
-    return;
-  }
-
-  dotenv.config({
-    path: filePath,
-    override,
-    quiet: true
-  });
-}
-
-const bootstrapNodeEnv = process.env.NODE_ENV?.trim() || 'development';
-const envFilePaths = [
-  path.resolve(process.cwd(), '.env'),
-  path.resolve(process.cwd(), '.env.local'),
-  path.resolve(process.cwd(), `.env.${bootstrapNodeEnv}`),
-  path.resolve(process.cwd(), `.env.${bootstrapNodeEnv}.local`)
-];
-
-envFilePaths.forEach((filePath, index) => {
-  loadEnvFile(filePath, index > 0);
-});
+const { nodeEnv: bootstrapNodeEnv } = loadEnvironment();
 
 function readEnv(name) {
   const value = process.env[name];

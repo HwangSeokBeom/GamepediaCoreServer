@@ -1,4 +1,5 @@
 const { env } = require('../../config/env');
+const { logger } = require('../../utils/logger');
 
 const LIBRE_TRANSLATE_PATH = '/translate';
 const DEFAULT_SOURCE_LANGUAGE = 'ko';
@@ -12,7 +13,7 @@ async function translateSearchQuery(text, { sourceLanguage, targetLanguage } = {
   }
 
   if (!env.libreTranslateUrl) {
-    console.warn('[libretranslate] skipped reason=no_url');
+    logger.warn('LibreTranslate request skipped because URL is not configured');
     return normalizedText;
   }
 
@@ -34,15 +35,16 @@ async function translateSearchQuery(text, { sourceLanguage, targetLanguage } = {
       signal: AbortSignal.timeout(env.libreTranslateTimeoutMs)
     });
   } catch (error) {
-    console.warn(`[libretranslate] request_failed message=${error?.message ?? 'unknown'}`);
+    logger.warn('LibreTranslate request failed', { error });
     return normalizedText;
   }
 
   if (!response.ok) {
     const upstreamBody = await response.text().catch(() => '');
-    console.warn(
-      `[libretranslate] upstream_error status=${response.status} body=${upstreamBody.slice(0, 200)}`
-    );
+    logger.warn('LibreTranslate upstream returned a non-OK response', {
+      status: response.status,
+      body: upstreamBody.slice(0, 200)
+    });
     return normalizedText;
   }
 
@@ -51,7 +53,7 @@ async function translateSearchQuery(text, { sourceLanguage, targetLanguage } = {
   try {
     payload = await response.json();
   } catch (error) {
-    console.warn('[libretranslate] invalid_json');
+    logger.warn('LibreTranslate returned invalid JSON', { error });
     return normalizedText;
   }
 
@@ -61,7 +63,7 @@ async function translateSearchQuery(text, { sourceLanguage, targetLanguage } = {
       : '';
 
   if (!translatedText) {
-    console.warn('[libretranslate] unexpected_response_shape');
+    logger.warn('LibreTranslate returned an unexpected response shape');
     return normalizedText;
   }
 

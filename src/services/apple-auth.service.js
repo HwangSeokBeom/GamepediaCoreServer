@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { env } = require('../config/env');
+const { logger } = require('../utils/logger');
 const { AppError } = require('../utils/error-response');
 
 const APPLE_IDENTITY_ISSUER = 'https://appleid.apple.com';
@@ -13,8 +14,7 @@ let appleKeysCache = {
 };
 
 function logAppleTokenDebug(level, message, details) {
-  const suffix = details ? ` ${JSON.stringify(details)}` : '';
-  console[level](`[apple-login:token] ${message}${suffix}`);
+  logger[level](`[apple-login:token] ${message}`, details);
 }
 
 function parseEmailVerifiedClaim(value) {

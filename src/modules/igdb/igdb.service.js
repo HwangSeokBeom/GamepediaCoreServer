@@ -1,5 +1,6 @@
 const { env } = require('../../config/env');
 const { prisma } = require('../../config/prisma');
+const { logger } = require('../../utils/logger');
 const { AppError } = require('../../utils/error-response');
 const searchQueryTranslationService = require('../../services/search-query-translation.service');
 const { translateSearchResults } = require('../../services/search-result-translation.service');
@@ -262,8 +263,11 @@ function logIgdbCounts(label, rawGames, mappedGames) {
   const rawCount = Array.isArray(rawGames) ? rawGames.length : 0;
   const mappedCount = Array.isArray(mappedGames) ? mappedGames.length : (mappedGames ? 1 : 0);
 
-  console.log(`[igdb] ${label} raw count`, rawCount);
-  console.log(`[igdb] ${label} mapped count`, mappedCount);
+  logger.info('IGDB result counts', {
+    label,
+    rawCount,
+    mappedCount
+  });
 }
 
 async function requestTwitchAppAccessToken() {
@@ -287,13 +291,16 @@ async function requestTwitchAppAccessToken() {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
   } catch (error) {
-    console.error(`[igdb:twitch-token] network_error message=${error?.message ?? 'unknown'}`);
+    logger.error('Twitch token request failed', { error });
     throw new AppError(502, 'TWITCH_AUTH_UNAVAILABLE', 'Twitch authentication is temporarily unavailable');
   }
 
   if (!response.ok) {
     const upstreamBody = await response.text();
-    console.error(`[igdb:twitch-token] upstream_error status=${response.status} body=${upstreamBody.slice(0, 300)}`);
+    logger.error('Twitch token endpoint returned a non-OK response', {
+      status: response.status,
+      body: upstreamBody.slice(0, 300)
+    });
     throw new AppError(502, 'TWITCH_AUTH_UNAVAILABLE', 'Twitch authentication is temporarily unavailable');
   }
 
@@ -302,19 +309,19 @@ async function requestTwitchAppAccessToken() {
   try {
     payload = await response.json();
   } catch (error) {
-    console.error('[igdb:twitch-token] invalid_json received from Twitch token endpoint');
+    logger.error('Twitch token endpoint returned invalid JSON', { error });
     throw new AppError(502, 'TWITCH_AUTH_UNAVAILABLE', 'Twitch authentication is temporarily unavailable');
   }
 
   if (typeof payload?.access_token !== 'string' || typeof payload?.expires_in !== 'number') {
-    console.error('[igdb:twitch-token] invalid_payload received from Twitch token endpoint');
+    logger.error('Twitch token endpoint returned an invalid payload');
     throw new AppError(502, 'TWITCH_AUTH_UNAVAILABLE', 'Twitch authentication is temporarily unavailable');
   }
 
   tokenCache.accessToken = payload.access_token;
   tokenCache.expiresAt = Date.now() + payload.expires_in * 1000;
 
-  console.info(`[igdb:twitch-token] refreshed expiresIn=${payload.expires_in}`);
+  logger.info('Twitch token refreshed', { expiresIn: payload.expires_in });
 
   return tokenCache.accessToken;
 }
@@ -355,12 +362,18 @@ async function executeIgdbRequest({ path, body, retryOnUnauthorized = true }) {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
   } catch (error) {
-    console.error(`[igdb] network_error path=${path} message=${error?.message ?? 'unknown'}`);
+    logger.error('IGDB request failed', {
+      path,
+      error
+    });
     throw new AppError(502, 'IGDB_UPSTREAM_ERROR', 'IGDB is temporarily unavailable');
   }
 
   if ((response.status === 401 || response.status === 403) && retryOnUnauthorized) {
-    console.warn(`[igdb] auth_retry path=${path} status=${response.status}`);
+    logger.warn('Retrying IGDB request after upstream auth failure', {
+      path,
+      status: response.status
+    });
     clearTokenCache();
     return executeIgdbRequest({
       path,
@@ -371,14 +384,21 @@ async function executeIgdbRequest({ path, body, retryOnUnauthorized = true }) {
 
   if (!response.ok) {
     const upstreamBody = await response.text();
-    console.error(`[igdb] upstream_error path=${path} status=${response.status} body=${upstreamBody.slice(0, 300)}`);
+    logger.error('IGDB upstream returned a non-OK response', {
+      path,
+      status: response.status,
+      body: upstreamBody.slice(0, 300)
+    });
     throw new AppError(502, 'IGDB_UPSTREAM_ERROR', 'IGDB is temporarily unavailable');
   }
 
   try {
     return await response.json();
   } catch (error) {
-    console.error(`[igdb] invalid_json path=${path}`);
+    logger.error('IGDB upstream returned invalid JSON', {
+      path,
+      error
+    });
     throw new AppError(502, 'IGDB_UPSTREAM_ERROR', 'IGDB is temporarily unavailable');
   }
 }
