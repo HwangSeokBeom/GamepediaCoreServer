@@ -348,8 +348,15 @@ The project already includes practical starter code:
 
 ## 7. Environment variables
 
-- Copy `.env.example` to `.env.local` for local development.
-- Keep real secrets only in local `.env*` files. Commit only `.env.example`.
+- Use `.env.development` for local development and `.env.production` for EC2 production.
+- Select the environment with `NODE_ENV`:
+  - `development` loads `.env.development`
+  - `production` loads `.env.production`
+- Optional legacy fallback files are still supported:
+  - `.env`
+  - `.env.local`
+  - `.env.development.local`
+  - `.env.production.local`
 - `NODE_ENV`
 - `HOST`
 - `PORT`
@@ -376,6 +383,7 @@ The project already includes practical starter code:
   - `TWITCH_CLIENT_SECRET`
   - `PAPAGO_CLIENT_ID`
   - `PAPAGO_CLIENT_SECRET`
+  - `TRANSLATION_BASE_URL`
 
 ## 8. Implementation order
 

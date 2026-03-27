@@ -19,8 +19,8 @@ function loadEnvFile(filePath, override = false) {
 const bootstrapNodeEnv = process.env.NODE_ENV?.trim() || 'development';
 const envFilePaths = [
   path.resolve(process.cwd(), '.env'),
-  path.resolve(process.cwd(), `.env.${bootstrapNodeEnv}`),
   path.resolve(process.cwd(), '.env.local'),
+  path.resolve(process.cwd(), `.env.${bootstrapNodeEnv}`),
   path.resolve(process.cwd(), `.env.${bootstrapNodeEnv}.local`)
 ];
 
@@ -38,6 +38,18 @@ function readEnv(name) {
   const trimmedValue = value.trim();
 
   return trimmedValue.length > 0 ? trimmedValue : null;
+}
+
+function readFirstEnv(...names) {
+  for (const name of names) {
+    const value = readEnv(name);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function requireEnv(name) {
@@ -100,7 +112,7 @@ const env = {
   accessTokenExpiresIn: requireEnv('ACCESS_TOKEN_EXPIRES_IN'),
   refreshTokenExpiresIn: requireEnv('REFRESH_TOKEN_EXPIRES_IN'),
   bcryptSaltRounds: parseNumber('BCRYPT_SALT_ROUNDS', '12'),
-  appWebBaseUrl: readEnv('APP_WEB_BASE_URL') ?? (isDevelopmentLike ? 'http://localhost:3000' : requireEnv('APP_WEB_BASE_URL')),
+  appWebBaseUrl: readEnv('APP_WEB_BASE_URL') ?? (isDevelopmentLike ? `http://localhost:${port}` : requireEnv('APP_WEB_BASE_URL')),
   apiPublicBaseUrl: readEnv('API_PUBLIC_BASE_URL') ?? (isDevelopmentLike ? `http://localhost:${port}` : null),
   mailMode: parseEnum('MAIL_MODE', mailModeFallback, ['log', 'smtp']),
   mailHost: readEnv('MAIL_HOST'),
@@ -122,7 +134,7 @@ const env = {
   papagoClientSecret: readEnv('PAPAGO_CLIENT_SECRET'),
   papagoEndpoint: readEnv('PAPAGO_ENDPOINT') ?? DEFAULT_PAPAGO_ENDPOINT,
   papagoTimeoutMs: parseNumber('PAPAGO_TIMEOUT_MS', '5000'),
-  translationProxyBaseUrl: readEnv('TRANSLATION_PROXY_BASE_URL') ?? (isDevelopmentLike ? 'http://localhost:3000' : null)
+  translationProxyBaseUrl: readFirstEnv('TRANSLATION_BASE_URL', 'TRANSLATION_PROXY_BASE_URL') ?? (isDevelopmentLike ? 'http://localhost:3000' : null)
 };
 
 function validateEnv(config) {
