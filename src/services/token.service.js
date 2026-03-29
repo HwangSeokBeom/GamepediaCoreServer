@@ -44,12 +44,36 @@ function generateRefreshToken(user) {
   );
 }
 
+function createSteamLinkStateToken({ userId, redirectUri }) {
+  const stateToken = jwt.sign(
+    {
+      sub: userId,
+      type: 'steam_link',
+      ...(redirectUri ? { redirectUri } : {})
+    },
+    env.jwtAccessSecret,
+    {
+      expiresIn: '10m',
+      jwtid: crypto.randomUUID()
+    }
+  );
+
+  return {
+    stateToken,
+    expiresAt: decodeExpirationDate(stateToken)
+  };
+}
+
 function verifyAccessToken(token) {
   return jwt.verify(token, env.jwtAccessSecret);
 }
 
 function verifyRefreshToken(token) {
   return jwt.verify(token, env.jwtRefreshSecret);
+}
+
+function verifySteamLinkStateToken(token) {
+  return jwt.verify(token, env.jwtAccessSecret);
 }
 
 function createTokenPair(user) {
@@ -66,7 +90,9 @@ function createTokenPair(user) {
 
 module.exports = {
   createTokenPair,
+  createSteamLinkStateToken,
   hashToken,
   verifyAccessToken,
-  verifyRefreshToken
+  verifyRefreshToken,
+  verifySteamLinkStateToken
 };

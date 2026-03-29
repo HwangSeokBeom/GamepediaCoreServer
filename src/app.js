@@ -4,6 +4,7 @@ const { env } = require('./config/env');
 const authRoutes = require('./routes/auth.routes');
 const favoriteRoutes = require('./modules/favorite/favorite.routes');
 const igdbRoutes = require('./modules/igdb/igdb.routes');
+const libraryRoutes = require('./modules/library/library.routes');
 const moderationRoutes = require('./modules/moderation/moderation.routes');
 const reviewRoutes = require('./modules/review/review.routes');
 const userRoutes = require('./modules/user/user.routes');
@@ -45,6 +46,7 @@ app.get('/health', (req, res) => {
 app.use('/auth', authRoutes);
 app.use(favoriteRoutes);
 app.use(igdbRoutes);
+app.use(libraryRoutes);
 app.use(moderationRoutes);
 app.use(reviewRoutes);
 app.use(userRoutes);

@@ -101,6 +101,7 @@ const env = {
   profileImageMaxSizeBytes: parseNumber('PROFILE_IMAGE_MAX_SIZE_BYTES', '5242880'),
   appleClientId: readEnv('APPLE_CLIENT_ID'),
   googleClientId: readEnv('GOOGLE_CLIENT_ID'),
+  steamApiKey: readEnv('STEAM_API_KEY'),
   redisUrl: readEnv('REDIS_URL'),
   twitchClientId: readEnv('TWITCH_CLIENT_ID'),
   twitchClientSecret: readEnv('TWITCH_CLIENT_SECRET'),

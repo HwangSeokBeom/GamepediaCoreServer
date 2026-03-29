@@ -144,6 +144,32 @@ function buildDetailQuery(gameId) {
   ].join(' ');
 }
 
+function normalizeIgdbGameIds(gameIds) {
+  if (!Array.isArray(gameIds)) {
+    return [];
+  }
+
+  return [...new Set(
+    gameIds
+      .map((gameId) => (typeof gameId === 'string' ? gameId.trim() : String(gameId ?? '').trim()))
+      .filter((gameId) => /^\d+$/.test(gameId))
+  )];
+}
+
+function buildGamesByIdsQuery(gameIds) {
+  const normalizedIds = normalizeIgdbGameIds(gameIds);
+
+  if (normalizedIds.length === 0) {
+    return null;
+  }
+
+  return [
+    `fields ${GAME_LIST_FIELDS};`,
+    `where id = (${normalizedIds.join(',')});`,
+    `limit ${normalizedIds.length};`
+  ].join(' ');
+}
+
 function buildSearchMeta({ originalQuery, normalizedQuery, effectiveQuery, resultCount }) {
   return {
     originalQuery,
@@ -713,8 +739,28 @@ async function getGameDetail({ gameId }) {
   };
 }
 
+async function getGamesByIds({ gameIds }) {
+  const query = buildGamesByIdsQuery(gameIds);
+
+  if (!query) {
+    return {
+      games: []
+    };
+  }
+
+  const rawGames = await postGamesQuery(query);
+  const games = mapGameList(rawGames);
+
+  logIgdbCounts('batch', rawGames, games);
+
+  return {
+    games
+  };
+}
+
 module.exports = {
   getGameDetail,
+  getGamesByIds,
   getGameSuggestions,
   getHighlights,
   getPopularGames,
