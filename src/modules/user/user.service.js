@@ -162,18 +162,75 @@ function mapPrivacySettingsDto(settings) {
   };
 }
 
-async function getOrCreatePrivacySettings(userId) {
-  return prisma.userPrivacySettings.upsert({
+function buildPrivacySettingsResponse(settings) {
+  const privacy = mapPrivacySettingsDto(settings);
+
+  return {
+    privacy,
+    ...privacy
+  };
+}
+
+async function getOrCreatePrivacySettings(userId, { withMeta = false } = {}) {
+  const existingSettings = await prisma.userPrivacySettings.findUnique({
     where: {
       userId
     },
-    update: {},
-    create: {
-      userId,
-      ...defaultPrivacySettings
-    },
     select: privacySettingsSelect
   });
+
+  if (existingSettings) {
+    return withMeta
+      ? {
+        settings: existingSettings,
+        created: false,
+        source: 'persisted'
+      }
+      : existingSettings;
+  }
+
+  try {
+    const createdSettings = await prisma.userPrivacySettings.create({
+      data: {
+        userId,
+        ...defaultPrivacySettings
+      },
+      select: privacySettingsSelect
+    });
+
+    logger.info('user-privacy-default-created', {
+      userId
+    });
+
+    return withMeta
+      ? {
+        settings: createdSettings,
+        created: true,
+        source: 'created_default'
+      }
+      : createdSettings;
+  } catch (error) {
+    if (error?.code === 'P2002') {
+      const concurrentSettings = await prisma.userPrivacySettings.findUnique({
+        where: {
+          userId
+        },
+        select: privacySettingsSelect
+      });
+
+      if (concurrentSettings) {
+        return withMeta
+          ? {
+            settings: concurrentSettings,
+            created: false,
+            source: 'persisted_after_race'
+          }
+          : concurrentSettings;
+      }
+    }
+
+    throw error;
+  }
 }
 
 async function getPrivacySettingsMap(userIds) {
@@ -3266,11 +3323,19 @@ async function unblockUserForCurrentUser({ currentUserId, blockedUserId }) {
 
 async function getMyPrivacySettings({ currentUserId }) {
   await getEditableCurrentUser(currentUserId);
-  const settings = await getOrCreatePrivacySettings(currentUserId);
+  const { settings, created, source } = await getOrCreatePrivacySettings(currentUserId, {
+    withMeta: true
+  });
+  const response = buildPrivacySettingsResponse(settings);
 
-  return {
-    privacy: mapPrivacySettingsDto(settings)
-  };
+  logger.info('user-privacy-fetched', {
+    userId: currentUserId,
+    source,
+    created,
+    ...response.privacy
+  });
+
+  return response;
 }
 
 async function updateMyPrivacySettings({ currentUserId, privacySettings }) {
@@ -3293,9 +3358,7 @@ async function updateMyPrivacySettings({ currentUserId, privacySettings }) {
     ...mapPrivacySettingsDto(settings)
   });
 
-  return {
-    privacy: mapPrivacySettingsDto(settings)
-  };
+  return buildPrivacySettingsResponse(settings);
 }
 
 async function getFriendProfile({ currentUserId, targetUserId }) {
