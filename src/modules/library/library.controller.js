@@ -70,6 +70,10 @@ function logLibrarySummaryResponse({
     recentlyPlayedSource: result?.steam?.recentlyPlayedSource ?? null,
     friendRecommendationPreviewDeferred: result?.steam?.friendRecommendationPreviewDeferred ?? null,
     summaryDatasetBasis: result?.responseMeta?.summaryDatasetBasis ?? null,
+    libraryReady: result?.libraryState?.libraryReady ?? result?.responseMeta?.libraryState?.libraryReady ?? null,
+    ownedLibrarySyncPending: result?.libraryState?.ownedLibrarySyncPending ?? result?.responseMeta?.libraryState?.ownedLibrarySyncPending ?? null,
+    ownedLibrarySyncInProgress: result?.libraryState?.ownedLibrarySyncInProgress ?? result?.responseMeta?.libraryState?.ownedLibrarySyncInProgress ?? null,
+    summaryAuthoritative: result?.libraryState?.summaryAuthoritative ?? result?.responseMeta?.libraryState?.summaryAuthoritative ?? null,
     generatedAt: result?.responseMeta?.generatedAt ?? null,
     isPartialFailure: result?.responseMeta?.isPartialFailure ?? false,
     syncTriggered,
@@ -95,12 +99,17 @@ const getMyLibrary = asyncHandler(async (req, res) => {
     userId: req.auth.userId,
     selectedTab: result?.summary?.selectedTab ?? req.query.selectedTab ?? null,
     gameCount: result?.summary?.gameCount ?? result?.gameCount ?? 0,
+    averageRating: result?.summary?.averageRating ?? result?.averageRating ?? null,
     totalPlaytimeHours: result?.summary?.totalPlaytimeHours ?? result?.totalPlaytimeHours ?? 0,
     summaryDatasetBasis: result?.responseMeta?.summaryDatasetBasis ?? null,
+    libraryReady: result?.libraryState?.libraryReady ?? result?.responseMeta?.libraryState?.libraryReady ?? null,
+    ownedLibrarySyncPending: result?.libraryState?.ownedLibrarySyncPending ?? result?.responseMeta?.libraryState?.ownedLibrarySyncPending ?? null,
+    ownedLibrarySyncInProgress: result?.libraryState?.ownedLibrarySyncInProgress ?? result?.responseMeta?.libraryState?.ownedLibrarySyncInProgress ?? null,
     responseSummaryPreview: JSON.stringify({
       selectedTab: result?.summary?.selectedTab ?? null,
       source: result?.summary?.source ?? result?.summarySource ?? null,
       gameCount: result?.summary?.gameCount ?? result?.gameCount ?? 0,
+      averageRating: result?.summary?.averageRating ?? result?.averageRating ?? null,
       totalPlaytimeHours: result?.summary?.totalPlaytimeHours ?? result?.totalPlaytimeHours ?? 0,
       totalPlaytimeMinutes: result?.summary?.totalPlaytimeMinutes ?? result?.totalPlaytimeMinutes ?? 0
     })
