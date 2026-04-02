@@ -49,10 +49,19 @@ const getMyReviews = asyncHandler(async (req, res) => {
   res.status(200).json(successResponse(result));
 });
 
+const getSteamLinkedReviews = asyncHandler(async (req, res) => {
+  const result = await reviewService.getSteamLinkedReviews({
+    currentUserId: req.auth.userId
+  });
+
+  res.status(200).json(successResponse(result));
+});
+
 module.exports = {
   createReview,
   deleteReview,
   getGameReviews,
   getMyReviews,
+  getSteamLinkedReviews,
   updateReview
 };

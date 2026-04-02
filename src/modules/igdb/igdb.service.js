@@ -3,8 +3,12 @@ const { prisma } = require('../../config/prisma');
 const { logger } = require('../../utils/logger');
 const { AppError } = require('../../utils/error-response');
 const searchQueryTranslationService = require('../../services/search-query-translation.service');
-const { translateSearchResults } = require('../../services/search-result-translation.service');
 const {
+  appendSearchLog,
+  buildSearchLogRecord
+} = require('../../services/search-log.service');
+const {
+  buildCanonicalCandidateCacheKey,
   getCachedSearch,
   getCachedSuggestions,
   setCachedSearch,
@@ -13,6 +17,7 @@ const {
 const {
   buildFallbackCandidateQueries,
   buildSearchCandidateQueries,
+  explainGameMatchReasons,
   mergeGamesById,
   normalizeQuery,
   rankGames
@@ -31,12 +36,44 @@ const SEARCH_LIMIT = 20;
 const SUGGESTION_LIMIT = 6;
 const SUGGESTION_MAX_LIMIT = 8;
 const SEARCH_PIPELINE_MIN_LIMIT = 20;
+const SEARCH_CANDIDATE_QUERY_LIMIT = 8;
 const SEARCH_EXACT_QUERY_FETCH_LIMIT = 20;
 const SEARCH_WILDCARD_QUERY_FETCH_LIMIT = 50;
 const SUGGESTION_EXACT_QUERY_FETCH_LIMIT = 20;
 const SUGGESTION_WILDCARD_QUERY_FETCH_LIMIT = 50;
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 const UPSTREAM_TIMEOUT_MS = 8000;
+const STEAM_EXTERNAL_GAME_SOURCE = 1;
+const FILTERED_COLLECTION_MULTIPLIER = 4;
+const FILTERED_COLLECTION_MAX_LIMIT = 60;
+const IGDB_DETAIL_CACHE_TTL_MS = 1000 * 60 * 60 * 12;
+const IGDB_BATCH_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+const IGDB_RATE_LIMIT_COOLDOWN_MS = 1000 * 60;
+const IGDB_CACHE_MAX_ENTRIES = 1000;
+const HOME_PLATFORM_MATCHERS = {
+  steam: [/pc \(microsoft windows\)/i, /\bmac\b/i, /linux/i],
+  playstation: [/playstation/i],
+  nintendo: [/nintendo/i, /switch/i, /wii/i],
+  xbox: [/\bxbox\b/i],
+  mobile: [/\bios\b/i, /android/i, /\bmobile\b/i]
+};
+const HOME_CATEGORY_MATCHERS = {
+  action: ['action'],
+  rpg: ['role-playing (rpg)', 'rpg'],
+  strategy: ['strategy'],
+  simulation: ['simulation', 'simulator'],
+  sports: ['sport'],
+  adventure: ['adventure'],
+  indie: ['indie'],
+  horror: ['horror'],
+  puzzle: ['puzzle']
+};
+const HOME_GAME_MODE_MATCHERS = {
+  singleplayer: ['single player', 'single-player', 'singleplayer'],
+  multiplayer: ['multiplayer', 'massively multiplayer online (mmo)', 'mmo'],
+  coop: ['co-operative', 'co op', 'co-op', 'coop'],
+  pvp: ['player versus player', 'pvp', 'battle royale']
+};
 
 const GAME_LIST_FIELDS = [
   'id',
@@ -44,6 +81,7 @@ const GAME_LIST_FIELDS = [
   'summary',
   'cover.url',
   'genres.name',
+  'game_modes.name',
   'platforms.name',
   'rating',
   'total_rating',
@@ -86,12 +124,211 @@ const DETAIL_FIELDS = [
   'category'
 ].join(', ');
 
+const STEAM_MATCH_FIELDS = [
+  'id',
+  'name',
+  'cover.url',
+  'alternative_names.name',
+  'franchises.name',
+  'platforms.name',
+  'first_release_date',
+  'version_parent.id',
+  'category',
+  'rating',
+  'total_rating',
+  'total_rating_count',
+  'aggregated_rating',
+  'aggregated_rating_count'
+].join(', ');
+
+const EXTERNAL_GAME_FIELDS = [
+  'uid',
+  'name',
+  'game',
+  'year',
+  'external_game_source'
+].join(', ');
+
 let tokenCache = {
   accessToken: null,
   expiresAt: 0,
   pendingPromise: null
 };
 let searchAnalyticsDisabled = false;
+let igdbRateLimitedUntil = 0;
+let igdbRateLimitWindowId = 0;
+const igdbDetailCache = new Map();
+const igdbBatchGameCache = new Map();
+const pendingGameDetailRequests = new Map();
+const pendingGamesByIdsRequests = new Map();
+const igdbCooldownLoggedPaths = new Set();
+
+function cloneCacheValue(value) {
+  if (value == null) {
+    return value;
+  }
+
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getCacheEntry(cache, key) {
+  const entry = cache.get(key);
+
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+
+  cache.delete(key);
+  cache.set(key, entry);
+  return cloneCacheValue(entry.value);
+}
+
+function setCacheEntry(cache, key, value, ttlMs) {
+  cache.set(key, {
+    value: cloneCacheValue(value),
+    expiresAt: Date.now() + ttlMs
+  });
+
+  if (cache.size <= IGDB_CACHE_MAX_ENTRIES) {
+    return;
+  }
+
+  const oldestKey = cache.keys().next().value;
+
+  if (oldestKey !== undefined) {
+    cache.delete(oldestKey);
+  }
+}
+
+function normalizeGameId(gameId) {
+  const normalizedValue = typeof gameId === 'string'
+    ? gameId.trim()
+    : String(gameId ?? '').trim();
+
+  return /^\d+$/.test(normalizedValue) ? normalizedValue : null;
+}
+
+function isIgdbRateLimitCooldownActive() {
+  return igdbRateLimitedUntil > Date.now();
+}
+
+function getRateLimitCooldownRemainingMs() {
+  return Math.max(igdbRateLimitedUntil - Date.now(), 0);
+}
+
+function enterIgdbRateLimitCooldown({ path, status, body = null }) {
+  igdbRateLimitedUntil = Date.now() + IGDB_RATE_LIMIT_COOLDOWN_MS;
+  igdbRateLimitWindowId += 1;
+  igdbCooldownLoggedPaths.clear();
+
+  logger.warn('igdb-rate-limit-entered', {
+    path,
+    status,
+    cooldownMs: IGDB_RATE_LIMIT_COOLDOWN_MS
+  });
+
+  logger.warn('IGDB upstream rate limited request', {
+    path,
+    status,
+    body: typeof body === 'string' ? body.slice(0, 300) : null,
+    cooldownMs: IGDB_RATE_LIMIT_COOLDOWN_MS
+  });
+}
+
+function logIgdbCooldownActive(path) {
+  const logKey = `${igdbRateLimitWindowId}:${path}`;
+
+  if (igdbCooldownLoggedPaths.has(logKey)) {
+    return;
+  }
+
+  igdbCooldownLoggedPaths.add(logKey);
+  logger.warn('igdb-rate-limit-cooldown-active', {
+    path,
+    cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+  });
+}
+
+function getIgdbRateLimitState() {
+  return {
+    active: isIgdbRateLimitCooldownActive(),
+    cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+  };
+}
+
+function createIgdbRateLimitedError() {
+  return new AppError(429, 'IGDB_RATE_LIMITED', 'IGDB is temporarily rate limited');
+}
+
+function buildGameListItemFromDetail(detailGame) {
+  if (!detailGame || !normalizeGameId(detailGame.id)) {
+    return null;
+  }
+
+  return {
+    id: detailGame.id,
+    name: detailGame.name ?? null,
+    summary: detailGame.summary ?? null,
+    coverUrl: detailGame.coverUrl ?? null,
+    genres: Array.isArray(detailGame.genres) ? detailGame.genres : [],
+    platforms: Array.isArray(detailGame.platforms) ? detailGame.platforms : [],
+    rating: typeof detailGame.rating === 'number' ? detailGame.rating : null,
+    aggregatedRating: typeof detailGame.aggregatedRating === 'number' ? detailGame.aggregatedRating : null,
+    totalRating: typeof detailGame.totalRating === 'number' ? detailGame.totalRating : null,
+    releaseDate: detailGame.releaseDate ?? null
+  };
+}
+
+function getCachedGameDetail(gameId) {
+  const normalizedGameId = normalizeGameId(gameId);
+
+  if (!normalizedGameId) {
+    return null;
+  }
+
+  return getCacheEntry(igdbDetailCache, normalizedGameId);
+}
+
+function getCachedBatchGame(gameId) {
+  const normalizedGameId = normalizeGameId(gameId);
+
+  if (!normalizedGameId) {
+    return null;
+  }
+
+  return getCacheEntry(igdbBatchGameCache, normalizedGameId);
+}
+
+function cacheGameDetail(gameId, gameDetail) {
+  const normalizedGameId = normalizeGameId(gameId ?? gameDetail?.id);
+
+  if (!normalizedGameId || !gameDetail) {
+    return;
+  }
+
+  setCacheEntry(igdbDetailCache, normalizedGameId, gameDetail, IGDB_DETAIL_CACHE_TTL_MS);
+
+  const listItem = buildGameListItemFromDetail(gameDetail);
+
+  if (listItem) {
+    setCacheEntry(igdbBatchGameCache, normalizedGameId, listItem, IGDB_BATCH_CACHE_TTL_MS);
+  }
+}
+
+function cacheBatchGame(game) {
+  const normalizedGameId = normalizeGameId(game?.id);
+
+  if (!normalizedGameId || !game) {
+    return;
+  }
+
+  setCacheEntry(igdbBatchGameCache, normalizedGameId, game, IGDB_BATCH_CACHE_TTL_MS);
+}
 
 function ensureIgdbConfig() {
   if (!env.twitchClientId || !env.twitchClientSecret) {
@@ -110,6 +347,73 @@ function escapeIgdbString(value) {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+function normalizeHomeFilterToken(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim().toLowerCase();
+}
+
+function mapNamedItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items
+    .map((item) => (typeof item?.name === 'string' ? item.name.trim() : ''))
+    .filter(Boolean);
+}
+
+function hasActiveHomeFilters(filters) {
+  return Boolean(filters?.platform || filters?.category || filters?.gameMode);
+}
+
+function matchesPlatformFilter(game, platform) {
+  if (!platform) {
+    return true;
+  }
+
+  const platformNames = mapNamedItems(game?.platforms);
+  const matchers = HOME_PLATFORM_MATCHERS[platform] ?? [];
+
+  return platformNames.some((platformName) => matchers.some((pattern) => pattern.test(platformName)));
+}
+
+function matchesCategoryFilter(game, category) {
+  if (!category) {
+    return true;
+  }
+
+  const genreLabels = mapNamedItems(game?.genres).map(normalizeHomeFilterToken);
+  const expectedTokens = HOME_CATEGORY_MATCHERS[category] ?? [];
+
+  return genreLabels.some((genreLabel) => expectedTokens.some((token) => genreLabel.includes(token)));
+}
+
+function matchesGameModeFilter(game, gameMode) {
+  if (!gameMode) {
+    return true;
+  }
+
+  const gameModeLabels = mapNamedItems(game?.game_modes).map(normalizeHomeFilterToken);
+  const expectedTokens = HOME_GAME_MODE_MATCHERS[gameMode] ?? [];
+
+  return gameModeLabels.some((gameModeLabel) => expectedTokens.some((token) => gameModeLabel.includes(token)));
+}
+
+function applyHomeFiltersToGames(games, filters) {
+  if (!hasActiveHomeFilters(filters)) {
+    return Array.isArray(games) ? games : [];
+  }
+
+  return (games ?? []).filter((game) => (
+    matchesPlatformFilter(game, filters.platform) &&
+    matchesCategoryFilter(game, filters.category) &&
+    matchesGameModeFilter(game, filters.gameMode)
+  ));
+}
+
 function clearTokenCache() {
   tokenCache = {
     accessToken: null,
@@ -118,7 +422,7 @@ function clearTokenCache() {
   };
 }
 
-function buildGamesQuery({ fields, search, limit, sort }) {
+function buildGamesQuery({ fields, search, limit, sort, where }) {
   const statements = [];
 
   if (search) {
@@ -126,6 +430,10 @@ function buildGamesQuery({ fields, search, limit, sort }) {
   }
 
   statements.push(`fields ${fields};`);
+
+  if (where) {
+    statements.push(`where ${where};`);
+  }
 
   if (sort && !search) {
     statements.push(`sort ${sort};`);
@@ -156,7 +464,7 @@ function normalizeIgdbGameIds(gameIds) {
   )];
 }
 
-function buildGamesByIdsQuery(gameIds) {
+function buildGamesByIdsQueryWithFields({ gameIds, fields }) {
   const normalizedIds = normalizeIgdbGameIds(gameIds);
 
   if (normalizedIds.length === 0) {
@@ -164,9 +472,32 @@ function buildGamesByIdsQuery(gameIds) {
   }
 
   return [
-    `fields ${GAME_LIST_FIELDS};`,
+    `fields ${fields};`,
     `where id = (${normalizedIds.join(',')});`,
     `limit ${normalizedIds.length};`
+  ].join(' ');
+}
+
+function buildGamesByIdsQuery(gameIds) {
+  return buildGamesByIdsQueryWithFields({
+    gameIds,
+    fields: GAME_LIST_FIELDS
+  });
+}
+
+function buildSteamExternalGamesQuery(steamAppId) {
+  const normalizedSteamAppId = typeof steamAppId === 'string'
+    ? steamAppId.trim()
+    : String(steamAppId ?? '').trim();
+
+  if (!/^\d+$/.test(normalizedSteamAppId)) {
+    return null;
+  }
+
+  return [
+    `fields ${EXTERNAL_GAME_FIELDS};`,
+    `where uid = "${normalizedSteamAppId}" & external_game_source = ${STEAM_EXTERNAL_GAME_SOURCE} & game != null;`,
+    'limit 20;'
   ].join(' ');
 }
 
@@ -223,7 +554,7 @@ function getCandidateFetchLimit(candidateQuery, exactFloor, wildcardFloor, pipel
   return Math.max(pipelineLimit, exactFloor);
 }
 
-function mergeCandidateQueries(frontCandidates, trailingCandidates) {
+function mergeCandidateQueries(frontCandidates = [], trailingCandidates = [], maxCandidates = 5) {
   const mergedCandidates = [];
 
   for (const candidateQuery of [...frontCandidates, ...trailingCandidates]) {
@@ -234,7 +565,7 @@ function mergeCandidateQueries(frontCandidates, trailingCandidates) {
     mergedCandidates.push(candidateQuery);
   }
 
-  return mergedCandidates.slice(0, 5);
+  return mergedCandidates.slice(0, maxCandidates);
 }
 
 function buildAliasBoost(searchResolution) {
@@ -258,10 +589,6 @@ function getSearchQueryInfo(searchResolution) {
     return normalizeQuery(searchResolution.effectiveQuery);
   }
 
-  if (searchResolution.translationUsed && searchResolution.translatedQuery) {
-    return normalizeQuery(searchResolution.translatedQuery);
-  }
-
   return normalizeQuery(searchResolution.normalizedQuery || searchResolution.effectiveQuery);
 }
 
@@ -278,11 +605,40 @@ function buildTrailingCandidateQueries(searchResolution, queryInfo) {
   );
 }
 
+function buildSearchCandidatePlan(searchResolution, queryInfo) {
+  const aliasCandidateQueries = Array.isArray(searchResolution.aliasCandidateQueries)
+    ? searchResolution.aliasCandidateQueries
+    : [];
+  const trailingCandidates = buildTrailingCandidateQueries(searchResolution, queryInfo);
+  const candidateQueries = mergeCandidateQueries(aliasCandidateQueries, trailingCandidates, SEARCH_CANDIDATE_QUERY_LIMIT);
+
+  return {
+    aliasExpansionUsed: aliasCandidateQueries.length > 0,
+    aliasHits: aliasCandidateQueries.length > 0
+      ? [{
+        matchType: searchResolution.aliasMatchType ?? null,
+        matchedKey: searchResolution.exactAliasMatchedKey ?? searchResolution.prefixAliasMatchedKey ?? null,
+        matchedQuery: searchResolution.exactAliasMatchedQuery ?? searchResolution.prefixAliasMatchedQuery ?? null,
+        locale: searchResolution.aliasLocale ?? null
+      }]
+      : [],
+    candidateQueries
+  };
+}
+
 function getTopRankedResultNames(games, limit = 3) {
   return games
     .slice(0, limit)
     .map((game) => game?.name)
     .filter(Boolean);
+}
+
+function buildRerankTopReasons(queryInfo, games, aliasBoost) {
+  return (games ?? []).slice(0, 5).map((game) => ({
+    gameId: game?.id ?? null,
+    title: game?.name ?? null,
+    reasons: explainGameMatchReasons(queryInfo, game, { aliasBoost })
+  }));
 }
 
 function logIgdbCounts(label, rawGames, mappedGames) {
@@ -370,6 +726,11 @@ async function getTwitchAppAccessToken() {
 async function executeIgdbRequest({ path, body, retryOnUnauthorized = true }) {
   ensureIgdbConfig();
 
+  if (isIgdbRateLimitCooldownActive()) {
+    logIgdbCooldownActive(path);
+    throw createIgdbRateLimitedError();
+  }
+
   const accessToken = await getTwitchAppAccessToken();
   const endpointUrl = `${IGDB_BASE_URL}/${path}`;
 
@@ -408,6 +769,16 @@ async function executeIgdbRequest({ path, body, retryOnUnauthorized = true }) {
     });
   }
 
+  if (response.status === 429) {
+    const upstreamBody = await response.text();
+    enterIgdbRateLimitCooldown({
+      path,
+      status: response.status,
+      body: upstreamBody
+    });
+    throw createIgdbRateLimitedError();
+  }
+
   if (!response.ok) {
     const upstreamBody = await response.text();
     logger.error('IGDB upstream returned a non-OK response', {
@@ -436,19 +807,67 @@ async function postGamesQuery(body) {
   });
 }
 
+async function postExternalGamesQuery(body) {
+  return executeIgdbRequest({
+    path: 'external_games',
+    body
+  });
+}
+
+async function getFilteredHomeCollection({
+  endpoint,
+  limit,
+  defaultLimit,
+  sort,
+  filters
+}) {
+  const requestedLimit = limit ?? defaultLimit;
+  const queryLimit = hasActiveHomeFilters(filters)
+    ? Math.min(
+      Math.max(requestedLimit * FILTERED_COLLECTION_MULTIPLIER, requestedLimit),
+      FILTERED_COLLECTION_MAX_LIMIT
+    )
+    : requestedLimit;
+  const rawGames = await postGamesQuery(buildGamesQuery({
+    fields: GAME_LIST_FIELDS,
+    limit: queryLimit,
+    sort
+  }));
+  const filteredGames = applyHomeFiltersToGames(rawGames, filters);
+  const selectedGames = filteredGames.slice(0, requestedLimit);
+  const games = mapGameList(selectedGames);
+
+  logIgdbCounts(endpoint, rawGames, games);
+
+  logger.info('home-filter-service', {
+    endpoint,
+    platform: filters.platform ?? null,
+    category: filters.category ?? null,
+    gameMode: filters.gameMode ?? null,
+    rawCount: rawGames.length,
+    filteredCount: selectedGames.length
+  });
+
+  return {
+    games
+  };
+}
+
 async function fetchCandidateResultSets({
   fields,
   candidateQueries,
   pipelineLimit,
   exactFloor,
-  wildcardFloor
+  wildcardFloor,
+  whereClause
 }) {
   return Promise.all(
     candidateQueries.map((candidateQuery) => postGamesQuery(buildGamesQuery({
       fields,
       search: candidateQuery,
       limit: getCandidateFetchLimit(candidateQuery, exactFloor, wildcardFloor, pipelineLimit),
-      sort: 'total_rating_count desc'
+      sort: 'total_rating_count desc',
+      where: whereClause
     })))
   );
 }
@@ -460,7 +879,8 @@ async function resolveRankedGames({
   candidateQueries,
   aliasBoost,
   exactFloor,
-  wildcardFloor
+  wildcardFloor,
+  whereClause
 }) {
   let allCandidateQueries = [...candidateQueries];
   let rawResultSets = await fetchCandidateResultSets({
@@ -468,7 +888,8 @@ async function resolveRankedGames({
     candidateQueries: allCandidateQueries,
     pipelineLimit,
     exactFloor,
-    wildcardFloor
+    wildcardFloor,
+    whereClause
   });
   let mergedGames = mergeGamesById(rawResultSets);
 
@@ -481,7 +902,8 @@ async function resolveRankedGames({
         candidateQueries: fallbackCandidates,
         pipelineLimit,
         exactFloor,
-        wildcardFloor
+        wildcardFloor,
+        whereClause
       });
 
       allCandidateQueries = allCandidateQueries.concat(fallbackCandidates);
@@ -503,31 +925,85 @@ function buildSearchSuggestions(rawGames) {
   return mapGameSuggestions(rawGames).slice(0, SUGGESTION_MAX_LIMIT);
 }
 
-async function localizeSearchResults(games, searchResolution) {
-  if (searchResolution.sourceLanguage !== 'ko') {
-    return games;
+async function getSteamExternalGameCandidates({ steamAppId }) {
+  const query = buildSteamExternalGamesQuery(steamAppId);
+
+  if (!query) {
+    return {
+      externalGames: [],
+      games: [],
+      rateLimited: false,
+      errorCode: null
+    };
   }
 
-  return translateSearchResults(games, {
-    targetLanguage: 'ko'
-  });
+  try {
+    const externalGames = await postExternalGamesQuery(query);
+    const gameIds = [...new Set(
+      externalGames
+        .map((externalGame) => (
+          typeof externalGame?.game === 'number'
+            ? String(externalGame.game)
+            : String(externalGame?.game ?? '').trim()
+        ))
+        .filter((gameId) => /^\d+$/.test(gameId))
+    )];
+
+    if (gameIds.length === 0) {
+      return {
+        externalGames,
+        games: [],
+        rateLimited: false,
+        errorCode: null
+      };
+    }
+
+    const rawGames = await postGamesQuery(buildGamesByIdsQueryWithFields({
+      gameIds,
+      fields: STEAM_MATCH_FIELDS
+    }));
+
+    logger.info('IGDB steam external_games candidates resolved', {
+      steamAppId,
+      externalGameCount: externalGames.length,
+      candidateGameCount: rawGames.length
+    });
+
+    return {
+      externalGames,
+      games: rawGames,
+      rateLimited: false,
+      errorCode: null
+    };
+  } catch (error) {
+    if (error?.code === 'IGDB_RATE_LIMITED') {
+      return {
+        externalGames: [],
+        games: [],
+        rateLimited: true,
+        errorCode: error.code
+      };
+    }
+
+    throw error;
+  }
 }
 
 function buildSearchResponse({
   searchResolution,
   rawGames,
-  localizedGames
+  games
 }) {
   return {
     query: searchResolution.originalQuery,
-    games: localizedGames,
-    results: localizedGames,
+    games,
+    results: games,
     suggestions: buildSearchSuggestions(rawGames),
     meta: buildSearchMeta({
       originalQuery: searchResolution.originalQuery,
       normalizedQuery: searchResolution.normalizedQuery,
       effectiveQuery: searchResolution.effectiveQuery,
-      resultCount: localizedGames.length
+      resultCount: games.length
     })
   };
 }
@@ -567,203 +1043,525 @@ function trackSearchQuery({ query, normalizedQuery, resultCount }) {
   });
 }
 
-async function getHighlights({ limit }) {
-  const rawGames = await postGamesQuery(buildGamesQuery({
-    fields: GAME_LIST_FIELDS,
-    limit: limit ?? HIGHLIGHTS_LIMIT,
-    sort: 'total_rating desc'
-  }));
-  const games = mapGameList(rawGames);
-
-  logIgdbCounts('highlights', rawGames, games);
-
-  return {
-    games
-  };
+async function getHighlights({ limit, platform, category, gameMode }) {
+  return getFilteredHomeCollection({
+    endpoint: 'highlights',
+    limit,
+    defaultLimit: HIGHLIGHTS_LIMIT,
+    sort: 'total_rating desc',
+    filters: {
+      platform,
+      category,
+      gameMode
+    }
+  });
 }
 
-async function getPopularGames({ limit }) {
-  const rawGames = await postGamesQuery(buildGamesQuery({
-    fields: GAME_LIST_FIELDS,
-    limit: limit ?? DEFAULT_LIMIT,
-    sort: 'first_release_date desc'
-  }));
-  const games = mapGameList(rawGames);
-
-  logIgdbCounts('popular', rawGames, games);
-
-  return {
-    games
-  };
+async function getPopularGames({ limit, platform, category, gameMode }) {
+  return getFilteredHomeCollection({
+    endpoint: 'popular',
+    limit,
+    defaultLimit: DEFAULT_LIMIT,
+    sort: 'first_release_date desc',
+    filters: {
+      platform,
+      category,
+      gameMode
+    }
+  });
 }
 
-async function getRecommendedGames({ limit }) {
-  const rawGames = await postGamesQuery(buildGamesQuery({
-    fields: GAME_LIST_FIELDS,
-    limit: limit ?? DEFAULT_LIMIT,
-    sort: 'total_rating desc'
-  }));
-  const games = mapGameList(rawGames);
-
-  logIgdbCounts('recommended', rawGames, games);
-
-  return {
-    games
-  };
+async function getRecommendedGames({ limit, platform, category, gameMode }) {
+  return getFilteredHomeCollection({
+    endpoint: 'recommended',
+    limit,
+    defaultLimit: DEFAULT_LIMIT,
+    sort: 'total_rating desc',
+    filters: {
+      platform,
+      category,
+      gameMode
+    }
+  });
 }
 
 async function searchGames({ query, limit }) {
+  const startedAt = Date.now();
   const requestedLimit = limit ?? SEARCH_LIMIT;
   const searchResolution = await searchQueryTranslationService.resolveSearchQuery(query);
   const queryInfo = getSearchQueryInfo(searchResolution);
   const normalizedOriginalQuery = searchResolution.normalizedQuery;
   const pipelineLimit = getSearchPipelineLimit(requestedLimit);
   const aliasBoost = buildAliasBoost(searchResolution);
-  const cachedResponse = getCachedSearch(normalizedOriginalQuery);
+  const candidatePlan = buildSearchCandidatePlan(searchResolution, queryInfo);
+  const searchCacheKey = buildCanonicalCandidateCacheKey(candidatePlan.candidateQueries, normalizedOriginalQuery);
+  const cachedResponse = getCachedSearch(searchCacheKey);
 
   console.info(
-    `[igdb:search] originalQuery=${JSON.stringify(searchResolution.originalQuery)} normalizedQuery=${JSON.stringify(searchResolution.normalizedQuery)} compactQuery=${JSON.stringify(searchResolution.compactQuery)} exactAliasMatchedQuery=${JSON.stringify(searchResolution.exactAliasMatchedQuery)} exactAliasMatchedKey=${JSON.stringify(searchResolution.exactAliasMatchedKey)} prefixAliasMatchedQuery=${JSON.stringify(searchResolution.prefixAliasMatchedQuery)} prefixAliasMatchedKey=${JSON.stringify(searchResolution.prefixAliasMatchedKey)} aliasMatchType=${JSON.stringify(searchResolution.aliasMatchType)} aliasConfidence=${JSON.stringify(searchResolution.aliasConfidence)} translatedQuery=${JSON.stringify(searchResolution.translatedQuery)} effectiveQuery=${JSON.stringify(searchResolution.effectiveQuery)} translationUsed=${searchResolution.translationUsed}`
+    `[igdb:search] originalQuery=${JSON.stringify(searchResolution.originalQuery)} normalizedQuery=${JSON.stringify(searchResolution.normalizedQuery)} compactQuery=${JSON.stringify(searchResolution.compactQuery)} aliasHits=${JSON.stringify(candidatePlan.aliasHits)} effectiveQuery=${JSON.stringify(searchResolution.effectiveQuery)} generatedCandidates=${JSON.stringify(candidatePlan.candidateQueries)}`
   );
 
   if (cachedResponse && cachedResponse.games.length >= requestedLimit) {
-    console.info(`[igdb:search] cache_hit key=search:${normalizedOriginalQuery}`);
+    console.info(`[igdb:search] cache_hit key=search:${searchCacheKey}`);
     trackSearchQuery({
       query: searchResolution.originalQuery,
       normalizedQuery: searchResolution.normalizedQuery,
       resultCount: cachedResponse.games.length
     });
+    void appendSearchLog(buildSearchLogRecord({
+      endpoint: 'search',
+      originalQuery: searchResolution.originalQuery,
+      normalizedQuery: searchResolution.normalizedQuery,
+      compactQuery: searchResolution.compactQuery,
+      sourceLanguage: searchResolution.sourceLanguage,
+      aliasHits: candidatePlan.aliasHits,
+      generatedCandidates: candidatePlan.candidateQueries,
+      candidateQueriesActuallyUsed: candidatePlan.candidateQueries,
+      igdbRawCount: cachedResponse.games.length,
+      finalResultCount: cachedResponse.games.length,
+      topResultTitles: cachedResponse.games.slice(0, 5).map((game) => game?.name).filter(Boolean),
+      elapsedMs: Date.now() - startedAt,
+      cached: true
+    }));
     return sliceSearchResponse(cachedResponse, requestedLimit);
   }
-
-  const candidateQueries = mergeCandidateQueries(
-    searchResolution.aliasCandidateQueries,
-    buildTrailingCandidateQueries(searchResolution, queryInfo)
-  );
-  console.info(`[igdb:search] candidateQueries=${JSON.stringify(candidateQueries)}`);
 
   const { mergedGames, rankedGames, candidateQueries: usedCandidateQueries } = await resolveRankedGames({
     queryInfo,
     fields: GAME_LIST_FIELDS,
     pipelineLimit,
-    candidateQueries,
+    candidateQueries: candidatePlan.candidateQueries,
     aliasBoost,
     exactFloor: SEARCH_EXACT_QUERY_FETCH_LIMIT,
     wildcardFloor: SEARCH_WILDCARD_QUERY_FETCH_LIMIT
   });
   const mappedGames = mapGameList(rankedGames);
-  const localizedGames = await localizeSearchResults(mappedGames, searchResolution);
   const topRankedResultNames = getTopRankedResultNames(rankedGames);
+  const rerankTopReasons = buildRerankTopReasons(queryInfo, rankedGames, aliasBoost);
 
-  logIgdbCounts('search', mergedGames, localizedGames);
-  console.info(`[igdb:search] usedCandidateQueries=${JSON.stringify(usedCandidateQueries)} topRankedResultNames=${JSON.stringify(topRankedResultNames)} igdbResultCount=${mergedGames.length} finalResultCount=${localizedGames.length}`);
+  logIgdbCounts('search', mergedGames, mappedGames);
+  console.info(`[igdb:search] usedCandidateQueries=${JSON.stringify(usedCandidateQueries)} topRankedResultNames=${JSON.stringify(topRankedResultNames)} igdbResultCount=${mergedGames.length} finalResultCount=${mappedGames.length} rerankTopReasons=${JSON.stringify(rerankTopReasons)}`);
 
   const response = buildSearchResponse({
     searchResolution,
     rawGames: rankedGames,
-    localizedGames
+    games: mappedGames
   });
 
-  setCachedSearch(normalizedOriginalQuery, response);
+  setCachedSearch(searchCacheKey, response);
   trackSearchQuery({
     query: searchResolution.originalQuery,
     normalizedQuery: searchResolution.normalizedQuery,
-    resultCount: localizedGames.length
+    resultCount: mappedGames.length
   });
+  void appendSearchLog(buildSearchLogRecord({
+    endpoint: 'search',
+    originalQuery: searchResolution.originalQuery,
+    normalizedQuery: searchResolution.normalizedQuery,
+    compactQuery: searchResolution.compactQuery,
+    sourceLanguage: searchResolution.sourceLanguage,
+    aliasHits: candidatePlan.aliasHits,
+    generatedCandidates: candidatePlan.candidateQueries,
+    candidateQueriesActuallyUsed: usedCandidateQueries,
+    igdbRawCount: mergedGames.length,
+    finalResultCount: mappedGames.length,
+    topResultTitles: topRankedResultNames,
+    elapsedMs: Date.now() - startedAt,
+    cached: false,
+    rerankTopReasons
+  }));
 
   return sliceSearchResponse(response, requestedLimit);
 }
 
 async function getGameSuggestions({ query, limit }) {
+  const startedAt = Date.now();
   const requestedLimit = Math.min(limit ?? SUGGESTION_LIMIT, SUGGESTION_MAX_LIMIT);
   const searchResolution = await searchQueryTranslationService.resolveSearchQuery(query);
   const queryInfo = getSearchQueryInfo(searchResolution);
   const normalizedOriginalQuery = searchResolution.normalizedQuery;
   const pipelineLimit = getSuggestionPipelineLimit(requestedLimit);
   const aliasBoost = buildAliasBoost(searchResolution);
-  const cachedResponse = getCachedSuggestions(normalizedOriginalQuery);
+  const candidatePlan = buildSearchCandidatePlan(searchResolution, queryInfo);
+  const suggestionCacheKey = buildCanonicalCandidateCacheKey(candidatePlan.candidateQueries, normalizedOriginalQuery);
+  const cachedResponse = getCachedSuggestions(suggestionCacheKey);
 
   console.info(
-    `[igdb:suggestions] originalQuery=${JSON.stringify(searchResolution.originalQuery)} normalizedQuery=${JSON.stringify(searchResolution.normalizedQuery)} compactQuery=${JSON.stringify(searchResolution.compactQuery)} exactAliasMatchedQuery=${JSON.stringify(searchResolution.exactAliasMatchedQuery)} exactAliasMatchedKey=${JSON.stringify(searchResolution.exactAliasMatchedKey)} prefixAliasMatchedQuery=${JSON.stringify(searchResolution.prefixAliasMatchedQuery)} prefixAliasMatchedKey=${JSON.stringify(searchResolution.prefixAliasMatchedKey)} aliasMatchType=${JSON.stringify(searchResolution.aliasMatchType)} aliasConfidence=${JSON.stringify(searchResolution.aliasConfidence)} translatedQuery=${JSON.stringify(searchResolution.translatedQuery)} effectiveQuery=${JSON.stringify(searchResolution.effectiveQuery)} translationUsed=${searchResolution.translationUsed}`
+    `[igdb:suggestions] originalQuery=${JSON.stringify(searchResolution.originalQuery)} normalizedQuery=${JSON.stringify(searchResolution.normalizedQuery)} compactQuery=${JSON.stringify(searchResolution.compactQuery)} aliasHits=${JSON.stringify(candidatePlan.aliasHits)} effectiveQuery=${JSON.stringify(searchResolution.effectiveQuery)} generatedCandidates=${JSON.stringify(candidatePlan.candidateQueries)}`
   );
 
   if (cachedResponse && cachedResponse.suggestions.length >= requestedLimit) {
-    console.info(`[igdb:suggestions] cache_hit key=suggestion:${normalizedOriginalQuery}`);
+    console.info(`[igdb:suggestions] cache_hit key=suggestion:${suggestionCacheKey}`);
+    void appendSearchLog(buildSearchLogRecord({
+      endpoint: 'suggestions',
+      originalQuery: searchResolution.originalQuery,
+      normalizedQuery: searchResolution.normalizedQuery,
+      compactQuery: searchResolution.compactQuery,
+      sourceLanguage: searchResolution.sourceLanguage,
+      aliasHits: candidatePlan.aliasHits,
+      generatedCandidates: candidatePlan.candidateQueries,
+      candidateQueriesActuallyUsed: candidatePlan.candidateQueries,
+      igdbRawCount: cachedResponse.suggestions.length,
+      finalResultCount: cachedResponse.suggestions.length,
+      topResultTitles: cachedResponse.suggestions.slice(0, 5).map((game) => game?.name).filter(Boolean),
+      elapsedMs: Date.now() - startedAt,
+      cached: true
+    }));
     return sliceSuggestionResponse(cachedResponse, requestedLimit);
   }
-
-  const candidateQueries = mergeCandidateQueries(
-    searchResolution.aliasCandidateQueries,
-    buildTrailingCandidateQueries(searchResolution, queryInfo)
-  );
-  console.info(`[igdb:suggestions] candidateQueries=${JSON.stringify(candidateQueries)}`);
 
   const { mergedGames, rankedGames, candidateQueries: usedCandidateQueries } = await resolveRankedGames({
     queryInfo,
     fields: SUGGESTION_FIELDS,
     pipelineLimit,
-    candidateQueries,
+    candidateQueries: candidatePlan.candidateQueries,
     aliasBoost,
     exactFloor: SUGGESTION_EXACT_QUERY_FETCH_LIMIT,
     wildcardFloor: SUGGESTION_WILDCARD_QUERY_FETCH_LIMIT
   });
   const suggestions = mapGameSuggestions(rankedGames).slice(0, pipelineLimit);
   const topRankedResultNames = getTopRankedResultNames(rankedGames);
+  const rerankTopReasons = buildRerankTopReasons(queryInfo, rankedGames, aliasBoost);
 
-  console.info(`[igdb:suggestions] usedCandidateQueries=${JSON.stringify(usedCandidateQueries)} topRankedResultNames=${JSON.stringify(topRankedResultNames)} igdbResultCount=${mergedGames.length} finalResultCount=${suggestions.length}`);
+  console.info(`[igdb:suggestions] usedCandidateQueries=${JSON.stringify(usedCandidateQueries)} topRankedResultNames=${JSON.stringify(topRankedResultNames)} igdbResultCount=${mergedGames.length} finalResultCount=${suggestions.length} rerankTopReasons=${JSON.stringify(rerankTopReasons)}`);
 
   const response = buildSuggestionResponse({
     searchResolution,
     suggestions
   });
 
-  setCachedSuggestions(normalizedOriginalQuery, response);
+  setCachedSuggestions(suggestionCacheKey, response);
+  void appendSearchLog(buildSearchLogRecord({
+    endpoint: 'suggestions',
+    originalQuery: searchResolution.originalQuery,
+    normalizedQuery: searchResolution.normalizedQuery,
+    compactQuery: searchResolution.compactQuery,
+    sourceLanguage: searchResolution.sourceLanguage,
+    aliasHits: candidatePlan.aliasHits,
+    generatedCandidates: candidatePlan.candidateQueries,
+    candidateQueriesActuallyUsed: usedCandidateQueries,
+    igdbRawCount: mergedGames.length,
+    finalResultCount: suggestions.length,
+    topResultTitles: topRankedResultNames,
+    elapsedMs: Date.now() - startedAt,
+    cached: false,
+    rerankTopReasons
+  }));
 
   return sliceSuggestionResponse(response, requestedLimit);
 }
 
 async function getGameDetail({ gameId }) {
-  const rawGames = await postGamesQuery(buildDetailQuery(gameId));
-  const game = rawGames[0];
+  const normalizedGameId = normalizeGameId(gameId);
 
-  if (!game) {
-    logIgdbCounts('detail', rawGames, null);
+  if (!normalizedGameId) {
     throw new AppError(404, 'GAME_NOT_FOUND', 'Game could not be found');
   }
 
-  const mappedGame = mapGameDetail(game);
+  const cachedGameDetail = getCachedGameDetail(normalizedGameId);
 
-  logIgdbCounts('detail', rawGames, mappedGame);
+  if (cachedGameDetail) {
+    logger.info('IGDB detail served from cache', {
+      gameId: normalizedGameId
+    });
 
-  return {
-    game: mappedGame
-  };
-}
-
-async function getGamesByIds({ gameIds }) {
-  const query = buildGamesByIdsQuery(gameIds);
-
-  if (!query) {
     return {
-      games: []
+      game: cachedGameDetail,
+      meta: {
+        cacheHit: true,
+        liveFetchAttempted: false,
+        liveFetchSkippedReason: 'cache_hit'
+      }
     };
   }
 
-  const rawGames = await postGamesQuery(query);
-  const games = mapGameList(rawGames);
+  if (isIgdbRateLimitCooldownActive()) {
+    logger.warn('IGDB detail request skipped because no cached detail was available during rate limit cooldown', {
+      gameId: normalizedGameId,
+      cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+    });
+    throw createIgdbRateLimitedError();
+  }
 
-  logIgdbCounts('batch', rawGames, games);
+  const existingPendingRequest = pendingGameDetailRequests.get(normalizedGameId);
 
-  return {
-    games
-  };
+  if (existingPendingRequest) {
+    const pendingResult = await existingPendingRequest;
+
+    return {
+      game: cloneCacheValue(pendingResult.game),
+      meta: {
+        cacheHit: false,
+        liveFetchAttempted: false,
+        liveFetchSkippedReason: 'coalesced_inflight_request'
+      }
+    };
+  }
+
+  const pendingRequest = (async () => {
+    const rawGames = await postGamesQuery(buildDetailQuery(normalizedGameId));
+    const game = rawGames[0];
+
+    if (!game) {
+      logIgdbCounts('detail', rawGames, null);
+      throw new AppError(404, 'GAME_NOT_FOUND', 'Game could not be found');
+    }
+
+    const mappedGame = mapGameDetail(game);
+    cacheGameDetail(normalizedGameId, mappedGame);
+
+    logIgdbCounts('detail', rawGames, mappedGame);
+
+    return {
+      game: mappedGame
+    };
+  })();
+
+  pendingGameDetailRequests.set(normalizedGameId, pendingRequest);
+
+  try {
+    const result = await pendingRequest;
+
+    return {
+      game: cloneCacheValue(result.game),
+      meta: {
+        cacheHit: false,
+        liveFetchAttempted: true,
+        liveFetchSkippedReason: null
+      }
+    };
+  } finally {
+    pendingGameDetailRequests.delete(normalizedGameId);
+  }
+}
+
+async function getGamesByIds({ gameIds }) {
+  const normalizedGameIds = [...new Set(
+    (gameIds ?? [])
+      .map((candidateId) => normalizeGameId(candidateId))
+      .filter(Boolean)
+  )];
+
+  if (normalizedGameIds.length === 0) {
+    return {
+      games: [],
+      meta: {
+        cacheHit: false,
+        cacheCount: 0,
+        liveFetchAttempted: false,
+        liveFetchSkippedReason: 'empty_input'
+      }
+    };
+  }
+
+  const cachedGames = [];
+  const missingGameIds = [];
+
+  for (const normalizedGameId of normalizedGameIds) {
+    const cachedGame = getCachedBatchGame(normalizedGameId);
+
+    if (cachedGame) {
+      cachedGames.push(cachedGame);
+      continue;
+    }
+
+    missingGameIds.push(normalizedGameId);
+  }
+
+  if (missingGameIds.length === 0) {
+    logger.info('IGDB batch served fully from cache', {
+      gameCount: normalizedGameIds.length
+    });
+
+    return {
+      games: cachedGames,
+      meta: {
+        cacheHit: true,
+        cacheCount: cachedGames.length,
+        liveFetchAttempted: false,
+        liveFetchSkippedReason: 'cache_hit'
+      }
+    };
+  }
+
+  if (isIgdbRateLimitCooldownActive()) {
+    logger.warn('IGDB batch partially served from cache during rate limit cooldown', {
+      requestedCount: normalizedGameIds.length,
+      cachedCount: cachedGames.length,
+      missingCount: missingGameIds.length,
+      cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+    });
+
+    return {
+      games: cachedGames,
+      meta: {
+        cacheHit: cachedGames.length > 0,
+        cacheCount: cachedGames.length,
+        liveFetchAttempted: false,
+        liveFetchSkippedReason: 'rate_limited',
+        missingGameIds
+      }
+    };
+  }
+
+  const requestKey = missingGameIds.join(',');
+  const existingPendingRequest = pendingGamesByIdsRequests.get(requestKey);
+
+  if (existingPendingRequest) {
+    const pendingGames = await existingPendingRequest;
+
+    return {
+      games: [...cachedGames, ...cloneCacheValue(pendingGames)],
+      meta: {
+        cacheHit: cachedGames.length > 0,
+        cacheCount: cachedGames.length,
+        liveFetchAttempted: false,
+        liveFetchSkippedReason: 'coalesced_inflight_request'
+      }
+    };
+  }
+
+  const pendingRequest = (async () => {
+    const query = buildGamesByIdsQuery(missingGameIds);
+
+    if (!query) {
+      return [];
+    }
+
+    const rawGames = await postGamesQuery(query);
+    const games = mapGameList(rawGames);
+
+    for (const game of games) {
+      cacheBatchGame(game);
+    }
+
+    logIgdbCounts('batch', rawGames, games);
+
+    return games;
+  })();
+
+  pendingGamesByIdsRequests.set(requestKey, pendingRequest);
+
+  try {
+    const fetchedGames = await pendingRequest;
+
+    return {
+      games: [...cachedGames, ...cloneCacheValue(fetchedGames)],
+      meta: {
+        cacheHit: cachedGames.length > 0,
+        cacheCount: cachedGames.length,
+        liveFetchAttempted: true,
+        liveFetchSkippedReason: null
+      }
+    };
+  } catch (error) {
+    if (error?.code === 'IGDB_RATE_LIMITED' && cachedGames.length > 0) {
+      logger.warn('IGDB batch fell back to cached subset after rate limit', {
+        requestedCount: normalizedGameIds.length,
+        cachedCount: cachedGames.length,
+        missingCount: missingGameIds.length
+      });
+
+      return {
+        games: cachedGames,
+        meta: {
+          cacheHit: true,
+          cacheCount: cachedGames.length,
+          liveFetchAttempted: true,
+          liveFetchSkippedReason: 'rate_limited',
+          missingGameIds
+        }
+      };
+    }
+
+    throw error;
+  } finally {
+    pendingGamesByIdsRequests.delete(requestKey);
+  }
+}
+
+async function searchGamesForSteamMatch({ query, candidateQueries: providedCandidateQueries, limit }) {
+  const rawCandidateQueries = Array.isArray(providedCandidateQueries)
+    ? providedCandidateQueries
+    : null;
+  const baseQuery = typeof query === 'string' && query.trim()
+    ? query
+    : rawCandidateQueries?.find((candidateQuery) => typeof candidateQuery === 'string' && candidateQuery.trim())?.replace(/^"+|"+$/g, '') ?? '';
+  const normalizedQuery = normalizeQuery(baseQuery).normalized;
+  const requestedLimit = Math.max(limit ?? SEARCH_LIMIT, 1);
+
+  if (!normalizedQuery && (!rawCandidateQueries || rawCandidateQueries.length === 0)) {
+    return {
+      games: [],
+      candidateQueries: [],
+      rateLimited: false,
+      errorCode: null
+    };
+  }
+
+  const candidateQueries = rawCandidateQueries?.length
+    ? mergeCandidateQueries(
+      rawCandidateQueries
+        .map((candidateQuery) => (typeof candidateQuery === 'string' ? candidateQuery.trim() : ''))
+        .filter(Boolean),
+      [],
+      12
+    )
+    : mergeCandidateQueries(
+      buildSearchCandidateQueries(normalizedQuery),
+      buildFallbackCandidateQueries(normalizedQuery),
+      12
+    );
+  try {
+    const { mergedGames } = await resolveRankedGames({
+      queryInfo: normalizeQuery(normalizedQuery),
+      fields: STEAM_MATCH_FIELDS,
+      pipelineLimit: requestedLimit,
+      candidateQueries,
+      aliasBoost: null,
+      whereClause: 'version_parent = null',
+      exactFloor: requestedLimit,
+      wildcardFloor: Math.max(requestedLimit, SEARCH_WILDCARD_QUERY_FETCH_LIMIT)
+    });
+
+    logger.info('IGDB steam match candidates resolved', {
+      query: normalizedQuery,
+      candidateQueries,
+      candidateQueryCount: candidateQueries.length,
+      candidateCount: mergedGames.length
+    });
+
+    return {
+      games: mergedGames.slice(0, requestedLimit),
+      candidateQueries,
+      rateLimited: false,
+      errorCode: null
+    };
+  } catch (error) {
+    if (error?.code === 'IGDB_RATE_LIMITED') {
+      return {
+        games: [],
+        candidateQueries,
+        rateLimited: true,
+        errorCode: error.code
+      };
+    }
+
+    throw error;
+  }
 }
 
 module.exports = {
+  getCachedGameDetail,
   getGameDetail,
   getGamesByIds,
+  getIgdbRateLimitState,
   getGameSuggestions,
   getHighlights,
   getPopularGames,
   getRecommendedGames,
-  searchGames
+  getSteamExternalGameCandidates,
+  isIgdbRateLimitCooldownActive,
+  searchGames,
+  searchGamesForSteamMatch
 };

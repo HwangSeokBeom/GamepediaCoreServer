@@ -15,6 +15,12 @@ const steamLinkCallbackQuerySchema = z.object({
   state: z.string().trim().min(1)
 }).passthrough();
 
+const resolveLibraryImageQuerySchema = z.object({
+  gameSource: libraryGameSourceSchema,
+  externalGameId: z.string().trim().min(1).max(100).optional(),
+  igdbCoverUrl: z.string().trim().url().max(2048).optional()
+});
+
 const updateLibraryStatusSchema = z.object({
   source: libraryGameSourceSchema,
   externalGameId: externalGameIdSchema,
@@ -79,6 +85,7 @@ function buildLibraryValidationError(error) {
 
 module.exports = {
   buildLibraryValidationError,
+  resolveLibraryImageQuerySchema,
   startSteamLinkSchema,
   steamLinkCallbackQuerySchema,
   updateLibraryStatusSchema

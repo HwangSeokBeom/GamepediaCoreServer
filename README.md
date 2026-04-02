@@ -7,7 +7,7 @@ GamePedia iOS 앱을 위한 핵심 백엔드 서버입니다.
 
 - 이 프로젝트는 별도의 Auth Server가 있는 구조가 아닙니다.
 - 인증 기능은 Core Server 내부 모듈과 서비스로 함께 포함되어 있습니다.
-- Translate Server는 별도 저장소에서 운영되며, Core Server는 필요 시 번역 프록시/번역 서버를 호출합니다.
+- 번역은 더 이상 기본 서버 렌더링 경로에 포함되지 않으며, Core Server는 원문 데이터를 canonical source로 반환합니다.
 - 이 README는 현재 저장소의 실제 코드 구조를 기준으로 작성되었습니다.
 
 ## 1. 프로젝트 개요
@@ -51,7 +51,6 @@ flowchart LR
     B --> D["IGDB / Twitch API"]
     B --> E["Steam Web API"]
     B --> F["Apple / Google Identity"]
-    B --> G["Translate Server (별도 저장소)"]
     B -. 선택적 연결 확인 .-> H["Redis"]
 ```
 
@@ -65,9 +64,6 @@ flowchart LR
   - 비즈니스 로직의 중심
   - 인증, 세션, 라이브러리, 리뷰, 찜, 검색, 신고, 유저 프로필 처리
   - 외부 API 호출과 DB 저장 담당
-- `Translate Server`
-  - 별도 저장소에서 관리
-  - 검색어 번역/검색 결과 번역 시 Core Server가 HTTP로 호출
 - `PostgreSQL`
   - 영속 데이터 저장소
 - `Redis`
@@ -175,8 +171,8 @@ GamePediaCoreServer/
 │   │   ├── igdb/
 │   │   ├── library/
 │   │   ├── moderation/
+│   │   ├── search/
 │   │   ├── review/
-│   │   ├── translation/
 │   │   └── user/
 │   ├── routes/
 │   │   └── auth.routes.js
@@ -187,8 +183,8 @@ GamePediaCoreServer/
 │   │   ├── google-auth.service.js
 │   │   ├── password-reset-email.service.js
 │   │   ├── password.service.js
+│   │   ├── search-log.service.js
 │   │   ├── search-query-translation.service.js
-│   │   ├── search-result-translation.service.js
 │   │   ├── steam.service.js
 │   │   └── token.service.js
 │   ├── utils/
@@ -327,6 +323,7 @@ Prisma는 PostgreSQL 스키마와 애플리케이션 모델 사이를 연결합�
 | --- | --- | --- |
 | `APP_WEB_BASE_URL` | 앱/웹 기준 베이스 URL | 운영 필수 |
 | `API_PUBLIC_BASE_URL` | 외부에서 접근 가능한 Core Server URL. Steam callback URL 생성에 사용 | Steam 사용 시 권장 |
+| `MOBILE_APP_STEAM_CALLBACK_URL` | Steam 연동 완료 후 iOS 앱으로 되돌릴 커스텀 URL 스킴 | Steam 사용 시 권장 |
 
 ### 6.4 메일
 
@@ -348,30 +345,18 @@ Prisma는 PostgreSQL 스키마와 애플리케이션 모델 사이를 연결합�
 | `APPLE_CLIENT_ID` | Apple 로그인 검증용 Client ID | Apple 로그인 사용 시 |
 | `GOOGLE_CLIENT_ID` | Google 로그인 검증용 Client ID | Google 로그인 사용 시 |
 | `STEAM_API_KEY` | Steam Web API Key | Steam 라이브러리 사용 시 |
+| `STEAM_WEB_API_BASE_URL` | Steam Web API base URL. 기본값은 `https://api.steampowered.com/` | 선택 |
 | `TWITCH_CLIENT_ID` | IGDB 접근용 Twitch Client ID | 게임 API 사용 시 |
 | `TWITCH_CLIENT_SECRET` | IGDB 접근용 Twitch Client Secret | 게임 API 사용 시 |
 
-### 6.6 번역 서버 연동
-
-| 변수 | 설명 | 필수 |
-| --- | --- | --- |
-| `LIBRETRANSLATE_URL` | 검색어 번역 프록시/번역 서버 URL | 번역 사용 시 |
-| `LIBRETRANSLATE_TIMEOUT_MS` | 검색어 번역 타임아웃 | 아니오 |
-| `PAPAGO_CLIENT_ID` | Papago 연동 ID | 선택 |
-| `PAPAGO_CLIENT_SECRET` | Papago 연동 Secret | 선택 |
-| `PAPAGO_ENDPOINT` | Papago API Endpoint | 아니오 |
-| `PAPAGO_TIMEOUT_MS` | Papago 타임아웃 | 아니오 |
-| `TRANSLATION_BASE_URL` | 결과 번역 프록시 URL | 선택 |
-| `TRANSLATION_PROXY_BASE_URL` | `TRANSLATION_BASE_URL` 대체 호환 변수 | 선택 |
-
-### 6.7 기타
+### 6.6 기타
 
 | 변수 | 설명 | 필수 |
 | --- | --- | --- |
 | `REDIS_URL` | Redis 연결 문자열. 현재는 부팅 시 연결 점검 용도 | 선택 |
 | `PROFILE_IMAGE_MAX_SIZE_BYTES` | 업로드 가능한 프로필 이미지 최대 크기 | 예 |
 
-### 6.8 `.env.production` 예시
+### 6.7 `.env.production` 예시
 
 ```env
 NODE_ENV=production
@@ -389,6 +374,7 @@ PASSWORD_RESET_TOKEN_TTL_MINUTES=60
 
 APP_WEB_BASE_URL=https://app.example.com
 API_PUBLIC_BASE_URL=https://api.example.com
+MOBILE_APP_STEAM_CALLBACK_URL=gamepedia://steam/callback
 
 MAIL_MODE=log
 MAIL_PORT=587
@@ -397,11 +383,9 @@ MAIL_SECURE=false
 APPLE_CLIENT_ID=com.example.gamepedia
 GOOGLE_CLIENT_ID=google-client-id.apps.googleusercontent.com
 STEAM_API_KEY=steam-api-key
+STEAM_WEB_API_BASE_URL=https://api.steampowered.com/
 TWITCH_CLIENT_ID=twitch-client-id
 TWITCH_CLIENT_SECRET=twitch-client-secret
-
-LIBRETRANSLATE_URL=https://translate.example.com
-TRANSLATION_PROXY_BASE_URL=https://translate.example.com
 
 REDIS_URL=redis://127.0.0.1:6379/0
 PROFILE_IMAGE_MAX_SIZE_BYTES=5242880
@@ -433,6 +417,13 @@ pm2 start ecosystem.config.js --only core-server --env production
 
 - `core-server`
 - `core-server-staging`
+
+## Search Notes
+
+- 검색은 서버 번역이 아니라 `normalize -> locale alias resolve -> candidate generation -> IGDB fetch -> rerank` 순서로 동작합니다.
+- alias 사전은 [`src/modules/search/aliases/`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/src/modules/search/aliases) 아래 locale별 파일로 관리합니다.
+- 운영용 상세 검색 로그는 [`logs/search/search-queries.ndjson`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/logs/search/search-queries.ndjson) 에 append 됩니다.
+- 과거 `search-query-translation.service.js` 이름은 유지하지만, 현재 구현은 번역기가 아니라 alias-aware query resolver입니다.
 
 ## 8. 배포 방법
 
@@ -564,11 +555,12 @@ Steam 연동 방식:
 5. Core Server가 OpenID 검증 후 `social_accounts`에 Steam 계정을 연결합니다.
 6. 이후 `GET /users/me/library`에서 최근 플레이 게임과 링크 상태를 함께 응답합니다.
 
-번역 서버 연동 방식:
+번역 처리 방식:
 
-- 검색어 번역은 `search-query-translation.service.js`를 통해 처리됩니다.
-- 검색 결과 번역은 `search-result-translation.service.js`를 통해 처리됩니다.
-- 실제 번역 엔진/프록시는 별도 Translate Server 저장소가 담당합니다.
+- 기본 게임 응답 경로는 원본 IGDB/Steam 데이터를 그대로 반환합니다.
+- 검색은 서버 번역 대신 정규화, locale alias, candidate generation, reranking으로 처리합니다.
+- 서버는 더 이상 검색/홈/라이브러리/프로필/추천/상세 응답에 번역 텍스트를 주입하지 않습니다.
+- 과거 search translation 경로는 제거되었고, 남아 있는 `search-query-translation.service.js` 파일명은 호환성용 이름일 뿐 실제 구현은 alias resolver입니다.
 
 ## 11. 보안 설계
 
@@ -638,7 +630,7 @@ Steam 연동 방식:
 - `REDIS_URL`은 현재 서버 시작 시 연결 확인 용도로만 사용됩니다.
 - 게임 메타데이터는 IGDB/Twitch API에서 가져옵니다.
 - 최근 플레이 게임은 Steam Web API에서 가져옵니다.
-- 번역은 별도 Translate Server 또는 프록시를 통해 수행합니다.
+- 검색 운영 로그는 `logs/search/search-queries.ndjson`에 구조화된 ndjson 형식으로 누적됩니다.
 
 ## 14. 향후 확장 가능 구조
 

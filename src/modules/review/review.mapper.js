@@ -45,8 +45,30 @@ function mapAverageRating(averageRating) {
   return Number(normalizedRating.toFixed(1));
 }
 
+function mapSteamReviewStatus(reviewScore) {
+  if (reviewScore == null || reviewScore === 0) {
+    return null;
+  }
+
+  if (reviewScore >= 6) return 'positive';
+  if (reviewScore <= 4) return 'negative';
+  return null;
+}
+
+function mapSteamLinkedReviewToDto(review, currentUserId, steamMeta) {
+  const base = mapReviewToDto(review, currentUserId);
+
+  return {
+    ...base,
+    hasSteamReview: true,
+    steamReviewSummary: steamMeta?.reviewScoreDesc ?? null,
+    steamReviewStatus: mapSteamReviewStatus(steamMeta?.reviewScore)
+  };
+}
+
 module.exports = {
   mapAverageRating,
   mapReviewListToDto,
-  mapReviewToDto
+  mapReviewToDto,
+  mapSteamLinkedReviewToDto
 };

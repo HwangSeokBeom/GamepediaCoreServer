@@ -1,4 +1,5 @@
 const express = require('express');
+const { authenticateAccessToken } = require('../../middlewares/auth.middleware');
 const { validate } = require('../../middlewares/validate.middleware');
 const igdbController = require('./igdb.controller');
 const {
@@ -6,7 +7,8 @@ const {
   gameDetailParamsSchema,
   gameSearchQuerySchema,
   gameSuggestionQuerySchema,
-  gamesListQuerySchema
+  gamesListQuerySchema,
+  unifiedGameDetailQuerySchema
 } = require('./igdb.validator');
 
 const router = express.Router();
@@ -35,6 +37,11 @@ router.get('/games/suggestions', validate({
   query: gameSuggestionQuerySchema,
   errorMapper: buildIgdbValidationError
 }), igdbController.getGameSuggestions);
+
+router.get('/games/detail', authenticateAccessToken, validate({
+  query: unifiedGameDetailQuerySchema,
+  errorMapper: buildIgdbValidationError
+}), igdbController.getUnifiedGameDetail);
 
 router.get('/games/:id', validate({
   params: gameDetailParamsSchema,

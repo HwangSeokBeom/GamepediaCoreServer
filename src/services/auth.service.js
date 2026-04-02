@@ -64,6 +64,105 @@ function buildGoogleNickname({ name, email }) {
   return buildSocialNickname('google');
 }
 
+async function assertNicknameAvailable({ tx = prisma, nickname, excludeUserId = null }) {
+  const normalizedNickname = typeof nickname === 'string' ? nickname.trim() : '';
+
+  if (!normalizedNickname) {
+    return;
+  }
+
+  const existingUser = await tx.user.findFirst({
+    where: {
+      nickname: normalizedNickname,
+      ...(excludeUserId
+        ? {
+            id: {
+              not: excludeUserId
+            }
+          }
+        : {})
+    },
+    select: {
+      id: true
+    }
+  });
+
+  if (existingUser) {
+    throw new AppError(409, 'NICKNAME_ALREADY_EXISTS', 'Nickname already exists');
+  }
+}
+
+function buildNicknameWithSuffix(baseNickname, suffix) {
+  const trimmedBaseNickname = typeof baseNickname === 'string' ? baseNickname.trim() : '';
+  const effectiveBaseNickname = trimmedBaseNickname || 'user';
+  const normalizedSuffix = String(suffix);
+  const maxBaseLength = Math.max(2, 30 - normalizedSuffix.length - 1);
+
+  return `${effectiveBaseNickname.slice(0, maxBaseLength)}_${normalizedSuffix}`;
+}
+
+function isNicknameUniqueConstraintError(error) {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+    return false;
+  }
+
+  const duplicateTarget = Array.isArray(error?.meta?.target)
+    ? error.meta.target
+    : [error?.meta?.target].filter(Boolean);
+
+  return duplicateTarget.some((target) => String(target).toLowerCase().includes('nickname'));
+}
+
+async function resolveAvailableSocialNickname(tx, preferredNickname, fallbackPrefix) {
+  const baseNickname = normalizeNicknameCandidate(preferredNickname) ?? buildSocialNickname(fallbackPrefix).slice(0, 30);
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidateNickname = attempt === 0
+      ? baseNickname
+      : buildNicknameWithSuffix(baseNickname, crypto.randomBytes(2).toString('hex'));
+
+    const existingUser = await tx.user.findFirst({
+      where: {
+        nickname: candidateNickname
+      },
+      select: {
+        id: true
+      }
+    });
+
+    if (!existingUser) {
+      return candidateNickname;
+    }
+  }
+
+  return buildNicknameWithSuffix(baseNickname, crypto.randomBytes(3).toString('hex'));
+}
+
+async function createSocialUserWithUniqueNickname(tx, userData, options) {
+  const { preferredNickname, fallbackPrefix } = options;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const nickname = await resolveAvailableSocialNickname(tx, preferredNickname, fallbackPrefix);
+
+    try {
+      return await tx.user.create({
+        data: {
+          ...userData,
+          nickname
+        }
+      });
+    } catch (error) {
+      if (isNicknameUniqueConstraintError(error)) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new AppError(409, 'NICKNAME_ALREADY_EXISTS', 'Nickname already exists');
+}
+
 function buildForgotPasswordResponse() {
   return {
     message: FORGOT_PASSWORD_SUCCESS_MESSAGE
@@ -135,6 +234,7 @@ async function issueSessionForUser(user, deviceName) {
 
 async function signUp({ email, password, nickname, profileImageUrl, deviceName }) {
   const normalizedEmail = normalizeEmail(email);
+  const normalizedNickname = nickname.trim();
   const existingUser = await prisma.user.findUnique({
     where: { email: normalizedEmail }
   });
@@ -143,25 +243,39 @@ async function signUp({ email, password, nickname, profileImageUrl, deviceName }
     throw new AppError(409, 'EMAIL_ALREADY_IN_USE', 'An account with this email already exists');
   }
 
+  await assertNicknameAvailable({
+    nickname: normalizedNickname
+  });
+
   const passwordHash = await passwordService.hashPassword(password);
 
-  const result = await prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
-      data: {
-        email: normalizedEmail,
-        passwordHash,
-        nickname: nickname.trim(),
-        profileImageUrl: profileImageUrl ?? null
-      }
+  let result;
+
+  try {
+    result = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          email: normalizedEmail,
+          passwordHash,
+          nickname: normalizedNickname,
+          profileImageUrl: profileImageUrl ?? null
+        }
+      });
+
+      const tokens = await createRefreshTokenRecord(tx, user, deviceName);
+
+      return {
+        user: sanitizeUser(user),
+        tokens
+      };
     });
+  } catch (error) {
+    if (isNicknameUniqueConstraintError(error)) {
+      throw new AppError(409, 'NICKNAME_ALREADY_EXISTS', 'Nickname already exists');
+    }
 
-    const tokens = await createRefreshTokenRecord(tx, user, deviceName);
-
-    return {
-      user: sanitizeUser(user),
-      tokens
-    };
-  });
+    throw error;
+  }
 
   return result;
 }
@@ -405,14 +519,14 @@ async function appleLogin({ identityToken, deviceName }) {
       }
 
       if (!user) {
-        user = await tx.user.create({
-          data: {
-            email: appleIdentity.email,
-            passwordHash,
-            passwordAuthEnabled: false,
-            nickname: buildAppleNickname(),
-            profileImageUrl: null
-          }
+        user = await createSocialUserWithUniqueNickname(tx, {
+          email: appleIdentity.email,
+          passwordHash,
+          passwordAuthEnabled: false,
+          profileImageUrl: null
+        }, {
+          preferredNickname: buildAppleNickname(),
+          fallbackPrefix: 'apple'
         });
       }
 
@@ -541,14 +655,14 @@ async function googleLogin({ idToken, deviceName }) {
       }
 
       if (!user) {
-        user = await tx.user.create({
-          data: {
-            email: googleIdentity.email,
-            passwordHash,
-            passwordAuthEnabled: false,
-            nickname: buildGoogleNickname(googleIdentity),
-            profileImageUrl: parseOptionalUrl(googleIdentity.pictureUrl)
-          }
+        user = await createSocialUserWithUniqueNickname(tx, {
+          email: googleIdentity.email,
+          passwordHash,
+          passwordAuthEnabled: false,
+          profileImageUrl: parseOptionalUrl(googleIdentity.pictureUrl)
+        }, {
+          preferredNickname: buildGoogleNickname(googleIdentity),
+          fallbackPrefix: 'google'
         });
       }
 

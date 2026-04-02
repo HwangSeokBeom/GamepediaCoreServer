@@ -37,4 +37,7 @@ router.get('/users/me/reviews', authenticateAccessToken, validate({
   query: reviewListQuerySchema
 }), reviewController.getMyReviews);
 
+router.get('/users/me/reviews/steam-linked', authenticateAccessToken,
+  reviewController.getSteamLinkedReviews);
+
 module.exports = router;

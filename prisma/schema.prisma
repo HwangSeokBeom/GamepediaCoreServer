@@ -13,6 +13,13 @@ enum UserStatus {
   SUSPENDED
 }
 
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELED
+}
+
 enum GameSource {
   STEAM
   IGDB
@@ -20,8 +27,34 @@ enum GameSource {
 
 enum GameLibraryStatus {
   PLAYING
+  BACKLOG
   COMPLETED
   DROPPED
+}
+
+enum SteamIgdbMatchStatus {
+  CONFIRMED
+  CANDIDATE
+  UNMATCHED
+  REJECTED
+}
+
+enum UserActivityType {
+  REVIEW_CREATED
+  REVIEW_UPDATED
+  LIKED_GAME_ADDED
+  LIKED_GAME_REMOVED
+  RATING_CHANGED
+  PLAY_STATUS_CHANGED
+  STEAM_RECENTLY_PLAYED_SYNC
+}
+
+enum UserPresenceState {
+  ONLINE
+  RECENTLY_ACTIVE
+  PLAYING
+  LAST_PLAYED
+  UNKNOWN
 }
 
 model User {
@@ -29,7 +62,7 @@ model User {
   email               String            @unique @db.VarChar(320)
   passwordHash        String            @map("password_hash") @db.VarChar(255)
   passwordAuthEnabled Boolean           @default(true) @map("password_auth_enabled")
-  nickname            String            @db.VarChar(50)
+  nickname            String            @unique @db.VarChar(50)
   profileImageUrl     String?           @map("profile_image_url") @db.Text
   status              UserStatus        @default(ACTIVE)
   createdAt           DateTime          @default(now()) @map("created_at")
@@ -37,12 +70,21 @@ model User {
   blockedByUsers      UserBlock[]       @relation("BlockedUser")
   blockingUsers       UserBlock[]       @relation("BlockingUser")
   favoriteGames       FavoriteGame[]
+  friendOf            Friendship[]      @relation("FriendshipFriend")
+  friendships         Friendship[]      @relation("FriendshipUser")
+  receivedFriendRequests FriendRequest[] @relation("FriendRequestToUser")
+  sentFriendRequests  FriendRequest[]   @relation("FriendRequestFromUser")
   gameLibraryEntries  UserGameLibrary[]
+  activityEvents      UserActivityEvent[]
+  notifications       UserNotification[]
   passwordResetTokens PasswordResetToken[]
+  presenceSnapshot    UserPresenceSnapshot?
+  privacySettings     UserPrivacySettings?
   refreshTokens       RefreshToken[]
   reportsSubmitted    Report[]          @relation("UserReports")
   reviews             Review[]
   socialAccounts      SocialAccount[]
+  titles              UserTitle[]
 
   @@map("users")
 }
@@ -107,6 +149,35 @@ model FavoriteGame {
   @@map("favorite_games")
 }
 
+model FriendRequest {
+  id        String              @id @default(uuid()) @db.Uuid
+  fromUserId String             @map("from_user_id") @db.Uuid
+  toUserId  String              @map("to_user_id") @db.Uuid
+  status    FriendRequestStatus @default(PENDING)
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+  fromUser  User                @relation("FriendRequestFromUser", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser    User                @relation("FriendRequestToUser", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([fromUserId, status, createdAt])
+  @@index([toUserId, status, createdAt])
+  @@map("friend_requests")
+}
+
+model Friendship {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  friendUserId String   @map("friend_user_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+  user         User     @relation("FriendshipUser", fields: [userId], references: [id], onDelete: Cascade)
+  friend       User     @relation("FriendshipFriend", fields: [friendUserId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, friendUserId])
+  @@index([userId, createdAt])
+  @@index([friendUserId, createdAt])
+  @@map("friendships")
+}
+
 model SocialAccount {
   id              String   @id @default(uuid()) @db.Uuid
   userId          String   @map("user_id") @db.Uuid
@@ -115,6 +186,8 @@ model SocialAccount {
   personaName     String?  @map("persona_name") @db.VarChar(100)
   profileUrl      String?  @map("profile_url") @db.Text
   avatarUrl       String?  @map("avatar_url") @db.Text
+  lastSteamSyncAt DateTime? @map("last_steam_sync_at")
+  steamRecentPlayedSnapshot Json? @map("steam_recent_played_snapshot")
   linkedAt        DateTime @default(now()) @map("linked_at")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
@@ -124,6 +197,19 @@ model SocialAccount {
   @@unique([userId, provider])
   @@index([userId])
   @@map("social_accounts")
+}
+
+model UserTitle {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  titleKey   String   @map("title_key") @db.VarChar(100)
+  isSelected Boolean  @default(false) @map("is_selected")
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, titleKey])
+  @@index([userId, isSelected])
+  @@map("user_titles")
 }
 
 model UserGameLibrary {
@@ -146,6 +232,21 @@ model UserGameLibrary {
   @@index([userId, status, updatedAt])
   @@index([userId, gameSource])
   @@map("user_game_library")
+}
+
+model SteamIgdbMapping {
+  id              String   @id @default(uuid()) @db.Uuid
+  steamAppId      String   @unique @map("steam_appid") @db.VarChar(100)
+  igdbGameId      String?  @map("igdb_game_id") @db.VarChar(100)
+  matchedTitle    String?  @map("matched_title") @db.VarChar(200)
+  confidenceScore Float    @map("confidence_score")
+  matchStatus     SteamIgdbMatchStatus @default(UNMATCHED) @map("match_status")
+  matchedAt       DateTime @map("matched_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([igdbGameId])
+  @@map("steam_igdb_mappings")
 }
 
 model Report {
@@ -187,4 +288,75 @@ model SearchQuery {
   @@index([normalizedQuery, createdAt])
   @@index([createdAt])
   @@map("search_queries")
+}
+
+model UserNotification {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  type          String   @db.VarChar(50)
+  title         String   @db.VarChar(120)
+  message       String   @db.Text
+  relatedGameId String?  @map("related_game_id") @db.VarChar(100)
+  dedupeKey     String?  @map("dedupe_key") @db.VarChar(160)
+  payload       Json?
+  isRead        Boolean  @default(false) @map("is_read")
+  readAt        DateTime? @map("read_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, isRead, createdAt])
+  @@index([userId, dedupeKey, createdAt])
+  @@map("user_notifications")
+}
+
+model UserActivityEvent {
+  id             String           @id @default(uuid()) @db.Uuid
+  actorUserId    String           @map("actor_user_id") @db.Uuid
+  activityType   UserActivityType @map("activity_type")
+  gameSource     GameSource?      @map("game_source")
+  externalGameId String?          @map("external_game_id") @db.VarChar(100)
+  igdbGameId     String?          @map("igdb_game_id") @db.VarChar(100)
+  dedupeKey      String?          @map("dedupe_key") @db.VarChar(160)
+  metadata       Json?
+  isVisible      Boolean          @default(true) @map("is_visible")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  actor          User             @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  @@index([actorUserId, createdAt])
+  @@index([activityType, createdAt])
+  @@index([gameSource, externalGameId, createdAt])
+  @@index([dedupeKey, createdAt])
+  @@map("user_activity_events")
+}
+
+model UserPresenceSnapshot {
+  userId         String            @id @map("user_id") @db.Uuid
+  state          UserPresenceState @default(UNKNOWN)
+  source         String?           @db.VarChar(50)
+  gameSource     GameSource?       @map("game_source")
+  externalGameId String?           @map("external_game_id") @db.VarChar(100)
+  lastActiveAt   DateTime?         @map("last_active_at")
+  lastPlayedAt   DateTime?         @map("last_played_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([state, updatedAt])
+  @@map("user_presence_snapshots")
+}
+
+model UserPrivacySettings {
+  userId            String   @id @map("user_id") @db.Uuid
+  showFriendsList   Boolean  @default(true) @map("show_friends_list")
+  showRecentlyPlayed Boolean @default(true) @map("show_recently_played")
+  showLikedGames    Boolean  @default(true) @map("show_liked_games")
+  showReviews       Boolean  @default(true) @map("show_reviews")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_privacy_settings")
 }

@@ -1,9 +1,58 @@
 const EDITION_PENALTY_PATTERN = /\b(dlc|demo|soundtrack|ost|beta|alpha|season pass|ultimate edition|collector'?s edition|collectors edition|update|bundle|pack|artbook)\b/i;
 const MAX_CANDIDATE_COUNT = 5;
+const ROMAN_TO_ARABIC_MAP = new Map([
+  ['x', '10'],
+  ['ix', '9'],
+  ['viii', '8'],
+  ['vii', '7'],
+  ['vi', '6'],
+  ['v', '5'],
+  ['iv', '4'],
+  ['iii', '3'],
+  ['ii', '2'],
+  ['i', '1']
+]);
+const ARABIC_TO_ROMAN_MAP = new Map([
+  ['1', 'i'],
+  ['2', 'ii'],
+  ['3', 'iii'],
+  ['4', 'iv'],
+  ['5', 'v'],
+  ['6', 'vi'],
+  ['7', 'vii'],
+  ['8', 'viii'],
+  ['9', 'ix'],
+  ['10', 'x']
+]);
+
+function uniqueNonEmpty(values) {
+  return [...new Set((values ?? []).filter(Boolean))];
+}
+
+function normalizePunctuation(value) {
+  return value
+    .replace(/[’‘`´]/g, '\'')
+    .replace(/[‐‑‒–—―]/g, '-')
+    .replace(/[：]/g, ':');
+}
+
+function replaceRomanNumeralTokens(value) {
+  return value
+    .split(' ')
+    .map((token) => ROMAN_TO_ARABIC_MAP.get(token) ?? token)
+    .join(' ');
+}
+
+function replaceArabicNumberTokensWithRoman(value) {
+  return value
+    .split(' ')
+    .map((token) => ARABIC_TO_ROMAN_MAP.get(token) ?? token)
+    .join(' ');
+}
 
 function normalizeQuery(query) {
   const original = typeof query === 'string' ? query : '';
-  const trimmed = original.normalize('NFKC').trim();
+  const trimmed = normalizePunctuation(original.normalize('NFKC')).trim();
   const lowerCased = trimmed.toLowerCase();
   const collapsedWhitespace = lowerCased.replace(/\s+/g, ' ');
   const punctuationRemoved = collapsedWhitespace
@@ -11,13 +60,33 @@ function normalizeQuery(query) {
     .replace(/\s+/g, ' ')
     .trim();
   const normalized = punctuationRemoved || collapsedWhitespace;
+  const numericNormalized = replaceRomanNumeralTokens(normalized);
+  const romanNormalized = replaceArabicNumberTokensWithRoman(normalized);
   const compact = normalized.replace(/\s+/g, '');
+  const numericCompact = numericNormalized.replace(/\s+/g, '');
+  const romanCompact = romanNormalized.replace(/\s+/g, '');
+  const normalizedVariants = uniqueNonEmpty([
+    normalized,
+    numericNormalized !== normalized ? numericNormalized : null,
+    romanNormalized !== normalized ? romanNormalized : null
+  ]);
+  const compactVariants = uniqueNonEmpty([
+    compact,
+    numericCompact !== compact ? numericCompact : null,
+    romanCompact !== compact ? romanCompact : null
+  ]);
 
   return {
     original,
     trimmed,
     normalized,
     compact,
+    numericNormalized,
+    numericCompact,
+    romanNormalized,
+    romanCompact,
+    normalizedVariants,
+    compactVariants,
     tokens: normalized ? normalized.split(' ').filter(Boolean) : []
   };
 }
@@ -35,22 +104,30 @@ function buildSearchCandidateQueries(query, maxCandidates = MAX_CANDIDATE_COUNT)
   const candidates = [];
   const firstToken = queryInfo.tokens[0] ?? '';
 
-  addCandidate(candidates, queryInfo.normalized);
+  for (const normalizedVariant of queryInfo.normalizedVariants ?? [queryInfo.normalized]) {
+    addCandidate(candidates, normalizedVariant);
+  }
 
-  if (queryInfo.compact && queryInfo.compact !== queryInfo.normalized) {
-    addCandidate(candidates, queryInfo.compact);
+  for (const compactVariant of queryInfo.compactVariants ?? [queryInfo.compact]) {
+    if (compactVariant && compactVariant !== queryInfo.normalized) {
+      addCandidate(candidates, compactVariant);
+    }
   }
 
   if (firstToken.length >= 2) {
     addCandidate(candidates, `${firstToken}*`);
   }
 
-  if (queryInfo.compact.length >= 2) {
-    addCandidate(candidates, `${queryInfo.compact}*`);
+  for (const compactVariant of queryInfo.compactVariants ?? [queryInfo.compact]) {
+    if (compactVariant.length >= 2) {
+      addCandidate(candidates, `${compactVariant}*`);
+    }
   }
 
-  if (queryInfo.tokens.length > 1 && queryInfo.normalized.length >= 2) {
-    addCandidate(candidates, `${queryInfo.normalized}*`);
+  for (const normalizedVariant of queryInfo.normalizedVariants ?? [queryInfo.normalized]) {
+    if (queryInfo.tokens.length > 1 && normalizedVariant.length >= 2) {
+      addCandidate(candidates, `${normalizedVariant}*`);
+    }
   }
 
   return candidates.slice(0, maxCandidates);
@@ -99,7 +176,17 @@ function mergeGamesById(resultSets) {
 }
 
 function normalizeNameForScoring(value) {
-  return normalizeQuery(value).compact;
+  return normalizeQuery(value).numericCompact;
+}
+
+function getComparableNormalizedForms(query) {
+  const queryInfo = typeof query === 'string' ? normalizeQuery(query) : query;
+  return queryInfo.normalizedVariants ?? [queryInfo.normalized].filter(Boolean);
+}
+
+function getComparableCompactForms(query) {
+  const queryInfo = typeof query === 'string' ? normalizeQuery(query) : query;
+  return queryInfo.compactVariants ?? [queryInfo.compact].filter(Boolean);
 }
 
 function computeDiceCoefficient(left, right) {
@@ -159,11 +246,11 @@ function computeAliasBoost(aliasBoost, gameNameInfo) {
   const baseMultiplier = aliasBoost.matchType === 'exact' ? 1.2 : prefixConfidence;
   let score = 0;
 
-  if (gameNameInfo.compact === targetInfo.compact) {
+  if ((gameNameInfo.compactVariants ?? [gameNameInfo.compact]).includes(targetInfo.numericCompact)) {
     score += 520;
-  } else if (gameNameInfo.compact.startsWith(targetInfo.compact)) {
+  } else if ((gameNameInfo.compactVariants ?? [gameNameInfo.compact]).some((compactValue) => compactValue.startsWith(targetInfo.numericCompact))) {
     score += 280;
-  } else if (gameNameInfo.compact.includes(targetInfo.compact)) {
+  } else if ((gameNameInfo.compactVariants ?? [gameNameInfo.compact]).some((compactValue) => compactValue.includes(targetInfo.numericCompact))) {
     score += 120;
   }
 
@@ -174,11 +261,11 @@ function computeAliasBoost(aliasBoost, gameNameInfo) {
       continue;
     }
 
-    if (gameNameInfo.compact === candidateInfo.compact) {
+    if ((gameNameInfo.compactVariants ?? [gameNameInfo.compact]).includes(candidateInfo.numericCompact)) {
       score += 220;
-    } else if (gameNameInfo.compact.startsWith(candidateInfo.compact)) {
+    } else if ((gameNameInfo.compactVariants ?? [gameNameInfo.compact]).some((compactValue) => compactValue.startsWith(candidateInfo.numericCompact))) {
       score += 160;
-    } else if (gameNameInfo.compact.includes(candidateInfo.compact)) {
+    } else if ((gameNameInfo.compactVariants ?? [gameNameInfo.compact]).some((compactValue) => compactValue.includes(candidateInfo.numericCompact))) {
       score += 80;
     }
   }
@@ -189,47 +276,67 @@ function computeAliasBoost(aliasBoost, gameNameInfo) {
 function computeFuzzyScore(query, gameName, game = {}, options = {}) {
   const queryInfo = typeof query === 'string' ? normalizeQuery(query) : query;
   const gameNameInfo = normalizeQuery(gameName);
+  const queryNormalizedForms = getComparableNormalizedForms(queryInfo);
+  const queryCompactForms = getComparableCompactForms(queryInfo);
+  const gameNormalizedForms = getComparableNormalizedForms(gameNameInfo);
+  const gameCompactForms = getComparableCompactForms(gameNameInfo);
 
-  if (!queryInfo.compact || !gameNameInfo.compact) {
+  if (queryCompactForms.length === 0 || gameCompactForms.length === 0) {
     return 0;
   }
 
   let score = 0;
+  const exactNormalizedMatch = queryNormalizedForms.some((queryValue) => gameNormalizedForms.includes(queryValue));
+  const exactCompactMatch = queryCompactForms.some((queryValue) => gameCompactForms.includes(queryValue));
+  const prefixCompactMatch = queryCompactForms.some((queryValue) => gameCompactForms.some((gameValue) => gameValue.startsWith(queryValue)));
+  const prefixNormalizedMatch = queryNormalizedForms.some((queryValue) => gameNormalizedForms.some((gameValue) => gameValue.startsWith(queryValue)));
+  const substringCompactMatch = queryCompactForms.some((queryValue) => gameCompactForms.some((gameValue) => gameValue.includes(queryValue)));
+  const substringNormalizedMatch = queryNormalizedForms.some((queryValue) => gameNormalizedForms.some((gameValue) => gameValue.includes(queryValue)));
 
-  if (gameNameInfo.normalized === queryInfo.normalized) {
+  if (exactNormalizedMatch) {
     score += 70;
   }
 
-  if (gameNameInfo.compact === queryInfo.compact) {
+  if (exactCompactMatch) {
     score += 90;
-  } else if (gameNameInfo.compact.startsWith(queryInfo.compact)) {
+  } else if (prefixCompactMatch) {
     score += 200;
-  } else if (gameNameInfo.normalized.startsWith(queryInfo.normalized)) {
+  } else if (prefixNormalizedMatch) {
     score += 160;
-  } else if (gameNameInfo.compact.includes(queryInfo.compact)) {
+  } else if (substringCompactMatch) {
     score += 120;
-  } else if (gameNameInfo.normalized.includes(queryInfo.normalized)) {
+  } else if (substringNormalizedMatch) {
     score += 100;
   }
 
   const firstToken = queryInfo.tokens[0] ?? '';
 
   if (firstToken && firstToken !== queryInfo.normalized) {
-    if (gameNameInfo.normalized.startsWith(firstToken)) {
+    if (gameNormalizedForms.some((value) => value.startsWith(firstToken))) {
       score += 60;
-    } else if (gameNameInfo.compact.includes(firstToken.replace(/\s+/g, ''))) {
+    } else if (gameCompactForms.some((value) => value.includes(firstToken.replace(/\s+/g, '')))) {
       score += 30;
     }
   }
 
-  score += Math.round(computeDiceCoefficient(queryInfo.compact, gameNameInfo.compact) * 110);
+  const bestDiceScore = queryCompactForms.reduce((highestScore, queryCompact) => {
+    const candidateHighScore = gameCompactForms.reduce(
+      (candidateScore, gameCompact) => Math.max(candidateScore, computeDiceCoefficient(queryCompact, gameCompact)),
+      0
+    );
+    return Math.max(highestScore, candidateHighScore);
+  }, 0);
+  score += Math.round(bestDiceScore * 110);
   score += Math.min(getNumericField(game, 'total_rating') * 0.6, 80);
   score += Math.min(getNumericField(game, 'aggregated_rating') * 0.4, 40);
   score += Math.min(Math.log10(getNumericField(game, 'total_rating_count') + 1) * 60, 180);
   score += Math.min(Math.log10(getNumericField(game, 'aggregated_rating_count') + 1) * 30, 90);
 
-  if (gameNameInfo.compact.startsWith(queryInfo.compact)) {
-    const suffix = gameNameInfo.compact.slice(queryInfo.compact.length);
+  const matchingPrefixCompact = queryCompactForms.find((queryCompact) => gameCompactForms.some((gameCompact) => gameCompact.startsWith(queryCompact)));
+
+  if (matchingPrefixCompact) {
+    const matchedGameCompact = gameCompactForms.find((gameCompact) => gameCompact.startsWith(matchingPrefixCompact)) ?? '';
+    const suffix = matchedGameCompact.slice(matchingPrefixCompact.length);
     const hasQualitySignal =
       getNumericField(game, 'total_rating_count') > 0 ||
       getNumericField(game, 'aggregated_rating_count') > 0 ||
@@ -248,15 +355,75 @@ function computeFuzzyScore(query, gameName, game = {}, options = {}) {
     score += Math.max(releaseYear - 2000, 0) * 0.8;
   }
 
-  score -= Math.min(Math.max(gameNameInfo.compact.length - queryInfo.compact.length, 0) * 2, 120);
+  score -= Math.min(Math.max((gameNameInfo.numericCompact ?? gameNameInfo.compact).length - (queryInfo.numericCompact ?? queryInfo.compact).length, 0) * 2, 120);
 
-  if (EDITION_PENALTY_PATTERN.test(gameNameInfo.normalized)) {
+  if (EDITION_PENALTY_PATTERN.test(gameNameInfo.normalized) && !EDITION_PENALTY_PATTERN.test(queryInfo.normalized)) {
     score -= 160;
+  }
+
+  const querySequelNumber = extractSequelNumber(queryNormalizedForms);
+  const gameSequelNumber = extractSequelNumber(gameNormalizedForms);
+
+  if (querySequelNumber && gameSequelNumber) {
+    score += querySequelNumber === gameSequelNumber ? 110 : -90;
   }
 
   score += computeAliasBoost(options.aliasBoost, gameNameInfo);
 
   return score;
+}
+
+function extractSequelNumber(normalizedForms) {
+  for (const normalizedValue of normalizedForms ?? []) {
+    const matchedToken = normalizedValue.match(/\b([1-9]|10)\b/);
+
+    if (matchedToken) {
+      return matchedToken[1];
+    }
+  }
+
+  return null;
+}
+
+function explainGameMatchReasons(query, game, options = {}) {
+  const queryInfo = typeof query === 'string' ? normalizeQuery(query) : query;
+  const gameNameInfo = normalizeQuery(game?.name ?? '');
+  const reasons = [];
+  const queryNormalizedForms = getComparableNormalizedForms(queryInfo);
+  const queryCompactForms = getComparableCompactForms(queryInfo);
+  const gameNormalizedForms = getComparableNormalizedForms(gameNameInfo);
+  const gameCompactForms = getComparableCompactForms(gameNameInfo);
+
+  if (queryNormalizedForms.some((queryValue) => gameNormalizedForms.includes(queryValue))) {
+    reasons.push('exact_title_match');
+  } else if (queryCompactForms.some((queryValue) => gameCompactForms.includes(queryValue))) {
+    reasons.push('compact_exact_match');
+  } else if (queryCompactForms.some((queryValue) => gameCompactForms.some((gameValue) => gameValue.startsWith(queryValue)))) {
+    reasons.push('prefix_match');
+  } else if (queryCompactForms.some((queryValue) => gameCompactForms.some((gameValue) => gameValue.includes(queryValue)))) {
+    reasons.push('substring_match');
+  }
+
+  if (computeAliasBoost(options.aliasBoost, gameNameInfo) > 0) {
+    reasons.push('alias_boost');
+  }
+
+  const querySequelNumber = extractSequelNumber(queryNormalizedForms);
+  const gameSequelNumber = extractSequelNumber(gameNormalizedForms);
+
+  if (querySequelNumber && gameSequelNumber && querySequelNumber === gameSequelNumber) {
+    reasons.push('sequel_match');
+  }
+
+  if (getNumericField(game, 'total_rating_count') > 0 || getNumericField(game, 'aggregated_rating_count') > 0) {
+    reasons.push('popularity_boost');
+  }
+
+  if (EDITION_PENALTY_PATTERN.test(gameNameInfo.normalized) && !EDITION_PENALTY_PATTERN.test(queryInfo.normalized)) {
+    reasons.push('edition_penalty');
+  }
+
+  return reasons.slice(0, 4);
 }
 
 function rankGames(query, games, options = {}) {
@@ -286,7 +453,9 @@ module.exports = {
   buildFallbackCandidateQueries,
   buildSearchCandidateQueries,
   computeFuzzyScore,
+  explainGameMatchReasons,
   mergeGamesById,
   normalizeQuery,
+  normalizeNameForScoring,
   rankGames
 };

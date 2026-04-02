@@ -1,7 +1,5 @@
 const { loadEnvironment } = require('./load-env');
 
-const DEFAULT_PAPAGO_ENDPOINT = 'https://papago.apigw.ntruss.com/nmt/v1/translation';
-
 const { nodeEnv: bootstrapNodeEnv } = loadEnvironment();
 
 function readEnv(name) {
@@ -16,16 +14,18 @@ function readEnv(name) {
   return trimmedValue.length > 0 ? trimmedValue : null;
 }
 
-function readFirstEnv(...names) {
-  for (const name of names) {
-    const value = readEnv(name);
+function parseUrl(name, fallbackValue = null) {
+  const rawValue = readEnv(name) ?? fallbackValue;
 
-    if (value) {
-      return value;
-    }
+  if (!rawValue) {
+    return null;
   }
 
-  return null;
+  try {
+    return new URL(rawValue).toString();
+  } catch (error) {
+    throw new Error(`Environment variable ${name} must be a valid absolute URL`);
+  }
 }
 
 function requireEnv(name) {
@@ -90,6 +90,7 @@ const env = {
   bcryptSaltRounds: parseNumber('BCRYPT_SALT_ROUNDS', '12'),
   appWebBaseUrl: readEnv('APP_WEB_BASE_URL') ?? (isDevelopmentLike ? `http://localhost:${port}` : requireEnv('APP_WEB_BASE_URL')),
   apiPublicBaseUrl: readEnv('API_PUBLIC_BASE_URL') ?? (isDevelopmentLike ? `http://localhost:${port}` : null),
+  mobileAppSteamCallbackUrl: parseUrl('MOBILE_APP_STEAM_CALLBACK_URL', 'gamepedia://steam/callback'),
   mailMode: parseEnum('MAIL_MODE', mailModeFallback, ['log', 'smtp']),
   mailHost: readEnv('MAIL_HOST'),
   mailPort: parseNumber('MAIL_PORT', '587'),
@@ -102,16 +103,10 @@ const env = {
   appleClientId: readEnv('APPLE_CLIENT_ID'),
   googleClientId: readEnv('GOOGLE_CLIENT_ID'),
   steamApiKey: readEnv('STEAM_API_KEY'),
+  steamWebApiBaseUrl: parseUrl('STEAM_WEB_API_BASE_URL', 'https://api.steampowered.com/'),
   redisUrl: readEnv('REDIS_URL'),
   twitchClientId: readEnv('TWITCH_CLIENT_ID'),
-  twitchClientSecret: readEnv('TWITCH_CLIENT_SECRET'),
-  libreTranslateUrl: readEnv('LIBRETRANSLATE_URL') ?? (isDevelopmentLike ? 'http://localhost:5001' : null),
-  libreTranslateTimeoutMs: parseNumber('LIBRETRANSLATE_TIMEOUT_MS', '5000'),
-  papagoClientId: readEnv('PAPAGO_CLIENT_ID'),
-  papagoClientSecret: readEnv('PAPAGO_CLIENT_SECRET'),
-  papagoEndpoint: readEnv('PAPAGO_ENDPOINT') ?? DEFAULT_PAPAGO_ENDPOINT,
-  papagoTimeoutMs: parseNumber('PAPAGO_TIMEOUT_MS', '5000'),
-  translationProxyBaseUrl: readFirstEnv('TRANSLATION_BASE_URL', 'TRANSLATION_PROXY_BASE_URL') ?? (isDevelopmentLike ? 'http://localhost:3000' : null)
+  twitchClientSecret: readEnv('TWITCH_CLIENT_SECRET')
 };
 
 function validateEnv(config) {

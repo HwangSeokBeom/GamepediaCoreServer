@@ -3,15 +3,10 @@ const {
   resolvePrefixSearchAlias
 } = require('../modules/igdb/igdb.search-aliases');
 const { normalizeQuery } = require('../modules/igdb/igdb.search-utils');
-const { translateSearchQuery } = require('../modules/translation/libreTranslateClient');
 
-const SEARCH_TRANSLATION_TARGET_LANGUAGE = 'en';
-const SEARCH_TRANSLATION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const SEARCH_TRANSLATION_CACHE_MAX_ENTRIES = 200;
+// Legacy filename kept for compatibility. The active implementation is
+// alias-based query resolution and does not call any external translator.
 const MIN_TRANSLATABLE_CHARACTER_COUNT = 2;
-
-const searchTranslationCache = new Map();
-const searchTranslationPendingRequests = new Map();
 
 function needsTranslation(query) {
   return /[^\x00-\x7F]/.test(query);
@@ -27,7 +22,7 @@ function detectSourceLanguage(query) {
   }
 
   if (/[\u4E00-\u9FFF]/u.test(query)) {
-    return 'zh-CN';
+    return 'zh-Hans';
   }
 
   return null;
@@ -37,55 +32,6 @@ function getMeaningfulCharacterCount(query) {
   return (query.match(/[\p{L}\p{N}]/gu) ?? []).length;
 }
 
-function buildTranslationCacheKey({ sourceLanguage, targetLanguage, normalizedQuery }) {
-  return `${sourceLanguage}:${targetLanguage}:${normalizedQuery}`;
-}
-
-function getCachedTranslation(cacheKey) {
-  const cachedEntry = searchTranslationCache.get(cacheKey);
-
-  if (!cachedEntry) {
-    return null;
-  }
-
-  if (cachedEntry.expiresAt <= Date.now()) {
-    searchTranslationCache.delete(cacheKey);
-    return null;
-  }
-
-  searchTranslationCache.delete(cacheKey);
-  searchTranslationCache.set(cacheKey, cachedEntry);
-
-  return cachedEntry.translatedQuery;
-}
-
-function setCachedTranslation(cacheKey, translatedQuery) {
-  searchTranslationCache.set(cacheKey, {
-    translatedQuery,
-    expiresAt: Date.now() + SEARCH_TRANSLATION_CACHE_TTL_MS
-  });
-
-  if (searchTranslationCache.size <= SEARCH_TRANSLATION_CACHE_MAX_ENTRIES) {
-    return;
-  }
-
-  const oldestKey = searchTranslationCache.keys().next().value;
-
-  if (oldestKey) {
-    searchTranslationCache.delete(oldestKey);
-  }
-}
-
-function getPendingTranslationRequest(cacheKey) {
-  return searchTranslationPendingRequests.get(cacheKey) ?? null;
-}
-
-function logSearchResolution(resolution) {
-  console.info(
-    `[search-translation] originalQuery=${JSON.stringify(resolution.originalQuery)} normalizedQuery=${JSON.stringify(resolution.normalizedQuery)} compactQuery=${JSON.stringify(resolution.compactQuery)} exactAliasMatchedQuery=${JSON.stringify(resolution.exactAliasMatchedQuery)} exactAliasMatchedKey=${JSON.stringify(resolution.exactAliasMatchedKey)} prefixAliasMatchedQuery=${JSON.stringify(resolution.prefixAliasMatchedQuery)} prefixAliasMatchedKey=${JSON.stringify(resolution.prefixAliasMatchedKey)} aliasMatchType=${JSON.stringify(resolution.aliasMatchType)} aliasConfidence=${JSON.stringify(resolution.aliasConfidence)} aliasMatched=${resolution.aliasMatched} cacheHit=${resolution.translationCacheHit} translationSource=${JSON.stringify(resolution.translationSource)} translationSkipped=${resolution.translationSkipped} skipReason=${JSON.stringify(resolution.translationSkipReason)} translationRequested=${resolution.translationRequested} translated=${JSON.stringify(resolution.translatedQuery)} effectiveQuery=${JSON.stringify(resolution.effectiveQuery)}`
-  );
-}
-
 function finalizeSearchResolution(resolution, {
   translationSource = null,
   translationSkipped,
@@ -93,7 +39,7 @@ function finalizeSearchResolution(resolution, {
   cacheHit = false,
   translationRequested = false
 }) {
-  const finalizedResolution = {
+  return {
     ...resolution,
     translationSource,
     translationSkipped,
@@ -102,10 +48,6 @@ function finalizeSearchResolution(resolution, {
     aliasMatched: Boolean(resolution.exactAliasMatchedQuery || resolution.prefixAliasMatchedQuery),
     translationRequested
   };
-
-  logSearchResolution(finalizedResolution);
-
-  return finalizedResolution;
 }
 
 function buildSearchResolution({
@@ -116,6 +58,7 @@ function buildSearchResolution({
   translationProvider,
   translatedQuery = null,
   aliasMatchType = null,
+  aliasLocale = null,
   exactAliasMatchedQuery = null,
   exactAliasMatchedKey = null,
   prefixAliasMatchedQuery = null,
@@ -133,6 +76,7 @@ function buildSearchResolution({
     sourceLanguage,
     translatedQuery,
     aliasMatchType,
+    aliasLocale,
     exactAliasMatchedQuery,
     exactAliasMatchedKey,
     prefixAliasMatchedQuery,
@@ -145,7 +89,6 @@ function buildSearchResolution({
 function buildAliasResolution({
   queryInfo,
   sourceLanguage,
-  translatedQuery = null,
   exactAlias = null,
   prefixAlias = null,
   effectiveQuery,
@@ -158,8 +101,8 @@ function buildAliasResolution({
     effectiveQuery,
     translationUsed,
     translationProvider,
-    translatedQuery,
     aliasMatchType: exactAlias?.matchType ?? prefixAlias?.matchType ?? null,
+    aliasLocale: exactAlias?.locale ?? prefixAlias?.locale ?? null,
     exactAliasMatchedQuery: exactAlias?.target ?? null,
     exactAliasMatchedKey: exactAlias?.matchedKey ?? null,
     prefixAliasMatchedQuery: prefixAlias?.target ?? null,
@@ -167,49 +110,6 @@ function buildAliasResolution({
     aliasConfidence: exactAlias?.confidence ?? prefixAlias?.confidence ?? null,
     aliasCandidateQueries: exactAlias?.candidateQueries ?? prefixAlias?.candidateQueries ?? []
   });
-}
-
-async function requestSearchTranslation({ cacheKey, normalizedQuery, sourceLanguage }) {
-  const pendingRequest = getPendingTranslationRequest(cacheKey);
-
-  if (pendingRequest) {
-    console.info(`[search-translation] cache_hit key=${cacheKey} source=pending translationSource=libretranslate`);
-
-    return {
-      ...(await pendingRequest),
-      reusedPendingRequest: true
-    };
-  }
-
-  console.info(
-    `[search-translation] translation_called key=${cacheKey} sourceLanguage=${sourceLanguage} targetLanguage=${SEARCH_TRANSLATION_TARGET_LANGUAGE} translationSource=libretranslate`
-  );
-
-  const translationRequest = (async () => {
-    const translatedQuery = await translateSearchQuery(normalizedQuery, {
-      sourceLanguage,
-      targetLanguage: SEARCH_TRANSLATION_TARGET_LANGUAGE
-    });
-
-    if (translatedQuery && translatedQuery !== normalizedQuery) {
-      setCachedTranslation(cacheKey, translatedQuery);
-    }
-
-    return {
-      translatedQuery,
-      translationApplied: Boolean(translatedQuery && translatedQuery !== normalizedQuery)
-    };
-  })()
-    .finally(() => {
-      searchTranslationPendingRequests.delete(cacheKey);
-    });
-
-  searchTranslationPendingRequests.set(cacheKey, translationRequest);
-
-  return {
-    ...(await translationRequest),
-    reusedPendingRequest: false
-  };
 }
 
 async function resolveSearchQuery(query) {
@@ -234,10 +134,6 @@ async function resolveSearchQuery(query) {
   }
 
   if (exactOriginalAlias) {
-    console.info(
-      `[search-translation] alias_hit stage=original matchType=exact originalQuery=${JSON.stringify(normalizedOriginalQuery)} compactQuery=${JSON.stringify(queryInfo.compact)} matchedAliasKey=${JSON.stringify(exactOriginalAlias.matchedKey)} matchedInputKey=${JSON.stringify(exactOriginalAlias.matchedInputKey)} target=${JSON.stringify(exactOriginalAlias.target)} confidence=${JSON.stringify(exactOriginalAlias.confidence)}`
-    );
-
     return finalizeSearchResolution(buildAliasResolution({
       queryInfo,
       sourceLanguage,
@@ -249,12 +145,6 @@ async function resolveSearchQuery(query) {
       translationSkipped: true,
       skipReason: 'alias_exact'
     });
-  }
-
-  if (prefixOriginalAlias) {
-    console.info(
-      `[search-translation] alias_hit stage=original matchType=prefix originalQuery=${JSON.stringify(normalizedOriginalQuery)} compactQuery=${JSON.stringify(queryInfo.compact)} matchedAliasKey=${JSON.stringify(prefixOriginalAlias.matchedKey)} matchedInputKey=${JSON.stringify(prefixOriginalAlias.matchedInputKey)} target=${JSON.stringify(prefixOriginalAlias.target)} confidence=${JSON.stringify(prefixOriginalAlias.confidence)}`
-    );
   }
 
   if (meaningfulCharacterCount < MIN_TRANSLATABLE_CHARACTER_COUNT) {
@@ -299,86 +189,16 @@ async function resolveSearchQuery(query) {
     });
   }
 
-  const translationCacheKey = buildTranslationCacheKey({
-    sourceLanguage,
-    targetLanguage: SEARCH_TRANSLATION_TARGET_LANGUAGE,
-    normalizedQuery: normalizedOriginalQuery
-  });
-
-  const cachedTranslation = getCachedTranslation(translationCacheKey);
-
-  if (cachedTranslation) {
-    const cachedAlias = resolveExactSearchAlias(cachedTranslation);
-    const effectiveQuery = cachedAlias?.target ?? cachedTranslation;
-
-    console.info(
-      `[search-translation] cache_hit key=${translationCacheKey} original=${JSON.stringify(normalizedOriginalQuery)} translated=${JSON.stringify(cachedTranslation)} translationSource=libretranslate`
-    );
-
-    return finalizeSearchResolution(buildAliasResolution({
-      queryInfo,
-      sourceLanguage,
-      translatedQuery: cachedTranslation,
-      prefixAlias: prefixOriginalAlias,
-      exactAlias: cachedAlias,
-      effectiveQuery: prefixOriginalAlias?.target ?? effectiveQuery,
-      translationUsed: true,
-      translationProvider:
-        cachedAlias
-          ? 'libretranslate-alias'
-          : (prefixOriginalAlias ? 'alias-prefix-libretranslate' : 'libretranslate')
-    }), {
-      translationSource: 'libretranslate',
-      translationSkipped: true,
-      skipReason: 'cache_hit',
-      cacheHit: true
-    });
-  }
-
-  const translationResult = await requestSearchTranslation({
-    cacheKey: translationCacheKey,
-    normalizedQuery: normalizedOriginalQuery,
-    sourceLanguage
-  });
-
-  if (translationResult.translationApplied) {
-    const translatedAlias = resolveExactSearchAlias(translationResult.translatedQuery);
-    const effectiveQuery = translatedAlias?.target ?? translationResult.translatedQuery;
-
-    return finalizeSearchResolution(buildAliasResolution({
-      queryInfo,
-      sourceLanguage,
-      translatedQuery: translationResult.translatedQuery,
-      prefixAlias: prefixOriginalAlias,
-      exactAlias: translatedAlias,
-      effectiveQuery: prefixOriginalAlias?.target ?? effectiveQuery,
-      translationUsed: true,
-      translationProvider:
-        translatedAlias
-          ? 'libretranslate-alias'
-          : (prefixOriginalAlias ? 'alias-prefix-libretranslate' : 'libretranslate')
-    }), {
-      translationSource: 'libretranslate',
-      translationSkipped: false,
-      cacheHit: translationResult.reusedPendingRequest,
-      translationRequested: !translationResult.reusedPendingRequest
-    });
-  }
-
   return finalizeSearchResolution(buildAliasResolution({
     queryInfo,
     sourceLanguage,
-    translatedQuery: normalizedOriginalQuery,
     prefixAlias: prefixOriginalAlias,
     effectiveQuery: prefixOriginalAlias?.target ?? normalizedOriginalQuery,
     translationUsed: false,
     translationProvider: prefixOriginalAlias ? 'alias-prefix' : null
   }), {
-    translationSource: 'libretranslate',
-    translationSkipped: !translationResult.reusedPendingRequest,
-    skipReason: translationResult.reusedPendingRequest ? 'inflight_hit' : 'translation_unavailable',
-    cacheHit: translationResult.reusedPendingRequest,
-    translationRequested: !translationResult.reusedPendingRequest
+    translationSkipped: true,
+    skipReason: prefixOriginalAlias ? 'alias_prefix' : 'alias_only_search_pipeline'
   });
 }
 

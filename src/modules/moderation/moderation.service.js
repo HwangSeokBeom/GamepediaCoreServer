@@ -77,12 +77,46 @@ async function blockUser({ userId, blockedUserId }) {
   });
 
   if (!existingBlock) {
-    await prisma.userBlock.create({
-      data: {
-        userId,
-        blockedUserId
-      }
-    });
+    await prisma.$transaction([
+      prisma.userBlock.create({
+        data: {
+          userId,
+          blockedUserId
+        }
+      }),
+      prisma.friendship.deleteMany({
+        where: {
+          OR: [
+            {
+              userId,
+              friendUserId: blockedUserId
+            },
+            {
+              userId: blockedUserId,
+              friendUserId: userId
+            }
+          ]
+        }
+      }),
+      prisma.friendRequest.updateMany({
+        where: {
+          status: 'PENDING',
+          OR: [
+            {
+              fromUserId: userId,
+              toUserId: blockedUserId
+            },
+            {
+              fromUserId: blockedUserId,
+              toUserId: userId
+            }
+          ]
+        },
+        data: {
+          status: 'CANCELED'
+        }
+      })
+    ]);
   }
 
   console.info(

@@ -47,6 +47,20 @@ function buildSuggestionCacheKey(normalizedQuery) {
   return `suggestion:${normalizedQuery}`;
 }
 
+function buildCanonicalCandidateCacheKey(candidateQueries = [], fallbackKey = '') {
+  const normalizedCandidates = [...new Set(
+    (candidateQueries ?? [])
+      .map((candidateQuery) => (typeof candidateQuery === 'string' ? candidateQuery.trim() : ''))
+      .filter(Boolean)
+  )].sort();
+
+  if (normalizedCandidates.length === 0) {
+    return fallbackKey;
+  }
+
+  return normalizedCandidates.join('|');
+}
+
 function getCachedSearch(normalizedQuery) {
   return getCacheEntry(searchCache, buildSearchCacheKey(normalizedQuery));
 }
@@ -64,6 +78,7 @@ function setCachedSuggestions(normalizedQuery, value) {
 }
 
 module.exports = {
+  buildCanonicalCandidateCacheKey,
   getCachedSearch,
   getCachedSuggestions,
   setCachedSearch,
