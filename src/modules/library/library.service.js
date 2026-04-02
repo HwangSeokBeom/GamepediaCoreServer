@@ -552,14 +552,100 @@ function buildStandardSteamSyncPayload({
   };
 }
 
-function buildLibraryResponseMeta({ isPartialFailure = false, summaryDatasetBasis = null } = {}) {
+function buildLibraryResponseMeta({
+  isPartialFailure = false,
+  summaryDatasetBasis = null,
+  summaryKeys = null,
+  summaryStateKey = null
+} = {}) {
   return {
     generatedAt: new Date().toISOString(),
     isPartialFailure: Boolean(isPartialFailure),
     summaryDatasetBasis: typeof summaryDatasetBasis === 'string' && summaryDatasetBasis.trim()
       ? summaryDatasetBasis.trim()
+      : null,
+    summaryKeys: summaryKeys && typeof summaryKeys === 'object'
+      ? summaryKeys
+      : null,
+    summaryStateKey: typeof summaryStateKey === 'string' && summaryStateKey.trim()
+      ? summaryStateKey.trim()
       : null
   };
+}
+
+function buildLibrarySummaryStableKey(summary, datasetBasis) {
+  if (!summary) {
+    return null;
+  }
+
+  return [
+    summary.selectedTab ?? null,
+    datasetBasis ?? null,
+    summary.gameCount ?? 0,
+    summary.reviewCount ?? 0,
+    summary.averageRating ?? 'null',
+    summary.totalPlaytimeMinutes ?? 0
+  ].join('|');
+}
+
+function buildLibraryTabSummariesPayload({
+  playing,
+  liked,
+  reviewed
+}) {
+  return {
+    playing,
+    liked,
+    reviewed
+  };
+}
+
+function buildLibraryTabSummaryKeys(tabSummaries, datasetBases = {}) {
+  return {
+    playing: buildLibrarySummaryStableKey(tabSummaries?.playing, datasetBases.playing ?? null),
+    liked: buildLibrarySummaryStableKey(tabSummaries?.liked, datasetBases.liked ?? null),
+    reviewed: buildLibrarySummaryStableKey(tabSummaries?.reviewed, datasetBases.reviewed ?? null)
+  };
+}
+
+function buildLibraryTabSummariesStateKey(tabSummaryKeys) {
+  return [
+    tabSummaryKeys?.playing ?? 'null',
+    tabSummaryKeys?.liked ?? 'null',
+    tabSummaryKeys?.reviewed ?? 'null'
+  ].join('::');
+}
+
+function logLibraryTabSummaries({
+  userId,
+  scope,
+  tabSummaries,
+  datasetBases,
+  cacheScope = 'request_memoized'
+}) {
+  logger.info('library-tab-summaries', {
+    userId,
+    scope,
+    cacheScope,
+    playing: {
+      basis: datasetBases?.playing ?? null,
+      gameCount: tabSummaries?.playing?.gameCount ?? 0,
+      averageRating: tabSummaries?.playing?.averageRating ?? null,
+      totalPlaytimeHours: tabSummaries?.playing?.totalPlaytimeHours ?? 0
+    },
+    liked: {
+      basis: datasetBases?.liked ?? null,
+      gameCount: tabSummaries?.liked?.gameCount ?? 0,
+      averageRating: tabSummaries?.liked?.averageRating ?? null,
+      totalPlaytimeHours: tabSummaries?.liked?.totalPlaytimeHours ?? 0
+    },
+    reviewed: {
+      basis: datasetBases?.reviewed ?? null,
+      gameCount: tabSummaries?.reviewed?.gameCount ?? 0,
+      averageRating: tabSummaries?.reviewed?.averageRating ?? null,
+      totalPlaytimeHours: tabSummaries?.reviewed?.totalPlaytimeHours ?? 0
+    }
+  });
 }
 
 function normalizeSteamRecentPlayedSnapshot(snapshot) {
@@ -990,6 +1076,56 @@ async function buildOwnedLibrarySummaryDataset({
     inclusionRule: 'steam_owned_library',
     steamConnected
   });
+}
+
+async function buildLikedLibrarySummaryDataset({ userId }) {
+  const favoritesResult = await getMyFavoritesMemoized({
+    userId,
+    sort: 'latest',
+    limit: null
+  });
+  const favoriteGameIds = (favoritesResult?.favorites ?? []).map((favorite) => favorite.gameId);
+  const igdbGameMap = await buildIgdbGameMap(favoriteGameIds);
+  const likedItems = (favoritesResult?.favorites ?? []).map((favorite) => (
+    mapWishlistItem(favorite, igdbGameMap.get(favorite.gameId))
+  ));
+  const summary = buildLibrarySummaryFromItems({
+    selectedTab: LIBRARY_SUMMARY_TAB.LIKED,
+    items: likedItems
+  });
+
+  return {
+    items: likedItems,
+    summary,
+    datasetBasis: 'favorite_games_full_dataset',
+    distinctGameCount: likedItems.length,
+    ratedItemCount: likedItems.filter((item) => Number.isFinite(Number(item?.rating))).length
+  };
+}
+
+async function buildReviewedLibrarySummaryDataset({ userId }) {
+  const reviewsResult = await getMyReviewsMemoized({
+    userId,
+    sort: 'latest',
+    limit: null
+  });
+  const reviewedGameIds = (reviewsResult?.reviews ?? []).map((review) => review.gameId);
+  const igdbGameMap = await buildIgdbGameMap(reviewedGameIds);
+  const reviewedItems = (reviewsResult?.reviews ?? []).map((review) => (
+    mapReviewedItem(review, igdbGameMap.get(review.gameId))
+  ));
+  const summary = buildLibrarySummaryFromItems({
+    selectedTab: LIBRARY_SUMMARY_TAB.REVIEWED,
+    items: reviewedItems
+  });
+
+  return {
+    items: reviewedItems,
+    summary,
+    datasetBasis: 'reviews_full_dataset',
+    distinctGameCount: reviewedItems.length,
+    ratedItemCount: reviewedItems.filter((item) => Number.isFinite(Number(item?.rating))).length
+  };
 }
 
 async function buildLibrarySummaryDatasetFromRows({
@@ -3439,32 +3575,50 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
     liked: wishlist,
     reviewed
   });
-  const [playedSummaryDataset, ownedSummaryDataset] = normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING
-    ? await Promise.all([
-      buildPlayedLibrarySummaryDataset({
-        userId,
-        steamConnected,
-        selectedTab: normalizedSelectedTab
-      }),
-      buildOwnedLibrarySummaryDataset({
-        userId,
-        steamConnected,
-        selectedTab: normalizedSelectedTab
-      })
-    ])
-    : [null, null];
-  const effectivePlayingSummaryDataset = normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING
-    ? ((playedSummaryDataset?.distinctGameCount ?? 0) > 0 ? playedSummaryDataset : ownedSummaryDataset)
-    : null;
-  const summary = normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING
-    ? effectivePlayingSummaryDataset.summary
-    : buildLibrarySummaryFromItems({
-      selectedTab: normalizedSelectedTab,
-      items: previewSectionDataset.items
-    });
+  const [playedSummaryDataset, ownedSummaryDataset, likedSummaryDataset, reviewedSummaryDataset] = await Promise.all([
+    buildPlayedLibrarySummaryDataset({
+      userId,
+      steamConnected,
+      selectedTab: LIBRARY_SUMMARY_TAB.PLAYING
+    }),
+    buildOwnedLibrarySummaryDataset({
+      userId,
+      steamConnected,
+      selectedTab: LIBRARY_SUMMARY_TAB.PLAYING
+    }),
+    buildLikedLibrarySummaryDataset({
+      userId
+    }),
+    buildReviewedLibrarySummaryDataset({
+      userId
+    })
+  ]);
+  const effectivePlayingSummaryDataset = (playedSummaryDataset?.distinctGameCount ?? 0) > 0
+    ? playedSummaryDataset
+    : ownedSummaryDataset;
+  const tabSummaries = buildLibraryTabSummariesPayload({
+    playing: effectivePlayingSummaryDataset.summary,
+    liked: likedSummaryDataset.summary,
+    reviewed: reviewedSummaryDataset.summary
+  });
+  const tabSummaryDatasetBases = {
+    playing: effectivePlayingSummaryDataset?.datasetBasis ?? null,
+    liked: likedSummaryDataset?.datasetBasis ?? null,
+    reviewed: reviewedSummaryDataset?.datasetBasis ?? null
+  };
+  const tabSummaryKeys = buildLibraryTabSummaryKeys(tabSummaries, tabSummaryDatasetBases);
+  const summary = tabSummaries[normalizedSelectedTab] ?? buildLibrarySummaryFromItems({
+    selectedTab: normalizedSelectedTab,
+    items: previewSectionDataset.items
+  });
   const summaryDatasetBasis = normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING
     ? effectivePlayingSummaryDataset?.datasetBasis ?? null
-    : 'selected_section_items';
+    : (normalizedSelectedTab === LIBRARY_SUMMARY_TAB.LIKED
+      ? likedSummaryDataset?.datasetBasis ?? 'favorite_games_full_dataset'
+      : reviewedSummaryDataset?.datasetBasis ?? 'reviews_full_dataset');
+  const selectedTabSummaryDataset = normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING
+    ? effectivePlayingSummaryDataset
+    : (normalizedSelectedTab === LIBRARY_SUMMARY_TAB.LIKED ? likedSummaryDataset : reviewedSummaryDataset);
   const summaryTotalPlaytimeMinutes = normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING
     ? (effectivePlayingSummaryDataset?.totalPlaytimeMinutes ?? 0)
     : Math.round((summary?.totalPlaytimeHours ?? 0) * 60);
@@ -3478,9 +3632,7 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
     userId,
     selectedTab: normalizedSelectedTab,
     summaryDatasetBasis,
-    summaryDatasetCount: normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING
-      ? (effectivePlayingSummaryDataset?.distinctGameCount ?? 0)
-      : previewSectionDataset.items.length,
+    summaryDatasetCount: selectedTabSummaryDataset?.distinctGameCount ?? 0,
     summaryTotalPlaytimeMinutes
   });
   if (normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING) {
@@ -3497,11 +3649,9 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
     scope: 'preview',
     selectedTab: normalizedSelectedTab,
     listItems: previewSectionDataset.items,
-    summaryItems: normalizedSelectedTab === LIBRARY_SUMMARY_TAB.PLAYING
-      ? effectivePlayingSummaryDataset.items
-      : previewSectionDataset.items,
+    summaryItems: selectedTabSummaryDataset?.items ?? previewSectionDataset.items,
     summary,
-    sameDatasetPathUsed: normalizedSelectedTab !== LIBRARY_SUMMARY_TAB.PLAYING,
+    sameDatasetPathUsed: false,
     collapseRules: rawBacklog.length === owned.length && owned.length > 0
       ? ['steam_backlog_collapsed_into_owned']
       : []
@@ -3512,6 +3662,12 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
     summary,
     totalPlaytimeMinutes: summaryTotalPlaytimeMinutes,
     summaryDatasetBasis
+  });
+  logLibraryTabSummaries({
+    userId,
+    scope: 'preview',
+    tabSummaries,
+    datasetBases: tabSummaryDatasetBases
   });
   logger.info('library-service-return-preview', {
     userId,
@@ -3586,14 +3742,20 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
     friendRecommendationEmptyReason: friendRecommendationPreview.emptyReason ?? null,
     friendRecommendationMetadata: friendRecommendationPreview.metadata ?? null,
     playtimeRecommendations: playtimeRecommendationPreview.playtimeRecommendations ?? playtimeRecommendationPreview.recommendations ?? [],
+    tabSummaries,
     summary,
     ...buildLibrarySummaryAliases(summary),
     responseMeta: buildLibraryResponseMeta({
       isPartialFailure: degradedSections.size > 0 ||
         Boolean(friendRecommendationPreview.responseMeta?.isPartialFailure) ||
         Boolean(playtimeRecommendationPreview.responseMeta?.isPartialFailure),
-      summaryDatasetBasis
-    })
+      summaryDatasetBasis,
+      summaryKeys: tabSummaryKeys,
+      summaryStateKey: buildLibraryTabSummariesStateKey(tabSummaryKeys)
+    }),
+    summarySnapshots: tabSummaries,
+    summaryKeys: tabSummaryKeys,
+    summaryStateKey: buildLibraryTabSummariesStateKey(tabSummaryKeys)
   };
 }
 

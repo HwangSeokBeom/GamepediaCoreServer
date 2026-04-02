@@ -284,6 +284,152 @@ function buildGameListItemFromDetail(detailGame) {
   };
 }
 
+function normalizeAverageRating(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    return null;
+  }
+
+  return Math.round(numericValue * 10) / 10;
+}
+
+function buildGameDetailMeta({
+  cacheHit = false,
+  liveFetchAttempted = false,
+  liveFetchSkippedReason = null,
+  isPartial = false,
+  igdbDataAvailable = true,
+  fallbackSource = null,
+  degradedSections = [],
+  localReviewSummary = null
+} = {}) {
+  return {
+    cacheHit,
+    liveFetchAttempted,
+    liveFetchSkippedReason,
+    isPartial,
+    igdbDataAvailable,
+    fallbackSource,
+    degradedSections,
+    localReviewSummary
+  };
+}
+
+function buildPartialGameDetailFromListItem(listItem) {
+  const normalizedGameId = normalizeGameId(listItem?.id);
+
+  if (!normalizedGameId) {
+    return null;
+  }
+
+  return {
+    id: Number.parseInt(normalizedGameId, 10),
+    name: listItem?.name ?? null,
+    summary: listItem?.summary ?? null,
+    storyline: null,
+    coverUrl: listItem?.coverUrl ?? null,
+    artworkUrls: [],
+    screenshotUrls: [],
+    genres: Array.isArray(listItem?.genres) ? listItem.genres : [],
+    platforms: Array.isArray(listItem?.platforms) ? listItem.platforms : [],
+    developers: [],
+    publishers: [],
+    rating: typeof listItem?.rating === 'number' ? listItem.rating : null,
+    aggregatedRating: typeof listItem?.aggregatedRating === 'number' ? listItem.aggregatedRating : null,
+    totalRating: typeof listItem?.totalRating === 'number' ? listItem.totalRating : null,
+    releaseDate: listItem?.releaseDate ?? null,
+    status: null,
+    category: null,
+    videoIds: [],
+    similarGames: []
+  };
+}
+
+function seedBatchCacheFromGames(games) {
+  for (const game of games ?? []) {
+    cacheBatchGame(game);
+  }
+}
+
+async function getLocalReviewSummary(gameId) {
+  const normalizedGameId = normalizeGameId(gameId);
+
+  if (!normalizedGameId) {
+    return {
+      reviewCount: 0,
+      averageRating: null
+    };
+  }
+
+  const aggregation = await prisma.review.aggregate({
+    where: {
+      gameId: normalizedGameId
+    },
+    _count: {
+      id: true
+    },
+    _avg: {
+      rating: true
+    }
+  });
+
+  return {
+    reviewCount: aggregation?._count?.id ?? 0,
+    averageRating: normalizeAverageRating(aggregation?._avg?.rating ?? null)
+  };
+}
+
+async function buildPartialDetailFallbackResponse({
+  gameId,
+  liveFetchAttempted = false,
+  liveFetchSkippedReason = null,
+  fallbackReason = null
+}) {
+  const normalizedGameId = normalizeGameId(gameId);
+  const cachedBatchGame = getCachedBatchGame(normalizedGameId);
+
+  if (!cachedBatchGame) {
+    return null;
+  }
+
+  const partialGame = buildPartialGameDetailFromListItem(cachedBatchGame);
+
+  if (!partialGame) {
+    return null;
+  }
+
+  const localReviewSummary = await getLocalReviewSummary(normalizedGameId);
+
+  logger.info('igdb-detail-served-partial-fallback', {
+    gameId: normalizedGameId,
+    fallbackSource: 'batch_cache',
+    liveFetchAttempted,
+    liveFetchSkippedReason,
+    fallbackReason,
+    reviewCount: localReviewSummary.reviewCount,
+    averageRating: localReviewSummary.averageRating
+  });
+
+  return {
+    game: partialGame,
+    meta: buildGameDetailMeta({
+      cacheHit: false,
+      liveFetchAttempted,
+      liveFetchSkippedReason,
+      isPartial: true,
+      igdbDataAvailable: false,
+      fallbackSource: 'batch_cache',
+      degradedSections: ['storyline', 'artworkUrls', 'screenshotUrls', 'developers', 'publishers', 'videoIds', 'similarGames'],
+      localReviewSummary
+    })
+  };
+}
+
 function getCachedGameDetail(gameId) {
   const normalizedGameId = normalizeGameId(gameId);
 
@@ -836,6 +982,7 @@ async function getFilteredHomeCollection({
   const filteredGames = applyHomeFiltersToGames(rawGames, filters);
   const selectedGames = filteredGames.slice(0, requestedLimit);
   const games = mapGameList(selectedGames);
+  seedBatchCacheFromGames(games);
 
   logIgdbCounts(endpoint, rawGames, games);
 
@@ -1136,6 +1283,7 @@ async function searchGames({ query, limit }) {
     wildcardFloor: SEARCH_WILDCARD_QUERY_FETCH_LIMIT
   });
   const mappedGames = mapGameList(rankedGames);
+  seedBatchCacheFromGames(mappedGames);
   const topRankedResultNames = getTopRankedResultNames(rankedGames);
   const rerankTopReasons = buildRerankTopReasons(queryInfo, rankedGames, aliasBoost);
 
@@ -1220,6 +1368,7 @@ async function getGameSuggestions({ query, limit }) {
     wildcardFloor: SUGGESTION_WILDCARD_QUERY_FETCH_LIMIT
   });
   const suggestions = mapGameSuggestions(rankedGames).slice(0, pipelineLimit);
+  seedBatchCacheFromGames(suggestions);
   const topRankedResultNames = getTopRankedResultNames(rankedGames);
   const rerankTopReasons = buildRerankTopReasons(queryInfo, rankedGames, aliasBoost);
 
@@ -1267,20 +1416,12 @@ async function getGameDetail({ gameId }) {
 
     return {
       game: cachedGameDetail,
-      meta: {
+      meta: buildGameDetailMeta({
         cacheHit: true,
         liveFetchAttempted: false,
         liveFetchSkippedReason: 'cache_hit'
-      }
+      })
     };
-  }
-
-  if (isIgdbRateLimitCooldownActive()) {
-    logger.warn('IGDB detail request skipped because no cached detail was available during rate limit cooldown', {
-      gameId: normalizedGameId,
-      cooldownRemainingMs: getRateLimitCooldownRemainingMs()
-    });
-    throw createIgdbRateLimitedError();
   }
 
   const existingPendingRequest = pendingGameDetailRequests.get(normalizedGameId);
@@ -1290,12 +1431,40 @@ async function getGameDetail({ gameId }) {
 
     return {
       game: cloneCacheValue(pendingResult.game),
-      meta: {
+      meta: buildGameDetailMeta({
         cacheHit: false,
         liveFetchAttempted: false,
         liveFetchSkippedReason: 'coalesced_inflight_request'
-      }
+      })
     };
+  }
+
+  if (isIgdbRateLimitCooldownActive()) {
+    logger.warn('igdb-detail-cooldown-prevented-live-fetch', {
+      gameId: normalizedGameId,
+      cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+    });
+
+    const fallbackResponse = await buildPartialDetailFallbackResponse({
+      gameId: normalizedGameId,
+      liveFetchAttempted: false,
+      liveFetchSkippedReason: 'rate_limited',
+      fallbackReason: 'cooldown_active'
+    });
+
+    if (fallbackResponse) {
+      return fallbackResponse;
+    }
+
+    logger.warn('IGDB detail request skipped because no cached detail was available during rate limit cooldown', {
+      gameId: normalizedGameId,
+      cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+    });
+    logger.warn('igdb-detail-hard-failed-no-fallback', {
+      gameId: normalizedGameId,
+      reason: 'cooldown_active_no_cached_sources'
+    });
+    throw createIgdbRateLimitedError();
   }
 
   const pendingRequest = (async () => {
@@ -1324,12 +1493,37 @@ async function getGameDetail({ gameId }) {
 
     return {
       game: cloneCacheValue(result.game),
-      meta: {
+      meta: buildGameDetailMeta({
         cacheHit: false,
         liveFetchAttempted: true,
         liveFetchSkippedReason: null
-      }
+      })
     };
+  } catch (error) {
+    if (error?.code === 'IGDB_RATE_LIMITED') {
+      logger.warn('igdb-detail-cooldown-prevented-live-fetch', {
+        gameId: normalizedGameId,
+        cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+      });
+
+      const fallbackResponse = await buildPartialDetailFallbackResponse({
+        gameId: normalizedGameId,
+        liveFetchAttempted: true,
+        liveFetchSkippedReason: 'rate_limited',
+        fallbackReason: 'live_fetch_rate_limited'
+      });
+
+      if (fallbackResponse) {
+        return fallbackResponse;
+      }
+
+      logger.warn('igdb-detail-hard-failed-no-fallback', {
+        gameId: normalizedGameId,
+        reason: 'live_fetch_rate_limited_no_cached_sources'
+      });
+    }
+
+    throw error;
   } finally {
     pendingGameDetailRequests.delete(normalizedGameId);
   }
