@@ -335,6 +335,24 @@ function normalizeNullableAverageRating(value) {
   return Math.round(numericValue * 10) / 10;
 }
 
+function resolveSummaryItemRating(item) {
+  const candidateValues = [
+    item?.rating,
+    item?.aggregatedRating,
+    item?.totalRating
+  ];
+
+  for (const candidateValue of candidateValues) {
+    const numericValue = Number(candidateValue);
+
+    if (Number.isFinite(numericValue)) {
+      return numericValue;
+    }
+  }
+
+  return null;
+}
+
 function convertMinutesToHours(totalMinutes) {
   if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) {
     return 0;
@@ -399,7 +417,7 @@ function buildLibrarySummaryFromItems({
   const normalizedSelectedTab = normalizeLibrarySummarySelectedTab(selectedTab);
   const gameCount = Array.isArray(items) ? items.length : 0;
   const ratings = (Array.isArray(items) ? items : [])
-    .map((item) => Number(item?.rating))
+    .map((item) => resolveSummaryItemRating(item))
     .filter((rating) => Number.isFinite(rating));
   const averageRating = ratings.length > 0
     ? ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length
@@ -522,7 +540,8 @@ function buildSteamSyncState({
   steamAccount,
   steamSyncStatus,
   recentlyPlayedSource = 'none',
-  friendRecommendationPreviewDeferred = false
+  friendRecommendationPreviewDeferred = false,
+  libraryState = null
 }) {
   const baseState = buildSteamConnectionState(steamAccount);
 
@@ -533,13 +552,18 @@ function buildSteamSyncState({
     ),
     lastSyncAt: baseState.lastSteamSyncAt,
     recentlyPlayedSource,
-    friendRecommendationPreviewDeferred: Boolean(friendRecommendationPreviewDeferred)
+    friendRecommendationPreviewDeferred: Boolean(friendRecommendationPreviewDeferred),
+    libraryReady: libraryState?.libraryReady === true,
+    ownedLibrarySyncPending: libraryState?.ownedLibrarySyncPending === true,
+    ownedLibrarySyncInProgress: libraryState?.ownedLibrarySyncInProgress === true,
+    summaryAuthoritative: libraryState?.summaryAuthoritative === true
   };
 }
 
 function buildStandardSteamSyncPayload({
   steamAccount,
-  steamSyncStatus
+  steamSyncStatus,
+  libraryState = null
 }) {
   return {
     connected: Boolean(steamAccount),
@@ -548,7 +572,11 @@ function buildStandardSteamSyncPayload({
       : null,
     syncStatus: steamSyncStatus === STEAM_SYNC_STATUS.SUCCESS ? 'success' : (
       steamSyncStatus === STEAM_SYNC_STATUS.SYNCING ? 'pending' : 'error'
-    )
+    ),
+    libraryReady: libraryState?.libraryReady === true,
+    ownedLibrarySyncPending: libraryState?.ownedLibrarySyncPending === true,
+    ownedLibrarySyncInProgress: libraryState?.ownedLibrarySyncInProgress === true,
+    summaryAuthoritative: libraryState?.summaryAuthoritative === true
   };
 }
 
@@ -556,7 +584,8 @@ function buildLibraryResponseMeta({
   isPartialFailure = false,
   summaryDatasetBasis = null,
   summaryKeys = null,
-  summaryStateKey = null
+  summaryStateKey = null,
+  libraryState = null
 } = {}) {
   return {
     generatedAt: new Date().toISOString(),
@@ -569,8 +598,82 @@ function buildLibraryResponseMeta({
       : null,
     summaryStateKey: typeof summaryStateKey === 'string' && summaryStateKey.trim()
       ? summaryStateKey.trim()
+      : null,
+    libraryState: libraryState && typeof libraryState === 'object'
+      ? libraryState
       : null
   };
+}
+
+function buildLibraryTransitionState({
+  steamConnected = false,
+  steamSyncStatus = STEAM_SYNC_STATUS.NOT_CONNECTED,
+  lastSteamSyncAt = null,
+  playingCount = 0,
+  ownedCount = 0,
+  recentlyPlayedCount = 0
+}) {
+  const normalizedLastSteamSyncAt = lastSteamSyncAt
+    ? new Date(lastSteamSyncAt).toISOString()
+    : null;
+  const hasOwnedLibraryData = ownedCount > 0 || playingCount > 0;
+  const ownedLibrarySyncInProgress = Boolean(steamConnected) && steamSyncStatus === STEAM_SYNC_STATUS.SYNCING;
+  const ownedLibrarySyncPending = Boolean(steamConnected) &&
+    !ownedLibrarySyncInProgress &&
+    !normalizedLastSteamSyncAt &&
+    !hasOwnedLibraryData;
+  const libraryReady = Boolean(steamConnected) &&
+    !ownedLibrarySyncPending &&
+    !ownedLibrarySyncInProgress &&
+    (Boolean(normalizedLastSteamSyncAt) || hasOwnedLibraryData);
+  const transitional = ownedLibrarySyncPending || ownedLibrarySyncInProgress;
+  const state = !steamConnected
+    ? 'not_connected'
+    : (ownedLibrarySyncPending
+      ? 'linked_pending_owned_sync'
+      : (ownedLibrarySyncInProgress
+        ? 'owned_sync_in_progress'
+        : (libraryReady
+          ? 'library_ready'
+          : (steamSyncStatus === STEAM_SYNC_STATUS.FAILED ? 'sync_error' : 'linked_idle'))));
+
+  return {
+    steamLinked: Boolean(steamConnected),
+    state,
+    transitional,
+    summaryAuthoritative: !transitional && libraryReady,
+    ownedLibrarySyncPending,
+    ownedLibrarySyncInProgress,
+    ownedLibrarySyncCompleted: libraryReady,
+    libraryReady,
+    steamSyncStatus,
+    lastOwnedLibrarySyncAt: normalizedLastSteamSyncAt
+  };
+}
+
+function logLibrarySyncTransitionState({
+  userId,
+  libraryState,
+  steamSyncStatus,
+  playingCount = 0,
+  ownedCount = 0,
+  recentlyPlayedCount = 0
+}) {
+  logger.info('library-sync-transition-state', {
+    userId,
+    state: libraryState?.state ?? null,
+    steamLinked: libraryState?.steamLinked === true,
+    transitional: libraryState?.transitional === true,
+    summaryAuthoritative: libraryState?.summaryAuthoritative === true,
+    ownedLibrarySyncPending: libraryState?.ownedLibrarySyncPending === true,
+    ownedLibrarySyncInProgress: libraryState?.ownedLibrarySyncInProgress === true,
+    libraryReady: libraryState?.libraryReady === true,
+    steamSyncStatus,
+    lastOwnedLibrarySyncAt: libraryState?.lastOwnedLibrarySyncAt ?? null,
+    playingCount,
+    ownedCount,
+    recentlyPlayedCount
+  });
 }
 
 function buildLibrarySummaryStableKey(summary, datasetBasis) {
@@ -1099,7 +1202,7 @@ async function buildLikedLibrarySummaryDataset({ userId }) {
     summary,
     datasetBasis: 'favorite_games_full_dataset',
     distinctGameCount: likedItems.length,
-    ratedItemCount: likedItems.filter((item) => Number.isFinite(Number(item?.rating))).length
+    ratedItemCount: likedItems.filter((item) => Number.isFinite(resolveSummaryItemRating(item))).length
   };
 }
 
@@ -1124,7 +1227,7 @@ async function buildReviewedLibrarySummaryDataset({ userId }) {
     summary,
     datasetBasis: 'reviews_full_dataset',
     distinctGameCount: reviewedItems.length,
-    ratedItemCount: reviewedItems.filter((item) => Number.isFinite(Number(item?.rating))).length
+    ratedItemCount: reviewedItems.filter((item) => Number.isFinite(resolveSummaryItemRating(item))).length
   };
 }
 
@@ -1176,7 +1279,7 @@ async function buildLibrarySummaryDatasetFromRows({
   });
   const totalPlaytimeMinutes = summaryItems.reduce((sum, row) => sum + (row.playtimeMinutes ?? 0), 0);
   const ownedWithPlaytimeCount = summaryItems.filter((row) => String(row.gameSource).toLowerCase() === GameSource.STEAM).length;
-  const ratedItemCount = summaryItems.filter((row) => Number.isFinite(Number(row.rating))).length;
+  const ratedItemCount = summaryItems.filter((row) => Number.isFinite(resolveSummaryItemRating(row))).length;
   const mismatchReason = summaryItems.length === ownedWithPlaytimeCount
     ? null
     : 'includes_non_steam_played_entries';
@@ -3641,7 +3744,10 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
       selectedTab: normalizedSelectedTab,
       summaryDatasetBasis,
       ratedItemCount: effectivePlayingSummaryDataset?.ratedItemCount ?? 0,
-      averageRating: summary?.averageRating ?? null
+      averageRating: summary?.averageRating ?? null,
+      averageRatingSource: (effectivePlayingSummaryDataset?.ratedItemCount ?? 0) > 0
+        ? 'summary_item_rating_fallback'
+        : 'unrated_dataset'
     });
   }
   logLibrarySummaryListConsistency({
@@ -3669,16 +3775,37 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
     tabSummaries,
     datasetBases: tabSummaryDatasetBases
   });
+  const libraryState = buildLibraryTransitionState({
+    steamConnected,
+    steamSyncStatus,
+    lastSteamSyncAt,
+    playingCount: playing.length,
+    ownedCount: owned.length,
+    recentlyPlayedCount: recentlyPlayedResult.games.length
+  });
+  logLibrarySyncTransitionState({
+    userId,
+    libraryState,
+    steamSyncStatus,
+    playingCount: playing.length,
+    ownedCount: owned.length,
+    recentlyPlayedCount: recentlyPlayedResult.games.length
+  });
   logger.info('library-service-return-preview', {
     userId,
     selectedTab: normalizedSelectedTab,
     gameCount: summary?.gameCount ?? 0,
+    averageRating: summary?.averageRating ?? null,
     totalPlaytimeHours: summary?.totalPlaytimeHours ?? 0,
     summaryDatasetBasis,
+    libraryReady: libraryState.libraryReady,
+    ownedLibrarySyncPending: libraryState.ownedLibrarySyncPending,
+    ownedLibrarySyncInProgress: libraryState.ownedLibrarySyncInProgress,
     responseSummaryPreview: JSON.stringify({
       selectedTab: summary?.selectedTab ?? null,
       source: summary?.source ?? null,
       gameCount: summary?.gameCount ?? 0,
+      averageRating: summary?.averageRating ?? null,
       totalPlaytimeHours: summary?.totalPlaytimeHours ?? 0,
       totalPlaytimeMinutes: summary?.totalPlaytimeMinutes ?? 0
     })
@@ -3708,14 +3835,17 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
       recentlyPlayedSource: recentlyPlayedResult.source === 'cached_snapshot'
         ? 'snapshot'
         : (recentlyPlayedResult.source === 'live_fetch' ? 'live' : 'none'),
-      friendRecommendationPreviewDeferred: friendRecommendationPreview.friendRecommendationState?.status === 'deferred'
+      friendRecommendationPreviewDeferred: friendRecommendationPreview.friendRecommendationState?.status === 'deferred',
+      libraryState
     }),
     steamSync: buildStandardSteamSyncPayload({
       steamAccount,
-      steamSyncStatus
+      steamSyncStatus,
+      libraryState
     }),
     steamSyncStatus,
     lastSteamSyncAt,
+    libraryState,
     steamSyncAvailable: recentlyPlayedResult.steamSyncAvailable,
     steamSyncErrorCode,
     steamLinkStatus,
@@ -3751,7 +3881,8 @@ async function getMyLibrary({ userId, selectedTab = LIBRARY_SUMMARY_TAB.PLAYING 
         Boolean(playtimeRecommendationPreview.responseMeta?.isPartialFailure),
       summaryDatasetBasis,
       summaryKeys: tabSummaryKeys,
-      summaryStateKey: buildLibraryTabSummariesStateKey(tabSummaryKeys)
+      summaryStateKey: buildLibraryTabSummariesStateKey(tabSummaryKeys),
+      libraryState
     }),
     summarySnapshots: tabSummaries,
     summaryKeys: tabSummaryKeys,
