@@ -24,6 +24,19 @@ async function assertReportTargetExists({ targetType, targetId }) {
     if (!user) {
       throw new AppError(404, 'REPORT_TARGET_NOT_FOUND', 'User report target could not be found');
     }
+
+    return;
+  }
+
+  if (targetType === 'comment') {
+    const comment = await prisma.reviewComment.findUnique({
+      where: { id: targetId },
+      select: { id: true }
+    });
+
+    if (!comment) {
+      throw new AppError(404, 'REPORT_TARGET_NOT_FOUND', 'Comment report target could not be found');
+    }
   }
 }
 

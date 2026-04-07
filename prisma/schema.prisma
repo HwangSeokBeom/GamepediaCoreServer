@@ -32,6 +32,11 @@ enum GameLibraryStatus {
   DROPPED
 }
 
+enum ReviewCommentReactionType {
+  LIKE
+  DISLIKE
+}
+
 enum SteamIgdbMatchStatus {
   CONFIRMED
   CANDIDATE
@@ -83,6 +88,10 @@ model User {
   refreshTokens       RefreshToken[]
   reportsSubmitted    Report[]          @relation("UserReports")
   reviews             Review[]
+  reviewLikes         ReviewLike[]
+  reviewComments      ReviewComment[]
+  reviewCommentReactions ReviewCommentReaction[]
+  reviewCommentReports ReviewCommentReport[] @relation("ReviewCommentReporter")
   socialAccounts      SocialAccount[]
   titles              UserTitle[]
 
@@ -126,14 +135,89 @@ model Review {
   gameId    String   @map("game_id") @db.VarChar(100)
   rating    Decimal  @db.Decimal(2, 1)
   content   String   @db.Text
+  containsSpoiler Boolean @default(false) @map("contains_spoiler")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  likes     ReviewLike[]
+  comments  ReviewComment[]
 
-  @@unique([userId, gameId])
   @@index([gameId, createdAt])
   @@index([userId, createdAt])
+  @@index([userId, gameId, createdAt])
   @@map("reviews")
+}
+
+model ReviewLike {
+  id        String   @id @default(uuid()) @db.Uuid
+  reviewId  String   @map("review_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  review    Review   @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, userId])
+  @@index([reviewId, createdAt])
+  @@index([userId, createdAt])
+  @@map("review_likes")
+}
+
+model ReviewComment {
+  id               String        @id @default(uuid()) @db.Uuid
+  reviewId         String        @map("review_id") @db.Uuid
+  userId           String        @map("user_id") @db.Uuid
+  parentCommentId  String?       @map("parent_comment_id") @db.Uuid
+  replyToCommentId String?       @map("reply_to_comment_id") @db.Uuid
+  content          String        @db.Text
+  depth            Int           @default(0)
+  isDeleted        Boolean       @default(false) @map("is_deleted")
+  deletedAt        DateTime?     @map("deleted_at")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+  review           Review        @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentComment    ReviewComment? @relation("ReviewCommentParent", fields: [parentCommentId], references: [id], onDelete: Cascade)
+  replies          ReviewComment[] @relation("ReviewCommentParent")
+  replyToComment   ReviewComment? @relation("ReviewCommentReplyTarget", fields: [replyToCommentId], references: [id], onDelete: SetNull)
+  replyTargets     ReviewComment[] @relation("ReviewCommentReplyTarget")
+  reactions        ReviewCommentReaction[]
+  reports          ReviewCommentReport[]
+
+  @@index([reviewId, parentCommentId, createdAt, id])
+  @@index([parentCommentId, createdAt, id])
+  @@index([userId, createdAt, id])
+  @@map("review_comments")
+}
+
+model ReviewCommentReaction {
+  id           String                    @id @default(uuid()) @db.Uuid
+  commentId    String                    @map("comment_id") @db.Uuid
+  userId       String                    @map("user_id") @db.Uuid
+  reactionType ReviewCommentReactionType @map("reaction_type")
+  createdAt    DateTime                  @default(now()) @map("created_at")
+  updatedAt    DateTime                  @updatedAt @map("updated_at")
+  comment      ReviewComment             @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@index([commentId, reactionType, createdAt])
+  @@index([userId, createdAt])
+  @@map("review_comment_reactions")
+}
+
+model ReviewCommentReport {
+  id             String        @id @default(uuid()) @db.Uuid
+  commentId      String        @map("comment_id") @db.Uuid
+  reporterUserId String        @map("reporter_user_id") @db.Uuid
+  reason         String        @db.VarChar(50)
+  createdAt      DateTime      @default(now()) @map("created_at")
+  comment        ReviewComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  reporterUser   User          @relation("ReviewCommentReporter", fields: [reporterUserId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, reporterUserId])
+  @@index([reporterUserId, createdAt])
+  @@index([commentId, createdAt])
+  @@map("review_comment_reports")
 }
 
 model FavoriteGame {
