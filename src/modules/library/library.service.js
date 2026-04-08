@@ -4307,8 +4307,8 @@ async function getMyLikedLibrary({ userId, page = 1, limit = LIBRARY_FULL_DEFAUL
 async function getMyReviewedLibrary({ userId, page = 1, limit = LIBRARY_FULL_DEFAULT_LIMIT, sort = 'latest' }) {
   const pagination = resolvePaginationParams({ page, limit });
   const orderBy = sort === 'oldest'
-    ? [{ createdAt: 'asc' }]
-    : [{ createdAt: 'desc' }];
+    ? [{ createdAt: 'asc' }, { id: 'asc' }]
+    : [{ createdAt: 'desc' }, { id: 'desc' }];
   const [reviews, totalCount] = await Promise.all([
     prisma.review.findMany({
       where: {
