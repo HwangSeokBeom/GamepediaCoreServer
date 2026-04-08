@@ -2,6 +2,8 @@ const reviewService = require('./review.service');
 const { successResponse } = require('../../utils/api-response');
 const { asyncHandler } = require('../../utils/async-handler');
 
+const GAME_REVIEW_PREVIEW_LIMIT = 5;
+
 const createReview = asyncHandler(async (req, res) => {
   const result = await reviewService.createReview({
     userId: req.auth.userId,
@@ -37,7 +39,19 @@ const getGameReviews = asyncHandler(async (req, res) => {
   const result = await reviewService.getGameReviews({
     currentUserId: req.auth.userId,
     gameId: req.params.gameId,
-    sort: req.query.sort
+    sort: req.query.sort,
+    limit: req.query.limit
+  });
+
+  res.status(200).json(successResponse(result));
+});
+
+const getGameReviewPreview = asyncHandler(async (req, res) => {
+  const result = await reviewService.getGameReviews({
+    currentUserId: req.auth.userId,
+    gameId: req.params.gameId,
+    sort: req.query.sort,
+    limit: GAME_REVIEW_PREVIEW_LIMIT
   });
 
   res.status(200).json(successResponse(result));
@@ -60,7 +74,19 @@ const getMyGameReviews = asyncHandler(async (req, res) => {
   const result = await reviewService.getMyGameReviews({
     currentUserId: req.auth.userId,
     gameId: req.params.gameId,
-    sort: req.query.sort
+    sort: req.query.sort,
+    limit: req.query.limit
+  });
+
+  res.status(200).json(successResponse(result));
+});
+
+const getMyGameReviewPreview = asyncHandler(async (req, res) => {
+  const result = await reviewService.getMyGameReviews({
+    currentUserId: req.auth.userId,
+    gameId: req.params.gameId,
+    sort: req.query.sort,
+    limit: GAME_REVIEW_PREVIEW_LIMIT
   });
 
   res.status(200).json(successResponse(result));
@@ -152,7 +178,8 @@ const deleteReviewComment = asyncHandler(async (req, res) => {
 const getMyReviews = asyncHandler(async (req, res) => {
   const result = await reviewService.getMyReviews({
     currentUserId: req.auth.userId,
-    sort: req.query.sort
+    sort: req.query.sort,
+    limit: req.query.limit
   });
 
   res.status(200).json(successResponse(result));
@@ -225,8 +252,10 @@ module.exports = {
   createReviewCommentReply,
   deleteReview,
   deleteReviewComment,
+  getGameReviewPreview,
   getGameReviews,
   getReviewDetail,
+  getMyGameReviewPreview,
   getMyGameReviews,
   getMyReviewComments,
   getMyReviews,

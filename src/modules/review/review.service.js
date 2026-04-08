@@ -49,6 +49,10 @@ const reviewCommentInclude = {
 const REVIEW_COMMENTS_DEFAULT_LIMIT = 20;
 const REVIEW_COMMENTS_MAX_LIMIT = 50;
 const REVIEW_COMMENT_REPLIES_PREVIEW_LIMIT = 3;
+const REVIEW_COMMENT_REPLY_SORT = 'oldest';
+const REVIEW_COMMENT_REPLY_TIE_BREAKER = 'id_asc';
+const REVIEW_COMMENT_REPLY_PREVIEW_ANCHOR = 'latest';
+const REVIEW_COMMENT_REPLY_CURSOR_DIRECTION = 'older';
 const REVIEW_COMMENT_REACTION_THROTTLE_MS = 10 * 60 * 1000;
 const COMMENT_NOTIFICATION_TYPE = {
   COMMENT_REPLY: 'COMMENT_REPLY',
@@ -142,7 +146,12 @@ function isMissingTableError(error, expectedName) {
 }
 
 function getReplyOrderBy() {
+  // Returned reply arrays stay chronological even when the selected slice is anchored to the latest replies.
   return [{ createdAt: 'asc' }, { id: 'asc' }];
+}
+
+function getReplyPageOrderBy() {
+  return [{ createdAt: 'desc' }, { id: 'desc' }];
 }
 
 function mapReactionTypeToEnum(reactionType) {
@@ -380,49 +389,28 @@ async function buildReviewCommentCountContext(reviewIds, hiddenUserIds = []) {
     };
   }
 
-  let allCounts = [];
-  let activeCounts = [];
+  let visibleCounts = [];
 
   try {
-    [allCounts, activeCounts] = await Promise.all([
-      prisma.reviewComment.groupBy({
-        by: ['reviewId'],
-        where: {
-          reviewId: {
-            in: normalizedReviewIds
-          },
-          ...(normalizedHiddenUserIds.length > 0
-            ? {
-              userId: {
-                notIn: normalizedHiddenUserIds
-              }
-            }
-            : {})
+    visibleCounts = await prisma.reviewComment.groupBy({
+      by: ['reviewId'],
+      where: {
+        reviewId: {
+          in: normalizedReviewIds
         },
-        _count: {
-          _all: true
-        }
-      }),
-      prisma.reviewComment.groupBy({
-        by: ['reviewId'],
-        where: {
-          reviewId: {
-            in: normalizedReviewIds
-          },
-          ...(normalizedHiddenUserIds.length > 0
-            ? {
-              userId: {
-                notIn: normalizedHiddenUserIds
-              }
+        ...(normalizedHiddenUserIds.length > 0
+          ? {
+            userId: {
+              notIn: normalizedHiddenUserIds
             }
-            : {}),
-          isDeleted: false
-        },
-        _count: {
-          _all: true
-        }
-      })
-    ]);
+          }
+          : {}),
+        isDeleted: false
+      },
+      _count: {
+        _all: true
+      }
+    });
   } catch (error) {
     if (!isMissingTableError(error, 'review_comments') && !isMissingTableError(error, 'ReviewComment')) {
       throw error;
@@ -435,9 +423,11 @@ async function buildReviewCommentCountContext(reviewIds, hiddenUserIds = []) {
     });
   }
 
+  const visibleCommentCountMap = new Map(visibleCounts.map((item) => [item.reviewId, item._count._all]));
+
   return {
-    commentCountMap: new Map(allCounts.map((item) => [item.reviewId, item._count._all])),
-    activeCommentCountMap: new Map(activeCounts.map((item) => [item.reviewId, item._count._all]))
+    commentCountMap: visibleCommentCountMap,
+    activeCommentCountMap: visibleCommentCountMap
   };
 }
 
@@ -647,6 +637,7 @@ async function buildReplyCountsMap(parentCommentIds, hiddenUserIds = []) {
       parentCommentId: {
         in: normalizedParentCommentIds
       },
+      isDeleted: false,
       ...(hiddenUserIds.length > 0
         ? {
           userId: {
@@ -686,6 +677,7 @@ async function buildReplyPreviewMap({
       parentCommentId: {
         in: normalizedParentCommentIds
       },
+      isDeleted: false,
       ...(hiddenUserIds.length > 0
         ? {
           userId: {
@@ -707,24 +699,33 @@ async function buildReplyPreviewMap({
   );
   const bucketMap = new Map();
   const nextCursorMap = new Map();
+  const hiddenOlderRepliesMap = new Map();
 
   for (const reply of replies) {
-    const bucket = bucketMap.get(reply.parentCommentId) ?? [];
+    const parentId = reply.parentCommentId;
+    const bucket = bucketMap.get(parentId) ?? [];
 
-    if (bucket.length < limit) {
-      bucket.push(mapReviewCommentToDto({
-        comment: reply,
-        currentUserId,
-        reviewAuthorId,
-        reactionSummary: reactionContext.reactionSummaryMap.get(reply.id) ?? {},
-        myReaction: reactionContext.myReactionMap.get(reply.id) ?? null,
-        replyCount: 0,
-        replies: [],
-        repliesNextCursor: null
-      }));
-      bucketMap.set(reply.parentCommentId, bucket);
-    } else if (!nextCursorMap.has(reply.parentCommentId)) {
-      nextCursorMap.set(reply.parentCommentId, bucket[bucket.length - 1]?.id ?? null);
+    if (bucket.length === limit) {
+      bucket.shift();
+      hiddenOlderRepliesMap.set(parentId, true);
+    }
+
+    bucket.push(mapReviewCommentToDto({
+      comment: reply,
+      currentUserId,
+      reviewAuthorId,
+      reactionSummary: reactionContext.reactionSummaryMap.get(reply.id) ?? {},
+      myReaction: reactionContext.myReactionMap.get(reply.id) ?? null,
+      replyCount: 0,
+      replies: [],
+      repliesNextCursor: null
+    }));
+    bucketMap.set(parentId, bucket);
+  }
+
+  for (const [parentId, bucket] of bucketMap.entries()) {
+    if (hiddenOlderRepliesMap.get(parentId)) {
+      nextCursorMap.set(parentId, bucket[0]?.id ?? null);
     }
   }
 
@@ -754,6 +755,7 @@ async function buildCommentDto(comment, {
       : await prisma.reviewComment.count({
         where: {
           parentCommentId: comment.id,
+          isDeleted: false,
           ...(resolvedHiddenUserIds.length > 0
             ? {
               userId: {
@@ -797,6 +799,47 @@ async function buildReviewDto(review, currentUserId, {
     activeCommentCount: resolvedMetrics.activeCommentCount ?? resolvedMetrics.commentCount ?? 0,
     gameSummary: resolvedGameSummary
   });
+}
+
+async function buildReviewDiscussionSummary(reviewId, currentUserId, {
+  hiddenUserIds = null
+} = {}) {
+  const resolvedHiddenUserIds = Array.isArray(hiddenUserIds)
+    ? uniqueStringValues(hiddenUserIds)
+    : await moderationService.getHiddenUserIds(currentUserId);
+  const reviewCommentCountContext = await buildReviewCommentCountContext([reviewId], resolvedHiddenUserIds);
+  const commentCount = reviewCommentCountContext.commentCountMap.get(reviewId) ?? 0;
+
+  return {
+    reviewId,
+    commentCount,
+    discussionCount: commentCount,
+    activeCommentCount: commentCount,
+    hasComments: commentCount > 0
+  };
+}
+
+async function buildParentCommentSummary(parentCommentId, currentUserId, {
+  hiddenUserIds = null
+} = {}) {
+  const normalizedParentCommentId = typeof parentCommentId === 'string' ? parentCommentId.trim() : '';
+
+  if (!normalizedParentCommentId) {
+    return null;
+  }
+
+  const resolvedHiddenUserIds = Array.isArray(hiddenUserIds)
+    ? uniqueStringValues(hiddenUserIds)
+    : await moderationService.getHiddenUserIds(currentUserId);
+  const replyCountsMap = await buildReplyCountsMap([normalizedParentCommentId], resolvedHiddenUserIds);
+  const replyCount = replyCountsMap.get(normalizedParentCommentId) ?? 0;
+
+  return {
+    parentCommentId: normalizedParentCommentId,
+    threadParentCommentId: normalizedParentCommentId,
+    replyCount,
+    hasReplies: replyCount > 0
+  };
 }
 
 async function createCommentNotification({
@@ -934,7 +977,7 @@ async function createReview({ userId, gameId, rating, content, containsSpoiler =
   };
 }
 
-async function getGameReviews({ currentUserId, gameId, sort }) {
+async function getGameReviews({ currentUserId, gameId, sort, limit = null }) {
   const hiddenUserIds = await moderationService.getHiddenUserIds(currentUserId);
   const reviewWhere = {
     gameId,
@@ -946,11 +989,15 @@ async function getGameReviews({ currentUserId, gameId, sort }) {
   };
 
   const normalizedSort = normalizeReviewSort(sort);
+  const resolvedLimit = limit == null
+    ? null
+    : normalizePositiveInteger(limit, REVIEW_COMMENTS_MAX_LIMIT, REVIEW_COMMENTS_MAX_LIMIT);
   const [reviews, aggregation] = await prisma.$transaction([
     prisma.review.findMany({
       // Moderation hook: hide reviews authored by users hidden through blocking.
       where: reviewWhere,
       orderBy: getReviewOrderBy(normalizedSort),
+      ...(resolvedLimit ? { take: resolvedLimit } : {}),
       include: {
         user: {
           select: reviewAuthorSelect
@@ -975,6 +1022,8 @@ async function getGameReviews({ currentUserId, gameId, sort }) {
     reviews: mapReviewListToDto(reviews, currentUserId, reviewDtoContext),
     meta: {
       sort: normalizedSort,
+      limit: resolvedLimit,
+      returnedCount: reviews.length,
       reviewCount: aggregation._count.id,
       averageRating: mapAverageRating(aggregation._avg.rating)
     }
@@ -1027,27 +1076,41 @@ async function getMyReviews({ currentUserId, sort, limit }) {
   };
 }
 
-async function getMyGameReviews({ currentUserId, gameId, sort = 'latest' }) {
+async function getMyGameReviews({ currentUserId, gameId, sort = 'latest', limit = null }) {
   const normalizedSort = normalizeReviewSort(sort);
-  const reviews = await prisma.review.findMany({
-    where: {
-      userId: currentUserId,
-      gameId
-    },
-    orderBy: getReviewOrderBy(normalizedSort),
-    include: {
-      user: {
-        select: reviewAuthorSelect
+  const resolvedLimit = limit == null
+    ? null
+    : normalizePositiveInteger(limit, REVIEW_COMMENTS_MAX_LIMIT, REVIEW_COMMENTS_MAX_LIMIT);
+  const [reviews, totalCount] = await prisma.$transaction([
+    prisma.review.findMany({
+      where: {
+        userId: currentUserId,
+        gameId
+      },
+      orderBy: getReviewOrderBy(normalizedSort),
+      ...(resolvedLimit ? { take: resolvedLimit } : {}),
+      include: {
+        user: {
+          select: reviewAuthorSelect
+        }
       }
-    }
-  });
+    }),
+    prisma.review.count({
+      where: {
+        userId: currentUserId,
+        gameId
+      }
+    })
+  ]);
   const reviewDtoContext = await buildReviewDtoContext(reviews, currentUserId);
 
   return {
     reviews: mapReviewListToDto(reviews, currentUserId, reviewDtoContext),
     meta: {
       sort: normalizedSort,
-      reviewCount: reviews.length
+      limit: resolvedLimit,
+      returnedCount: reviews.length,
+      reviewCount: totalCount
     }
   };
 }
@@ -1228,7 +1291,8 @@ async function getReviewComments({
   const queryArgs = {
     where: {
       parentCommentId: null,
-      ...baseCommentWhere
+      ...baseCommentWhere,
+      isDeleted: false
     },
     include: reviewCommentInclude,
     orderBy: getReviewCommentOrderBy(normalizedSort),
@@ -1245,23 +1309,13 @@ async function getReviewComments({
   const [
     reviewDtoContext,
     topLevelComments,
-    totalTopLevelCount,
-    totalCommentCount,
-    activeTopLevelCommentCount,
-    activeCommentCount
+    visibleTopLevelCommentCount,
+    visibleCommentCount
   ] = await Promise.all([
     buildReviewDtoContext([review], currentUserId, {
       hiddenUserIds
     }),
     prisma.reviewComment.findMany(queryArgs),
-    prisma.reviewComment.count({
-      where: queryArgs.where
-    }),
-    prisma.reviewComment.count({
-      where: {
-        ...baseCommentWhere
-      }
-    }),
     prisma.reviewComment.count({
       where: {
         ...queryArgs.where,
@@ -1305,23 +1359,31 @@ async function getReviewComments({
       metrics: reviewDtoContext.reviewMetricsMap.get(review.id) ?? {
         likeCount: 0,
         viewerHasLiked: false,
-        commentCount: totalCommentCount,
-        activeCommentCount
+        commentCount: visibleCommentCount,
+        activeCommentCount: visibleCommentCount
       },
       gameSummary: reviewDtoContext.gameSummaryMap.get(review.gameId) ?? null
     }),
     comments,
     meta: {
       limit: resolvedLimit,
+      returnedCount: comments.length,
       repliesPreviewLimit: resolvedRepliesLimit,
       sort: normalizedSort,
+      replySort: REVIEW_COMMENT_REPLY_SORT,
+      replyTieBreaker: REVIEW_COMMENT_REPLY_TIE_BREAKER,
+      replyPageAnchor: REVIEW_COMMENT_REPLY_PREVIEW_ANCHOR,
+      replyPreviewAnchor: REVIEW_COMMENT_REPLY_PREVIEW_ANCHOR,
+      replyCursorDirection: REVIEW_COMMENT_REPLY_CURSOR_DIRECTION,
       nextCursor: hasMore ? pagedComments[pagedComments.length - 1]?.id ?? null : null,
-      totalTopLevelCount,
-      topLevelCommentCount: totalTopLevelCount,
-      activeTopLevelCommentCount,
-      totalCommentCount,
-      commentCount: totalCommentCount,
-      activeCommentCount
+      totalTopLevelCount: visibleTopLevelCommentCount,
+      topLevelCommentCount: visibleTopLevelCommentCount,
+      activeTopLevelCommentCount: visibleTopLevelCommentCount,
+      totalCommentCount: visibleCommentCount,
+      commentCount: visibleCommentCount,
+      discussionCount: visibleCommentCount,
+      activeCommentCount: visibleCommentCount,
+      hasComments: visibleCommentCount > 0
     }
   };
 }
@@ -1343,6 +1405,10 @@ async function getReviewCommentReplies({
     throw new AppError(400, 'COMMENT_REVIEW_MISMATCH', 'Comment does not belong to this review');
   }
 
+  if (parentComment.isDeleted) {
+    throw new AppError(409, 'COMMENT_DELETED', 'Deleted comments cannot load replies');
+  }
+
   await assertCommentVisibilityAllowed(currentUserId, parentComment.userId);
 
   const threadParentId = parentComment.parentCommentId ?? parentComment.id;
@@ -1350,6 +1416,7 @@ async function getReviewCommentReplies({
   const queryArgs = {
     where: {
       parentCommentId: threadParentId,
+      isDeleted: false,
       ...(hiddenUserIds.length > 0
         ? {
           userId: {
@@ -1359,7 +1426,7 @@ async function getReviewCommentReplies({
         : {})
     },
     include: reviewCommentInclude,
-    orderBy: getReplyOrderBy(),
+    orderBy: getReplyPageOrderBy(),
     take: resolvedLimit + 1
   };
 
@@ -1371,11 +1438,15 @@ async function getReviewCommentReplies({
   const [repliesResult, totalCount] = await Promise.all([
     prisma.reviewComment.findMany(queryArgs),
     prisma.reviewComment.count({
-      where: queryArgs.where
+      where: {
+        ...queryArgs.where,
+        isDeleted: false
+      }
     })
   ]);
   const hasMore = repliesResult.length > resolvedLimit;
-  const replies = hasMore ? repliesResult.slice(0, resolvedLimit) : repliesResult;
+  const pageReplies = hasMore ? repliesResult.slice(0, resolvedLimit) : repliesResult;
+  const replies = [...pageReplies].reverse();
   const reactionContext = await buildReviewCommentReactionContext(
     replies.map((reply) => reply.id),
     currentUserId
@@ -1401,7 +1472,15 @@ async function getReviewCommentReplies({
     })),
     meta: {
       limit: resolvedLimit,
-      nextCursor: hasMore ? replies[replies.length - 1]?.id ?? null : null,
+      sort: REVIEW_COMMENT_REPLY_SORT,
+      tieBreaker: REVIEW_COMMENT_REPLY_TIE_BREAKER,
+      replySort: REVIEW_COMMENT_REPLY_SORT,
+      replyTieBreaker: REVIEW_COMMENT_REPLY_TIE_BREAKER,
+      replyPageAnchor: REVIEW_COMMENT_REPLY_PREVIEW_ANCHOR,
+      replyCursorDirection: REVIEW_COMMENT_REPLY_CURSOR_DIRECTION,
+      nextCursor: hasMore ? replies[0]?.id ?? null : null,
+      hasMoreReplies: hasMore,
+      returnedCount: replies.length,
       totalCount
     }
   };
@@ -1440,7 +1519,7 @@ async function createReviewComment({
       threadParentCommentId = parentComment.parentCommentId ?? parentComment.id;
       replyTargetComment = parentComment;
 
-      if (!replyToCommentId && parentComment.isDeleted) {
+      if (parentComment.isDeleted) {
         throw new AppError(409, 'COMMENT_PARENT_DELETED', 'You cannot reply to a deleted comment');
       }
 
@@ -1501,13 +1580,21 @@ async function createReviewComment({
       depth: createdComment.depth
     });
 
-    return {
-      comment: await buildCommentDto(createdComment, {
+    const [commentDto, discussionSummary, parentCommentSummary] = await Promise.all([
+      buildCommentDto(createdComment, {
         currentUserId,
         replyCount: 0,
         replies: [],
         repliesNextCursor: null
-      })
+      }),
+      buildReviewDiscussionSummary(reviewId, currentUserId),
+      buildParentCommentSummary(createdComment.parentCommentId, currentUserId)
+    ]);
+
+    return {
+      comment: commentDto,
+      discussionSummary,
+      parentCommentSummary
     };
   } catch (error) {
     logger.warn('review-comment-create-failed', {
@@ -1585,17 +1672,40 @@ async function deleteReviewComment({
     throw new AppError(403, 'COMMENT_FORBIDDEN', 'You can only delete your own comment');
   }
 
-  const deletedComment = existingComment.isDeleted
-    ? existingComment
-    : await prisma.reviewComment.update({
+  const deletedComment = await prisma.$transaction(async (tx) => {
+    const deletedAt = existingComment.deletedAt ?? new Date();
+
+    if (!existingComment.parentCommentId) {
+      await tx.reviewComment.updateMany({
+        where: {
+          parentCommentId: existingComment.id,
+          isDeleted: false
+        },
+        data: {
+          isDeleted: true,
+          deletedAt,
+          content: ''
+        }
+      });
+    }
+
+    if (existingComment.isDeleted) {
+      return tx.reviewComment.findUnique({
+        where: { id: commentId },
+        include: reviewCommentInclude
+      });
+    }
+
+    return tx.reviewComment.update({
       where: { id: commentId },
       data: {
         isDeleted: true,
-        deletedAt: new Date(),
+        deletedAt,
         content: ''
       },
       include: reviewCommentInclude
     });
+  });
 
   logger.info('review-comment-deleted', {
     userId: currentUserId,
@@ -1603,11 +1713,22 @@ async function deleteReviewComment({
     parentCommentId: deletedComment.parentCommentId ?? null
   });
 
+  const [commentDto, discussionSummary] = await Promise.all([
+    buildCommentDto(deletedComment, {
+      currentUserId
+    }),
+    buildReviewDiscussionSummary(deletedComment.reviewId, currentUserId)
+  ]);
+  const parentCommentSummary = await buildParentCommentSummary(
+    deletedComment.parentCommentId,
+    currentUserId
+  );
+
   return {
     deleted: true,
-    comment: await buildCommentDto(deletedComment, {
-      currentUserId
-    })
+    comment: commentDto,
+    discussionSummary,
+    parentCommentSummary
   };
 }
 
@@ -1760,6 +1881,10 @@ async function reportReviewComment({
     throw new AppError(400, 'COMMENT_REPORT_SELF_FORBIDDEN', 'You cannot report your own comment');
   }
 
+  if (comment.isDeleted) {
+    throw new AppError(409, 'COMMENT_DELETED', 'Deleted comments cannot be reported');
+  }
+
   await assertCommentVisibilityAllowed(currentUserId, comment.userId);
 
   try {
@@ -1826,6 +1951,7 @@ async function getMyReviewComments({
           ON r.comment_id = c.id
          AND r.reaction_type = 'LIKE'
         WHERE c.user_id = ${currentUserId}::uuid
+          AND c.is_deleted = false
         GROUP BY c.id, c.created_at
         ORDER BY COUNT(r.id) DESC, c.created_at DESC, c.id DESC
         LIMIT ${resolvedLimit}
@@ -1837,6 +1963,7 @@ async function getMyReviewComments({
         INNER JOIN reviews rv
           ON rv.id = c.review_id
         WHERE c.user_id = ${currentUserId}::uuid
+          AND c.is_deleted = false
       `
     ]);
 
@@ -1849,7 +1976,8 @@ async function getMyReviewComments({
     const [comments, count] = await Promise.all([
       prisma.reviewComment.findMany({
         where: {
-          userId: currentUserId
+          userId: currentUserId,
+          isDeleted: false
         },
         orderBy,
         skip,
@@ -1860,7 +1988,8 @@ async function getMyReviewComments({
       }),
       prisma.reviewComment.count({
         where: {
-          userId: currentUserId
+          userId: currentUserId,
+          isDeleted: false
         }
       })
     ]);
@@ -1893,7 +2022,8 @@ async function getMyReviewComments({
     where: {
       id: {
         in: orderedIds
-      }
+      },
+      isDeleted: false
     },
     include: {
       ...reviewCommentInclude,

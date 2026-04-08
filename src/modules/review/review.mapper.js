@@ -27,6 +27,12 @@ function mapReviewToDto(review, currentUserId, {
   const updatedAtValue = review?.updatedAt ? new Date(review.updatedAt).getTime() : null;
   const isEdited = createdAtValue != null && updatedAtValue != null && updatedAtValue > createdAtValue;
   const authorProfileImageUrl = normalizeProfileImageUrl(review.user.profileImageUrl);
+  const normalizedCommentCount = Number.isInteger(commentCount)
+    ? commentCount
+    : Number(commentCount ?? 0);
+  const normalizedActiveCommentCount = Number.isInteger(activeCommentCount)
+    ? activeCommentCount
+    : Number(activeCommentCount ?? normalizedCommentCount);
 
   return {
     id: review.id,
@@ -57,8 +63,10 @@ function mapReviewToDto(review, currentUserId, {
     viewerHasLiked,
     isLikedByCurrentUser: viewerHasLiked,
     isLiked: viewerHasLiked,
-    commentCount,
-    activeCommentCount: activeCommentCount ?? commentCount,
+    commentCount: normalizedCommentCount,
+    discussionCount: normalizedCommentCount,
+    activeCommentCount: normalizedActiveCommentCount,
+    hasComments: normalizedCommentCount > 0,
     isMine: review.userId === currentUserId,
     canEdit: review.userId === currentUserId,
     canDelete: review.userId === currentUserId
@@ -118,9 +126,16 @@ function mapReviewCommentToDto({
   const updatedAtValue = comment?.updatedAt ? new Date(comment.updatedAt).getTime() : null;
   const normalizedMyReaction = mapCommentReactionType(myReaction);
   const isEdited = !isDeleted && createdAtValue != null && updatedAtValue != null && updatedAtValue > createdAtValue;
+  const visibleReplyCount = Array.isArray(replies) ? replies.length : 0;
+  const remainingReplyCount = Math.max((replyCount ?? 0) - visibleReplyCount, 0);
+  const hasMoreReplies = Boolean(repliesNextCursor) || remainingReplyCount > 0;
+  const latestReplyAt = visibleReplyCount > 0
+    ? replies[visibleReplyCount - 1]?.createdAt ?? null
+    : null;
 
   return {
     id: comment.id,
+    commentId: comment.id,
     reviewId: comment.reviewId,
     parentCommentId: comment.parentCommentId ?? null,
     threadParentCommentId: comment.parentCommentId ?? comment.id,
@@ -133,6 +148,9 @@ function mapReviewCommentToDto({
     updatedAt: comment.updatedAt,
     isEdited,
     edited: isEdited,
+    authorId: comment.user?.id ?? comment.userId ?? null,
+    authorNickname: comment.user?.nickname ?? null,
+    authorProfileImageUrl: normalizeProfileImageUrl(comment.user?.profileImageUrl),
     author: buildCommentAuthorSummary(comment.user),
     replyTo: comment.replyToComment
       ? {
@@ -161,19 +179,26 @@ function mapReviewCommentToDto({
     isLiked: normalizedMyReaction === 'like',
     replyCount,
     replies,
-    replyPreviewCount: Array.isArray(replies) ? replies.length : 0,
+    visibleReplyCount,
+    replyPreviewCount: visibleReplyCount,
+    remainingReplyCount,
+    collapsedReplyCount: remainingReplyCount,
+    hasMoreReplies,
     repliesNextCursor,
+    latestReplyAt,
     isMine,
     isReply: Boolean(comment.parentCommentId),
     isReviewAuthor: comment?.userId === reviewAuthorId,
     canEdit: isMine && !isDeleted,
     canDelete: isMine && !isDeleted,
+    canReply: !isDeleted,
+    canReport: !isMine && !isDeleted,
     availableActions: {
       canReply: !isDeleted,
       canEdit: isMine && !isDeleted,
       canDelete: isMine && !isDeleted,
       canReact: !isDeleted,
-      canReport: !isMine
+      canReport: !isMine && !isDeleted
     },
     ...(reviewSummary ? { review: reviewSummary } : {}),
     ...(gameSummary ? { game: gameSummary } : {})

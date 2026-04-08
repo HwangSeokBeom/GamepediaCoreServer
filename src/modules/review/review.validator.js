@@ -57,7 +57,8 @@ const gameReviewsParamsSchema = z.object({
 });
 
 const reviewListQuerySchema = z.object({
-  sort: reviewSortSchema.optional()
+  sort: reviewSortSchema.optional(),
+  limit: limitSchema
 });
 
 const createReviewCommentSchema = z.object({
@@ -121,6 +122,10 @@ function buildReviewValidationError(error) {
     return new AppError(400, 'INVALID_REVIEW_CONTENT', 'Content must be non-whitespace text within the allowed length', details);
   }
 
+  if (issueFields.has('limit')) {
+    return new AppError(400, 'INVALID_REVIEW_LIMIT', 'limit must be between 1 and 50', details);
+  }
+
   if (issueFields.has('cursor')) {
     return new AppError(400, 'INVALID_COMMENT_CURSOR', 'cursor must be a valid UUID', details);
   }
@@ -166,6 +171,10 @@ function buildReviewCommentValidationError(error) {
 
   if (issueFields.has('cursor')) {
     return new AppError(400, 'INVALID_COMMENT_CURSOR', 'cursor must be a valid UUID', details);
+  }
+
+  if (issueFields.has('limit') || issueFields.has('repliesLimit')) {
+    return new AppError(400, 'INVALID_COMMENT_LIMIT', 'limit values must be within the allowed range', details);
   }
 
   if (issueFields.has('reactionType')) {

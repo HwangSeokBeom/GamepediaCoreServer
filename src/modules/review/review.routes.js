@@ -33,10 +33,20 @@ router.get('/games/:gameId/reviews', authenticateAccessToken, validate({
   query: reviewListQuerySchema
 }), reviewController.getGameReviews);
 
+router.get('/games/:gameId/reviews/preview', authenticateAccessToken, validate({
+  params: gameReviewsParamsSchema,
+  query: reviewListQuerySchema
+}), reviewController.getGameReviewPreview);
+
 router.get('/games/:gameId/reviews/my', authenticateAccessToken, validate({
   params: gameReviewsParamsSchema,
   query: reviewListQuerySchema
 }), reviewController.getMyGameReviews);
+
+router.get('/games/:gameId/reviews/my/preview', authenticateAccessToken, validate({
+  params: gameReviewsParamsSchema,
+  query: reviewListQuerySchema
+}), reviewController.getMyGameReviewPreview);
 
 router.get('/reviews/:reviewId', authenticateAccessToken, validate({
   params: reviewIdParamsSchema,
