@@ -382,7 +382,7 @@ async function buildFriendWrittenReviewsPreview(targetUserId, limit = FRIEND_REV
     where: {
       userId: targetUserId
     },
-    orderBy: [{ createdAt: 'desc' }],
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: limit
   });
   const igdbGameMap = await buildIgdbGameMap(reviews.map((review) => review.gameId));
