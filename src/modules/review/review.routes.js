@@ -14,6 +14,7 @@ const {
   reviewCommentReportSchema,
   reviewCommentReplyParamsSchema,
   reviewCommentScopedParamsSchema,
+  reviewCommentThreadParamsSchema,
   reviewCommentsQuerySchema,
   reviewIdParamsSchema,
   reviewListQuerySchema,
@@ -76,6 +77,11 @@ router.post('/reviews/:reviewId/comments', authenticateAccessToken, validate({
   errorMapper: buildReviewCommentValidationError
 }), reviewController.createReviewComment);
 
+router.get('/reviews/:reviewId/comments/:rootCommentId/thread', authenticateAccessToken, validate({
+  params: reviewCommentThreadParamsSchema,
+  errorMapper: buildReviewCommentValidationError
+}), reviewController.getReviewCommentThread);
+
 router.get('/reviews/:reviewId/comments/:commentId/replies', authenticateAccessToken, validate({
   params: reviewCommentReplyParamsSchema,
   query: reviewCommentsQuerySchema,
@@ -132,7 +138,17 @@ router.patch('/review-comments/:commentId', authenticateAccessToken, validate({
   errorMapper: buildReviewCommentValidationError
 }), reviewController.updateReviewComment);
 
+router.patch('/comments/:commentId', authenticateAccessToken, validate({
+  params: reviewCommentIdParamsSchema,
+  body: updateReviewCommentSchema,
+  errorMapper: buildReviewCommentValidationError
+}), reviewController.updateReviewComment);
+
 router.delete('/review-comments/:commentId', authenticateAccessToken, validate({
+  params: reviewCommentIdParamsSchema
+}), reviewController.deleteReviewComment);
+
+router.delete('/comments/:commentId', authenticateAccessToken, validate({
   params: reviewCommentIdParamsSchema
 }), reviewController.deleteReviewComment);
 
@@ -146,6 +162,10 @@ router.post('/review-comments/:commentId/like', authenticateAccessToken, validat
   params: reviewCommentIdParamsSchema
 }), reviewController.likeReviewComment);
 
+router.post('/comments/:commentId/like', authenticateAccessToken, validate({
+  params: reviewCommentIdParamsSchema
+}), reviewController.likeReviewComment);
+
 router.delete('/review-comments/:commentId/reaction', authenticateAccessToken, validate({
   params: reviewCommentIdParamsSchema
 }), reviewController.removeReviewCommentReaction);
@@ -154,7 +174,17 @@ router.delete('/review-comments/:commentId/like', authenticateAccessToken, valid
   params: reviewCommentIdParamsSchema
 }), reviewController.removeReviewCommentReaction);
 
+router.delete('/comments/:commentId/like', authenticateAccessToken, validate({
+  params: reviewCommentIdParamsSchema
+}), reviewController.removeReviewCommentReaction);
+
 router.post('/review-comments/:commentId/report', authenticateAccessToken, validate({
+  params: reviewCommentIdParamsSchema,
+  body: reviewCommentReportSchema,
+  errorMapper: buildReviewCommentValidationError
+}), reviewController.reportReviewComment);
+
+router.post('/comments/:commentId/report', authenticateAccessToken, validate({
   params: reviewCommentIdParamsSchema,
   body: reviewCommentReportSchema,
   errorMapper: buildReviewCommentValidationError

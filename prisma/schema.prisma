@@ -167,6 +167,7 @@ model ReviewComment {
   reviewId         String        @map("review_id") @db.Uuid
   userId           String        @map("user_id") @db.Uuid
   parentCommentId  String?       @map("parent_comment_id") @db.Uuid
+  rootCommentId    String        @map("root_comment_id") @db.Uuid
   replyToCommentId String?       @map("reply_to_comment_id") @db.Uuid
   content          String        @db.Text
   depth            Int           @default(0)
@@ -184,7 +185,9 @@ model ReviewComment {
   reports          ReviewCommentReport[]
 
   @@index([reviewId, parentCommentId, createdAt, id])
+  @@index([reviewId, rootCommentId, createdAt, id])
   @@index([parentCommentId, createdAt, id])
+  @@index([rootCommentId, createdAt, id])
   @@index([userId, createdAt, id])
   @@map("review_comments")
 }

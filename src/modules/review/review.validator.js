@@ -6,7 +6,7 @@ const gameIdSchema = z.string().trim().min(1).max(100);
 const ratingSchema = z.number().min(0.5).max(5).multipleOf(0.5);
 const contentSchema = z.string().trim().min(10).max(2000);
 const commentContentSchema = z.string().trim().min(1).max(1000);
-const commentSortSchema = z.enum(['latest', 'newest', 'oldest']);
+const commentSortSchema = z.enum(['latest', 'newest', 'oldest', 'like']);
 const myCommentsSortSchema = z.enum(['newest', 'oldest', 'most_liked']);
 const commentReactionTypeSchema = z.enum(['like', 'dislike']);
 const commentReportReasonSchema = z.string().trim().min(1).max(50);
@@ -50,6 +50,11 @@ const reviewCommentReplyParamsSchema = z.object({
 const reviewCommentScopedParamsSchema = z.object({
   reviewId: z.string().uuid(),
   commentId: z.string().uuid()
+});
+
+const reviewCommentThreadParamsSchema = z.object({
+  reviewId: z.string().uuid(),
+  rootCommentId: z.string().uuid()
 });
 
 const gameReviewsParamsSchema = z.object({
@@ -153,6 +158,10 @@ function buildReviewCommentValidationError(error) {
     return new AppError(400, 'INVALID_COMMENT_ID', 'commentId must be a valid UUID', details);
   }
 
+  if (issueFields.has('rootCommentId')) {
+    return new AppError(400, 'INVALID_ROOT_COMMENT_ID', 'rootCommentId must be a valid UUID', details);
+  }
+
   if (issueFields.has('parentCommentId')) {
     return new AppError(400, 'INVALID_PARENT_COMMENT_ID', 'parentCommentId must be a valid UUID', details);
   }
@@ -166,7 +175,7 @@ function buildReviewCommentValidationError(error) {
   }
 
   if (issueFields.has('sort')) {
-    return new AppError(400, 'INVALID_COMMENT_SORT', 'sort must be one of newest or oldest', details);
+    return new AppError(400, 'INVALID_COMMENT_SORT', 'sort must be one of latest, oldest, or like', details);
   }
 
   if (issueFields.has('cursor')) {
@@ -200,6 +209,7 @@ module.exports = {
   reviewCommentReportSchema,
   reviewCommentReplyParamsSchema,
   reviewCommentScopedParamsSchema,
+  reviewCommentThreadParamsSchema,
   reviewCommentsQuerySchema,
   reviewIdParamsSchema,
   reviewListQuerySchema,

@@ -117,6 +117,16 @@ const getReviewCommentReplies = asyncHandler(async (req, res) => {
   res.status(200).json(successResponse(result));
 });
 
+const getReviewCommentThread = asyncHandler(async (req, res) => {
+  const result = await reviewService.getReviewCommentThread({
+    currentUserId: req.auth.userId,
+    reviewId: req.params.reviewId,
+    rootCommentId: req.params.rootCommentId
+  });
+
+  res.status(200).json(successResponse(result));
+});
+
 const updateReview = asyncHandler(async (req, res) => {
   const result = await reviewService.updateReview({
     currentUserId: req.auth.userId,
@@ -259,6 +269,7 @@ module.exports = {
   getMyGameReviews,
   getMyReviewComments,
   getMyReviews,
+  getReviewCommentThread,
   getReviewCommentReplies,
   getReviewComments,
   likeReview,

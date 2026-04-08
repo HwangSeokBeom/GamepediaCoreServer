@@ -107,40 +107,70 @@ function mapCommentReactionType(reactionType) {
   return null;
 }
 
-function mapReviewCommentToDto({
+function buildCommentReactionState(reactionSummary = {}, myReaction = null) {
+  const normalizedMyReaction = mapCommentReactionType(myReaction);
+  const likeCount = reactionSummary.likeCount ?? 0;
+  const dislikeCount = reactionSummary.dislikeCount ?? 0;
+  const viewerHasLiked = normalizedMyReaction === 'like';
+
+  return {
+    likeCount,
+    dislikeCount,
+    myReaction: normalizedMyReaction,
+    viewerHasLiked,
+    reactions: {
+      likeCount,
+      dislikeCount,
+      myReaction: normalizedMyReaction
+    }
+  };
+}
+
+function buildReplyTargetSummary(comment, currentUserId, reviewAuthorId) {
+  if (!comment?.replyToComment) {
+    return null;
+  }
+
+  const replyToUser = comment.replyToComment.user ?? null;
+  const replyToUserId = replyToUser?.id ?? comment.replyToComment.userId ?? null;
+  const isOwner = replyToUserId === currentUserId;
+
+  return {
+    commentId: comment.replyToComment.id,
+    userId: replyToUserId,
+    nickname: replyToUser?.nickname ?? null,
+    profileImageUrl: normalizeProfileImageUrl(replyToUser?.profileImageUrl),
+    isOwner,
+    isMine: isOwner,
+    isReviewAuthor: replyToUserId === reviewAuthorId
+  };
+}
+
+function buildCommentBaseDto({
   comment,
   currentUserId,
   reviewAuthorId,
   reactionSummary = {},
-  myReaction = null,
-  replyCount = 0,
-  replies = [],
-  repliesNextCursor = null,
-  reviewSummary = null,
-  gameSummary = null
+  myReaction = null
 }) {
-  const isMine = comment?.userId === currentUserId;
+  const rootCommentId = comment?.rootCommentId ?? comment?.parentCommentId ?? comment?.id ?? null;
+  const isOwner = comment?.userId === currentUserId;
   const isDeleted = Boolean(comment?.isDeleted);
-  const replyToUser = comment?.replyToComment?.user ?? null;
   const createdAtValue = comment?.createdAt ? new Date(comment.createdAt).getTime() : null;
   const updatedAtValue = comment?.updatedAt ? new Date(comment.updatedAt).getTime() : null;
-  const normalizedMyReaction = mapCommentReactionType(myReaction);
   const isEdited = !isDeleted && createdAtValue != null && updatedAtValue != null && updatedAtValue > createdAtValue;
-  const visibleReplyCount = Array.isArray(replies) ? replies.length : 0;
-  const remainingReplyCount = Math.max((replyCount ?? 0) - visibleReplyCount, 0);
-  const hasMoreReplies = Boolean(repliesNextCursor) || remainingReplyCount > 0;
-  const latestReplyAt = visibleReplyCount > 0
-    ? replies[visibleReplyCount - 1]?.createdAt ?? null
-    : null;
+  const reactionState = buildCommentReactionState(reactionSummary, myReaction);
+  const mention = buildReplyTargetSummary(comment, currentUserId, reviewAuthorId);
 
   return {
     id: comment.id,
     commentId: comment.id,
     reviewId: comment.reviewId,
     parentCommentId: comment.parentCommentId ?? null,
-    threadParentCommentId: comment.parentCommentId ?? comment.id,
+    rootCommentId,
+    threadParentCommentId: rootCommentId,
     replyToCommentId: comment.replyToCommentId ?? null,
-    depth: Number.isInteger(comment.depth) ? comment.depth : 0,
+    depth: Number.isInteger(comment.depth) ? comment.depth : (comment.parentCommentId ? 1 : 0),
     content: isDeleted ? null : comment.content,
     isDeleted,
     deletedAt: comment.deletedAt ?? null,
@@ -152,32 +182,116 @@ function mapReviewCommentToDto({
     authorNickname: comment.user?.nickname ?? null,
     authorProfileImageUrl: normalizeProfileImageUrl(comment.user?.profileImageUrl),
     author: buildCommentAuthorSummary(comment.user),
-    replyTo: comment.replyToComment
-      ? {
-        commentId: comment.replyToComment.id,
-        userId: replyToUser?.id ?? comment.replyToComment.userId ?? null,
-        nickname: replyToUser?.nickname ?? null,
-        profileImageUrl: normalizeProfileImageUrl(replyToUser?.profileImageUrl),
-        isMine: (replyToUser?.id ?? comment.replyToComment.userId ?? null) === currentUserId,
-        isReviewAuthor: (replyToUser?.id ?? comment.replyToComment.userId ?? null) === reviewAuthorId
-      }
-      : null,
+    mention,
+    replyTo: mention,
     target: {
       reviewId: comment.reviewId,
       gameId: comment.review?.gameId ?? null
     },
-    reactions: {
-      likeCount: reactionSummary.likeCount ?? 0,
-      dislikeCount: reactionSummary.dislikeCount ?? 0,
-      myReaction: normalizedMyReaction
-    },
-    likeCount: reactionSummary.likeCount ?? 0,
-    dislikeCount: reactionSummary.dislikeCount ?? 0,
-    myReaction: normalizedMyReaction,
-    viewerHasLiked: normalizedMyReaction === 'like',
-    isLikedByCurrentUser: normalizedMyReaction === 'like',
-    isLiked: normalizedMyReaction === 'like',
+    reactions: reactionState.reactions,
+    likeCount: reactionState.likeCount,
+    dislikeCount: reactionState.dislikeCount,
+    myReaction: reactionState.myReaction,
+    viewerHasLiked: reactionState.viewerHasLiked,
+    isLikedByCurrentUser: reactionState.viewerHasLiked,
+    isLiked: reactionState.viewerHasLiked,
+    isOwner,
+    isMine: isOwner,
+    isReply: Boolean(comment.parentCommentId),
+    isReviewAuthor: comment?.userId === reviewAuthorId,
+    canEdit: isOwner && !isDeleted,
+    canDelete: isOwner && !isDeleted,
+    canReply: !isDeleted,
+    canReport: !isOwner && !isDeleted,
+    availableActions: {
+      canReply: !isDeleted,
+      canEdit: isOwner && !isDeleted,
+      canDelete: isOwner && !isDeleted,
+      canReact: !isDeleted,
+      canReport: !isOwner && !isDeleted
+    }
+  };
+}
+
+function mapReviewCommentPreviewToDto(comment) {
+  if (!comment) {
+    return null;
+  }
+
+  return {
+    id: comment.id,
+    replyId: comment.id,
+    commentId: comment.id,
+    reviewId: comment.reviewId,
+    parentCommentId: comment.parentCommentId ?? null,
+    rootCommentId: comment.rootCommentId ?? comment.parentCommentId ?? comment.id,
+    isDeleted: Boolean(comment.isDeleted),
+    authorId: comment.user?.id ?? comment.userId ?? null,
+    authorNickname: comment.user?.nickname ?? null,
+    authorProfileImageUrl: normalizeProfileImageUrl(comment.user?.profileImageUrl),
+    author: buildCommentAuthorSummary(comment.user),
+    content: comment.isDeleted ? null : comment.content,
+    createdAt: comment.createdAt
+  };
+}
+
+function mapReviewCommentSummaryToDto({
+  comment,
+  currentUserId,
+  reviewAuthorId,
+  reactionSummary = {},
+  myReaction = null,
+  replyCount = 0,
+  latestReplyPreview = null,
+  threadMeta = null
+}) {
+  return {
+    ...buildCommentBaseDto({
+      comment,
+      currentUserId,
+      reviewAuthorId,
+      reactionSummary,
+      myReaction
+    }),
     replyCount,
+    latestReplyAt: latestReplyPreview?.createdAt ?? null,
+    latestReplyPreview,
+    ...(threadMeta ? threadMeta : {}),
+    isRootComment: true
+  };
+}
+
+function mapReviewCommentToDto({
+  comment,
+  currentUserId,
+  reviewAuthorId,
+  reactionSummary = {},
+  myReaction = null,
+  replyCount = 0,
+  replies = [],
+  repliesNextCursor = null,
+  latestReplyPreview = null,
+  threadMeta = null,
+  reviewSummary = null,
+  gameSummary = null
+}) {
+  const visibleReplyCount = Array.isArray(replies) ? replies.length : 0;
+  const remainingReplyCount = Math.max((replyCount ?? 0) - visibleReplyCount, 0);
+  const hasMoreReplies = Boolean(repliesNextCursor) || remainingReplyCount > 0;
+  const latestReplyAt = visibleReplyCount > 0
+    ? replies[visibleReplyCount - 1]?.createdAt ?? null
+    : latestReplyPreview?.createdAt ?? null;
+
+  return {
+    ...buildCommentBaseDto({
+      comment,
+      currentUserId,
+      reviewAuthorId,
+      reactionSummary,
+      myReaction
+    }),
+    replyCount,
+    latestReplyPreview,
     replies,
     visibleReplyCount,
     replyPreviewCount: visibleReplyCount,
@@ -186,20 +300,7 @@ function mapReviewCommentToDto({
     hasMoreReplies,
     repliesNextCursor,
     latestReplyAt,
-    isMine,
-    isReply: Boolean(comment.parentCommentId),
-    isReviewAuthor: comment?.userId === reviewAuthorId,
-    canEdit: isMine && !isDeleted,
-    canDelete: isMine && !isDeleted,
-    canReply: !isDeleted,
-    canReport: !isMine && !isDeleted,
-    availableActions: {
-      canReply: !isDeleted,
-      canEdit: isMine && !isDeleted,
-      canDelete: isMine && !isDeleted,
-      canReact: !isDeleted,
-      canReport: !isMine && !isDeleted
-    },
+    ...(!comment?.parentCommentId && threadMeta ? threadMeta : {}),
     ...(reviewSummary ? { review: reviewSummary } : {}),
     ...(gameSummary ? { game: gameSummary } : {})
   };
@@ -237,8 +338,11 @@ function mapSteamLinkedReviewToDto(review, currentUserId, steamMeta) {
 }
 
 module.exports = {
+  buildCommentAuthorSummary,
   mapAverageRating,
   mapCommentReactionType,
+  mapReviewCommentPreviewToDto,
+  mapReviewCommentSummaryToDto,
   mapReviewListToDto,
   mapReviewCommentToDto,
   mapReviewToDto,
