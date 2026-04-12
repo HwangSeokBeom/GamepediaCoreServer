@@ -21,6 +21,20 @@ function parseBooleanClaim(value) {
   return value === true || value === 'true';
 }
 
+function parseAudienceClaim(value) {
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => typeof item === 'string' && item.trim())
+      .map((item) => item.trim());
+  }
+
+  return null;
+}
+
 function parseMaxAge(cacheControlHeader) {
   const matchedValue = cacheControlHeader?.match(/max-age=(\d+)/);
 
@@ -116,10 +130,17 @@ async function getGooglePublicKey(header) {
   }
 }
 
-function mapGoogleTokenVerificationError(error) {
+function mapGoogleTokenVerificationError(error, decodedPayload = null) {
   if (error?.name === 'TokenExpiredError') {
     logGoogleTokenDebug('warn', 'Google ID token has expired');
     return new AppError(401, 'GOOGLE_ID_TOKEN_EXPIRED', 'Google ID token has expired');
+  }
+
+  if (error?.name === 'JsonWebTokenError' && error?.message?.startsWith('jwt audience invalid')) {
+    logGoogleTokenDebug('warn', 'Google ID token audience mismatch', {
+      configuredAudience: env.googleClientId,
+      tokenAudience: parseAudienceClaim(decodedPayload?.aud)
+    });
   }
 
   logGoogleTokenDebug('warn', 'Google ID token verification failed', {
@@ -163,7 +184,7 @@ async function verifyIdToken(idToken) {
       clockTolerance: 5
     });
   } catch (error) {
-    throw mapGoogleTokenVerificationError(error);
+    throw mapGoogleTokenVerificationError(error, decodedToken.payload);
   }
 
   if (!payload || typeof payload !== 'object' || typeof payload.sub !== 'string' || !payload.sub.trim()) {
