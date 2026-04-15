@@ -6,6 +6,10 @@ on:
       - main
       - staging
 
+concurrency:
+  group: core-server-deploy
+  cancel-in-progress: false
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -41,9 +45,18 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
           script: |
-            cd ~/GamePediaCoreServer
-            chmod +x deploy.sh deploy-staging.sh
+            set -euo pipefail
+            TRIGGER_BRANCH="${{ github.ref_name }}"
+            EXPECTED_BRANCH="main"
+            EXPECTED_DIR="${HOME}/GamePediaCoreServer-prod"
+            [ "${TRIGGER_BRANCH}" = "${EXPECTED_BRANCH}" ] || { echo "Wrong trigger branch: ${TRIGGER_BRANCH}"; exit 1; }
+            [ -d "${EXPECTED_DIR}" ] || { echo "Missing deploy directory: ${EXPECTED_DIR}"; exit 1; }
+            cd "${EXPECTED_DIR}"
+            [ "$(basename "${PWD}")" = "GamePediaCoreServer-prod" ] || { echo "Wrong production directory: ${PWD}"; exit 1; }
+            [ "$(git rev-parse --abbrev-ref HEAD)" = "${EXPECTED_BRANCH}" ] || { echo "Wrong branch checked out in production clone"; exit 1; }
+            chmod +x deploy.sh deploy-staging.sh scripts/server/*.sh
             ./deploy.sh
 
   deploy-staging:
@@ -58,7 +71,16 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
           script: |
-            cd ~/GamePediaCoreServer
-            chmod +x deploy.sh deploy-staging.sh
+            set -euo pipefail
+            TRIGGER_BRANCH="${{ github.ref_name }}"
+            EXPECTED_BRANCH="staging"
+            EXPECTED_DIR="${HOME}/GamePediaCoreServer-staging"
+            [ "${TRIGGER_BRANCH}" = "${EXPECTED_BRANCH}" ] || { echo "Wrong trigger branch: ${TRIGGER_BRANCH}"; exit 1; }
+            [ -d "${EXPECTED_DIR}" ] || { echo "Missing deploy directory: ${EXPECTED_DIR}"; exit 1; }
+            cd "${EXPECTED_DIR}"
+            [ "$(basename "${PWD}")" = "GamePediaCoreServer-staging" ] || { echo "Wrong staging directory: ${PWD}"; exit 1; }
+            [ "$(git rev-parse --abbrev-ref HEAD)" = "${EXPECTED_BRANCH}" ] || { echo "Wrong branch checked out in staging clone"; exit 1; }
+            chmod +x deploy.sh deploy-staging.sh scripts/server/*.sh
             ./deploy-staging.sh
