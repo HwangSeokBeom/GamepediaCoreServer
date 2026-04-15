@@ -28,16 +28,14 @@ bootstrap_clone() {
     fi
 
     echo "Updating existing clone: ${target_dir} (${branch})"
-    git -C "${target_dir}" fetch --prune origin
+    git -C "${target_dir}" fetch --prune origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
     git -C "${target_dir}" checkout "${branch}"
-    git -C "${target_dir}" pull --ff-only origin "${branch}"
+    git -C "${target_dir}" reset --hard "origin/${branch}"
     return
   fi
 
   echo "Cloning ${branch} into ${target_dir}"
-  git clone "${REMOTE_URL}" "${target_dir}"
-  git -C "${target_dir}" checkout "${branch}"
-  git -C "${target_dir}" pull --ff-only origin "${branch}"
+  git clone --branch "${branch}" --single-branch "${REMOTE_URL}" "${target_dir}"
 }
 
 bootstrap_clone main "${PRODUCTION_DIR}"
@@ -48,4 +46,5 @@ echo "Clone bootstrap completed."
 echo "Next steps:"
 echo "  1. Verify ${PRODUCTION_DIR}/.env.production and ${PRODUCTION_DIR}/.env.production.local"
 echo "  2. Verify ${STAGING_DIR}/.env.staging and ${STAGING_DIR}/.env.staging.local"
-echo "  3. Run ${PRODUCTION_DIR}/deploy.sh and ${STAGING_DIR}/deploy-staging.sh once to register PM2 with the new cwd values"
+echo "  3. Re-register PM2 with FORCE_PM2_RECREATE=1 from each clone so pm_cwd matches the new path"
+echo "  4. Follow docs/runner-setup.md to install and register the EC2 self-hosted runner"

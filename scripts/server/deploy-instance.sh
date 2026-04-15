@@ -6,6 +6,26 @@ usage() {
   exit 1
 }
 
+require_command() {
+  local command_name="$1"
+
+  if ! command -v "${command_name}" >/dev/null 2>&1; then
+    echo "Deployment aborted: missing required command '${command_name}'"
+    exit 1
+  fi
+}
+
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 if [ $# -ne 1 ]; then
   usage
 fi
@@ -13,6 +33,7 @@ fi
 TARGET_ENV="$1"
 SKIP_PRISMA_MIGRATE_DEPLOY="${SKIP_PRISMA_MIGRATE_DEPLOY:-0}"
 FORCE_PM2_RECREATE="${FORCE_PM2_RECREATE:-0}"
+EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA:-}"
 
 case "${TARGET_ENV}" in
   production)
@@ -20,31 +41,33 @@ case "${TARGET_ENV}" in
     APP_NAME="core-server"
     ENV_NAME="production"
     EXPECTED_DIR_NAME="GamePediaCoreServer-prod"
-    EXPECTED_PORT="3001"
-    EXPECTED_DATABASE_NAME="gamepedia_core"
-    EXPECTED_PUBLIC_URL="https://gamepedia-api.duckdns.org"
+    PM2_CWD_ENV_VAR="CORE_SERVER_PRODUCTION_CWD"
     ;;
   staging)
     BRANCH="staging"
     APP_NAME="core-server-staging"
     ENV_NAME="staging"
     EXPECTED_DIR_NAME="GamePediaCoreServer-staging"
-    EXPECTED_PORT="3101"
-    EXPECTED_DATABASE_NAME="gamepedia_core_staging"
-    EXPECTED_PUBLIC_URL="https://staging-gamepedia-api.duckdns.org"
+    PM2_CWD_ENV_VAR="CORE_SERVER_STAGING_CWD"
     ;;
   *)
     usage
     ;;
 esac
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
 CURRENT_DIR_NAME="$(basename "${PROJECT_DIR}")"
 ECOSYSTEM_FILE="${PROJECT_DIR}/ecosystem.config.js"
 
 echo "Starting ${ENV_NAME} deployment for GamePediaCoreServer"
 echo "Project directory: ${PROJECT_DIR}"
+
+require_command git
+require_command node
+require_command npm
+require_command npx
+require_command pm2
 
 cd "${PROJECT_DIR}"
 
@@ -68,9 +91,6 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   exit 1
 fi
 
-echo "Fetching latest code from origin"
-git fetch --prune origin
-
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 if [ "${CURRENT_BRANCH}" != "${BRANCH}" ]; then
@@ -78,91 +98,32 @@ if [ "${CURRENT_BRANCH}" != "${BRANCH}" ]; then
   exit 1
 fi
 
-UPSTREAM_BRANCH="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+CURRENT_SHA="$(git rev-parse HEAD)"
 
-if [ -n "${UPSTREAM_BRANCH}" ] && [ "${UPSTREAM_BRANCH}" != "origin/${BRANCH}" ]; then
-  echo "Deployment aborted: upstream branch is ${UPSTREAM_BRANCH}, expected origin/${BRANCH}"
+if [ -n "${EXPECTED_GIT_SHA}" ] && [ "${CURRENT_SHA}" != "${EXPECTED_GIT_SHA}" ]; then
+  echo "Deployment aborted: current commit ${CURRENT_SHA} does not match EXPECTED_GIT_SHA=${EXPECTED_GIT_SHA}"
   exit 1
 fi
 
-echo "Pulling latest ${BRANCH}"
-git pull --ff-only origin "${BRANCH}"
-
-if [ -f package-lock.json ]; then
-  echo "Detected package-lock.json, installing dependencies with npm ci"
-  npm ci
-else
-  echo "package-lock.json not found, installing dependencies with npm install"
-  npm install
-fi
-
-ENV_SPECIFIC_FILE=".env.${ENV_NAME}"
-ENV_SPECIFIC_LOCAL_FILE=".env.${ENV_NAME}.local"
-ENV_FILES=(
-  ".env"
-  ".env.local"
-  "${ENV_SPECIFIC_FILE}"
-  "${ENV_SPECIFIC_LOCAL_FILE}"
-)
-
-FOUND_ENV_FILE=false
-
-if [ ! -f "${ENV_SPECIFIC_FILE}" ] && [ ! -f "${ENV_SPECIFIC_LOCAL_FILE}" ]; then
-  echo "Deployment aborted: missing ${ENV_SPECIFIC_FILE} or ${ENV_SPECIFIC_LOCAL_FILE}"
+if [ ! -f package-lock.json ]; then
+  echo "Deployment aborted: package-lock.json is required for server deployment"
   exit 1
 fi
 
-set -a
-for ENV_FILE in "${ENV_FILES[@]}"; do
-  if [ -f "${ENV_FILE}" ]; then
-    echo "Loading environment from ${ENV_FILE}"
-    # shellcheck source=/dev/null
-    source "${ENV_FILE}"
-    FOUND_ENV_FILE=true
-  fi
-done
-set +a
+echo "Installing dependencies with npm ci"
+npm ci
 
-if [ "${FOUND_ENV_FILE}" = false ]; then
-  echo "Deployment aborted: no env files found for ${ENV_NAME}"
-  exit 1
-fi
-
-export NODE_ENV="${ENV_NAME}"
-
-if [ -z "${DATABASE_URL:-}" ]; then
-  echo "Deployment aborted: DATABASE_URL is not set after loading env files"
-  exit 1
-fi
-
-if ! [[ "${DATABASE_URL}" =~ /${EXPECTED_DATABASE_NAME}([/?]|$) ]]; then
-  echo "Deployment aborted: DATABASE_URL must target ${EXPECTED_DATABASE_NAME}"
-  exit 1
-fi
-
-if [ -n "${PORT:-}" ] && [ "${PORT}" != "${EXPECTED_PORT}" ]; then
-  echo "Deployment aborted: PORT must be ${EXPECTED_PORT} for ${ENV_NAME}, current value is ${PORT}"
-  exit 1
-fi
-
-if [ -n "${API_PUBLIC_BASE_URL:-}" ] && [ "${API_PUBLIC_BASE_URL}" != "${EXPECTED_PUBLIC_URL}" ]; then
-  echo "Deployment aborted: API_PUBLIC_BASE_URL must be ${EXPECTED_PUBLIC_URL}"
-  exit 1
-fi
-
-if [ -n "${APP_WEB_BASE_URL:-}" ] && [ "${APP_WEB_BASE_URL}" != "${EXPECTED_PUBLIC_URL}" ]; then
-  echo "Deployment aborted: APP_WEB_BASE_URL must be ${EXPECTED_PUBLIC_URL}"
-  exit 1
-fi
+echo "Validating deployment environment via dotenv loader order"
+NODE_ENV="${ENV_NAME}" node "${PROJECT_DIR}/scripts/server/validate-deploy-env.js" "${TARGET_ENV}"
 
 echo "Running Prisma generate"
-npx prisma generate
+NODE_ENV="${ENV_NAME}" npx prisma generate
 
-if [ "${SKIP_PRISMA_MIGRATE_DEPLOY}" = "1" ]; then
+if is_truthy "${SKIP_PRISMA_MIGRATE_DEPLOY}"; then
   echo "Skipping Prisma migrate deploy because SKIP_PRISMA_MIGRATE_DEPLOY=1"
 else
   echo "Running Prisma migrate deploy"
-  npx prisma migrate deploy
+  NODE_ENV="${ENV_NAME}" npx prisma migrate deploy
 fi
 
 get_pm2_cwd() {
@@ -186,26 +147,37 @@ get_pm2_cwd() {
   ' "${app_name}"
 }
 
+run_pm2_with_cwd() {
+  env "${PM2_CWD_ENV_VAR}=${PROJECT_DIR}" pm2 "$@"
+}
+
 if pm2 describe "${APP_NAME}" >/dev/null 2>&1; then
   PM2_CURRENT_CWD="$(get_pm2_cwd "${APP_NAME}" || true)"
 
-  if [ "${FORCE_PM2_RECREATE}" = "1" ]; then
+  if is_truthy "${FORCE_PM2_RECREATE}"; then
     echo "Deleting PM2 process ${APP_NAME} because FORCE_PM2_RECREATE=1"
     pm2 delete "${APP_NAME}"
     echo "Starting PM2 process: ${APP_NAME}"
-    pm2 start "${ECOSYSTEM_FILE}" --only "${APP_NAME}" --env "${ENV_NAME}"
+    run_pm2_with_cwd start "${ECOSYSTEM_FILE}" --only "${APP_NAME}" --env "${ENV_NAME}"
   elif [ -z "${PM2_CURRENT_CWD}" ] || [ "${PM2_CURRENT_CWD}" != "${PROJECT_DIR}" ]; then
     echo "Deleting PM2 process ${APP_NAME} because current cwd is ${PM2_CURRENT_CWD:-<unknown>} and expected cwd is ${PROJECT_DIR}"
     pm2 delete "${APP_NAME}"
     echo "Starting PM2 process: ${APP_NAME}"
-    pm2 start "${ECOSYSTEM_FILE}" --only "${APP_NAME}" --env "${ENV_NAME}"
+    run_pm2_with_cwd start "${ECOSYSTEM_FILE}" --only "${APP_NAME}" --env "${ENV_NAME}"
   else
     echo "Restarting PM2 process: ${APP_NAME}"
-    pm2 restart "${ECOSYSTEM_FILE}" --only "${APP_NAME}" --env "${ENV_NAME}" --update-env
+    run_pm2_with_cwd restart "${ECOSYSTEM_FILE}" --only "${APP_NAME}" --env "${ENV_NAME}" --update-env
   fi
 else
   echo "Starting PM2 process: ${APP_NAME}"
-  pm2 start "${ECOSYSTEM_FILE}" --only "${APP_NAME}" --env "${ENV_NAME}"
+  run_pm2_with_cwd start "${ECOSYSTEM_FILE}" --only "${APP_NAME}" --env "${ENV_NAME}"
+fi
+
+PM2_FINAL_CWD="$(get_pm2_cwd "${APP_NAME}" || true)"
+
+if [ "${PM2_FINAL_CWD}" != "${PROJECT_DIR}" ]; then
+  echo "Deployment aborted: PM2 cwd for ${APP_NAME} is ${PM2_FINAL_CWD:-<unknown>}, expected ${PROJECT_DIR}"
+  exit 1
 fi
 
 echo "Saving PM2 process list"
