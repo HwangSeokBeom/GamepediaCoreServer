@@ -6,9 +6,19 @@ on:
       - main
       - staging
 
+permissions:
+  contents: read
+
 concurrency:
   group: core-server-deploy
   cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NODE_VERSION: '20'
 
 jobs:
   validate:
@@ -21,7 +31,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - name: Install dependencies
@@ -36,51 +46,103 @@ jobs:
   deploy-production:
     if: ${{ github.ref == 'refs/heads/main' }}
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - gamepedia-core
+      - deploy
+      - ec2-us-east-1
+    environment: production
+    timeout-minutes: 30
 
     steps:
-      - name: Deploy production to EC2
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
-          script: |
-            set -euo pipefail
-            TRIGGER_BRANCH="${{ github.ref_name }}"
-            EXPECTED_BRANCH="main"
-            EXPECTED_DIR="${HOME}/GamePediaCoreServer-prod"
-            [ "${TRIGGER_BRANCH}" = "${EXPECTED_BRANCH}" ] || { echo "Wrong trigger branch: ${TRIGGER_BRANCH}"; exit 1; }
-            [ -d "${EXPECTED_DIR}" ] || { echo "Missing deploy directory: ${EXPECTED_DIR}"; exit 1; }
-            cd "${EXPECTED_DIR}"
-            [ "$(basename "${PWD}")" = "GamePediaCoreServer-prod" ] || { echo "Wrong production directory: ${PWD}"; exit 1; }
-            [ "$(git rev-parse --abbrev-ref HEAD)" = "${EXPECTED_BRANCH}" ] || { echo "Wrong branch checked out in production clone"; exit 1; }
-            chmod +x deploy.sh deploy-staging.sh scripts/server/*.sh
-            ./deploy.sh
+      - name: Sync production clone to pushed commit
+        env:
+          TARGET_BRANCH: main
+          TARGET_DIR_NAME: GamePediaCoreServer-prod
+        run: |
+          set -euo pipefail
+          TARGET_DIR="${HOME}/${TARGET_DIR_NAME}"
+
+          [ "${GITHUB_REF_NAME}" = "${TARGET_BRANCH}" ] || { echo "Wrong trigger branch: ${GITHUB_REF_NAME}"; exit 1; }
+          [ -d "${TARGET_DIR}/.git" ] || { echo "Missing git working tree: ${TARGET_DIR}"; exit 1; }
+
+          cd "${TARGET_DIR}"
+
+          [ "$(basename "${PWD}")" = "${TARGET_DIR_NAME}" ] || { echo "Wrong directory: ${PWD}"; exit 1; }
+          [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "Tracked files have uncommitted changes in ${TARGET_DIR}"; exit 1; }
+          [ "$(git rev-parse --abbrev-ref HEAD)" = "${TARGET_BRANCH}" ] || { echo "Wrong branch checked out in ${TARGET_DIR}"; exit 1; }
+
+          git fetch --no-tags --prune origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}" \
+            "${GITHUB_SHA}"
+
+          git checkout "${TARGET_BRANCH}"
+          git reset --hard "${GITHUB_SHA}"
+
+          [ "$(git rev-parse HEAD)" = "${GITHUB_SHA}" ] || { echo "Failed to sync ${TARGET_DIR} to ${GITHUB_SHA}"; exit 1; }
+
+          chmod +x deploy.sh deploy-staging.sh scripts/server/*.sh
+
+      - name: Deploy production from dedicated clone
+        env:
+          EXPECTED_GIT_SHA: ${{ github.sha }}
+          SKIP_PRISMA_MIGRATE_DEPLOY: ${{ vars.SKIP_PRISMA_MIGRATE_DEPLOY }}
+          FORCE_PM2_RECREATE: ${{ vars.FORCE_PM2_RECREATE }}
+        run: |
+          set -euo pipefail
+          cd "${HOME}/GamePediaCoreServer-prod"
+          ./deploy.sh
 
   deploy-staging:
     if: ${{ github.ref == 'refs/heads/staging' }}
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - gamepedia-core
+      - deploy
+      - ec2-us-east-1
+    environment: staging
+    timeout-minutes: 30
 
     steps:
-      - name: Deploy staging to EC2
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
-          script: |
-            set -euo pipefail
-            TRIGGER_BRANCH="${{ github.ref_name }}"
-            EXPECTED_BRANCH="staging"
-            EXPECTED_DIR="${HOME}/GamePediaCoreServer-staging"
-            [ "${TRIGGER_BRANCH}" = "${EXPECTED_BRANCH}" ] || { echo "Wrong trigger branch: ${TRIGGER_BRANCH}"; exit 1; }
-            [ -d "${EXPECTED_DIR}" ] || { echo "Missing deploy directory: ${EXPECTED_DIR}"; exit 1; }
-            cd "${EXPECTED_DIR}"
-            [ "$(basename "${PWD}")" = "GamePediaCoreServer-staging" ] || { echo "Wrong staging directory: ${PWD}"; exit 1; }
-            [ "$(git rev-parse --abbrev-ref HEAD)" = "${EXPECTED_BRANCH}" ] || { echo "Wrong branch checked out in staging clone"; exit 1; }
-            chmod +x deploy.sh deploy-staging.sh scripts/server/*.sh
-            ./deploy-staging.sh
+      - name: Sync staging clone to pushed commit
+        env:
+          TARGET_BRANCH: staging
+          TARGET_DIR_NAME: GamePediaCoreServer-staging
+        run: |
+          set -euo pipefail
+          TARGET_DIR="${HOME}/${TARGET_DIR_NAME}"
+
+          [ "${GITHUB_REF_NAME}" = "${TARGET_BRANCH}" ] || { echo "Wrong trigger branch: ${GITHUB_REF_NAME}"; exit 1; }
+          [ -d "${TARGET_DIR}/.git" ] || { echo "Missing git working tree: ${TARGET_DIR}"; exit 1; }
+
+          cd "${TARGET_DIR}"
+
+          [ "$(basename "${PWD}")" = "${TARGET_DIR_NAME}" ] || { echo "Wrong directory: ${PWD}"; exit 1; }
+          [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "Tracked files have uncommitted changes in ${TARGET_DIR}"; exit 1; }
+          [ "$(git rev-parse --abbrev-ref HEAD)" = "${TARGET_BRANCH}" ] || { echo "Wrong branch checked out in ${TARGET_DIR}"; exit 1; }
+
+          git fetch --no-tags --prune origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}" \
+            "${GITHUB_SHA}"
+
+          git checkout "${TARGET_BRANCH}"
+          git reset --hard "${GITHUB_SHA}"
+
+          [ "$(git rev-parse HEAD)" = "${GITHUB_SHA}" ] || { echo "Failed to sync ${TARGET_DIR} to ${GITHUB_SHA}"; exit 1; }
+
+          chmod +x deploy.sh deploy-staging.sh scripts/server/*.sh
+
+      - name: Deploy staging from dedicated clone
+        env:
+          EXPECTED_GIT_SHA: ${{ github.sha }}
+          SKIP_PRISMA_MIGRATE_DEPLOY: ${{ vars.SKIP_PRISMA_MIGRATE_DEPLOY }}
+          FORCE_PM2_RECREATE: ${{ vars.FORCE_PM2_RECREATE }}
+        run: |
+          set -euo pipefail
+          cd "${HOME}/GamePediaCoreServer-staging"
+          ./deploy-staging.sh

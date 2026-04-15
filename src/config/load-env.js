@@ -2,10 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
 
-function getNodeEnv() {
-  const nodeEnv = process.env.NODE_ENV?.trim();
+function resolveNodeEnv(nodeEnv) {
+  if (typeof nodeEnv !== 'string') {
+    return null;
+  }
 
-  return nodeEnv ? nodeEnv : 'development';
+  const trimmedNodeEnv = nodeEnv.trim();
+
+  return trimmedNodeEnv.length > 0 ? trimmedNodeEnv : null;
+}
+
+function getNodeEnv() {
+  return resolveNodeEnv(process.env.NODE_ENV) ?? 'development';
 }
 
 function getEnvFilePaths(nodeEnv = getNodeEnv(), cwd = process.cwd()) {
@@ -31,12 +39,16 @@ function loadEnvFile(filePath, override = false) {
 
 function loadEnvironment(options = {}) {
   const cwd = options.cwd ?? process.cwd();
-  const nodeEnv = getNodeEnv();
+  const nodeEnv = resolveNodeEnv(options.nodeEnv) ?? getNodeEnv();
   const envFilePaths = getEnvFilePaths(nodeEnv, cwd);
+
+  process.env.NODE_ENV = nodeEnv;
 
   envFilePaths.forEach((filePath, index) => {
     loadEnvFile(filePath, index > 0);
   });
+
+  process.env.NODE_ENV = nodeEnv;
 
   return {
     nodeEnv,

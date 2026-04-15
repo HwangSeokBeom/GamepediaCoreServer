@@ -1,186 +1,253 @@
 # GamePedia Core Server CI/CD
 
-## 1. 목표 구조
+## 1. 운영 기준
 
-이 저장소의 운영 기준 구조는 다음과 같습니다.
-
-| 구분 | 브랜치 | 서버 디렉토리 | PM2 | 포트 | PostgreSQL DB | 도메인 |
+| 구분 | 브랜치 | 서버 clone | PM2 app | 포트 | PostgreSQL DB | 도메인 |
 | --- | --- | --- | --- | --- | --- | --- |
-| production | `main` | `~/GamePediaCoreServer-prod` | `core-server` | `3001` | `gamepedia_core` | `gamepedia-api.duckdns.org` |
-| staging | `staging` | `~/GamePediaCoreServer-staging` | `core-server-staging` | `3101` | `gamepedia_core_staging` | `staging-gamepedia-api.duckdns.org` |
+| production | `main` | `~/GamePediaCoreServer-prod` | `core-server` | `3001` | `gamepedia_core` | `https://gamepedia-api.duckdns.org` |
+| staging | `staging` | `~/GamePediaCoreServer-staging` | `core-server-staging` | `3101` | `gamepedia_core_staging` | `https://staging-gamepedia-api.duckdns.org` |
 
-핵심 원칙:
+핵심 제약:
 
-- production 과 staging 은 같은 EC2 인스턴스를 사용해도 코드 디렉토리는 공유하지 않습니다.
-- production 배포는 `main` 만 반영합니다.
-- staging 배포는 `staging` 만 반영합니다.
-- nginx 는 그대로 `127.0.0.1:3001` / `127.0.0.1:3101` 으로 프록시합니다.
+- production 과 staging 은 같은 EC2 에 있어도 working tree 를 공유하지 않습니다.
+- deploy job 은 EC2 내부 self-hosted runner 에서만 실행합니다.
+- validate job 은 GitHub-hosted runner(`ubuntu-latest`) 에서 실행합니다.
+- GitHub-hosted runner 가 EC2 에 SSH 접속하는 구조는 사용하지 않습니다.
+- PM2 `cwd` 는 각 clone 경로와 정확히 일치하지 않으면 배포를 실패시킵니다.
 
-## 2. 분리 방식 선택
+## 2. 최종 배포 구조
 
-이번 저장소는 `git worktree` 대신 별도 clone 방식을 기준으로 맞췄습니다.
+현재 저장소는 아래 구조를 기준으로 동작합니다.
 
-선택 이유:
+1. `main` 또는 `staging` push 발생
+2. GitHub-hosted `validate` job 에서 `npm ci`, `npm test --if-present`, `npm run lint --if-present` 실행
+3. branch 에 맞는 self-hosted deploy job 만 실행
+4. EC2 내부 runner 가 전용 clone 에서만 `git fetch` 와 `git reset --hard <github.sha>` 수행
+5. 전용 clone 의 `deploy.sh` 또는 `deploy-staging.sh` 가 배포 본작업 수행
+6. 배포 스크립트가 `npm ci`, env 검증, Prisma, PM2 restart/start/save 수행
 
-- 별도 clone 이 운영자가 이해하기 가장 쉽습니다.
-- 각 디렉토리가 자체 `.git`, branch, `node_modules`, env 파일을 가지므로 branch 충돌 위험이 가장 낮습니다.
-- PM2 `cwd` 와 GitHub Actions 원격 경로를 고정값으로 맞추기 쉽습니다.
-- 장애 시 특정 clone 만 점검하거나 교체하기 쉬워집니다.
+중요:
 
-## 3. 저장소 안에서 바뀐 배포 파일
+- workflow 가 git 동기화의 유일한 주체입니다.
+- `scripts/server/deploy-instance.sh` 는 더 이상 `git fetch` / `git pull` 을 하지 않습니다.
+- env 파일은 bash `source` 로 읽지 않고 Node `dotenv` 로 앱과 같은 순서로 검증합니다.
 
-- `.github/workflows/deploy.yml`
-- `deploy.sh`
-- `deploy-staging.sh`
-- `scripts/server/deploy-instance.sh`
-- `scripts/server/bootstrap-clones.sh`
-- `ecosystem.config.js`
-- `.env.example`
-- `.env.production.example`
-- `.env.staging.example`
+## 3. Workflow 동작
 
-동작 요약:
+워크플로우 파일: [`.github/workflows/deploy.yml`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.github/workflows/deploy.yml)
 
-- GitHub Actions 는 `main` push 시 `~/GamePediaCoreServer-prod/deploy.sh` 를 실행합니다.
-- GitHub Actions 는 `staging` push 시 `~/GamePediaCoreServer-staging/deploy-staging.sh` 를 실행합니다.
-- 각 배포 스크립트는 전용 디렉토리명, 전용 branch, 전용 DB 이름, 전용 public URL, 전용 PM2 앱 이름을 검증합니다.
-- `package-lock.json` 이 있으면 `npm ci`, 없으면 `npm install` 을 실행합니다.
+### 3.1 validate job
 
-## 4. 서버 준비 절차
+- `runs-on: ubuntu-latest`
+- `actions/checkout@v4`
+- `actions/setup-node@v4`
+- `npm ci`
+- `npm test --if-present`
+- `npm run lint --if-present`
 
-### 4.1 필수 런타임
+### 3.2 deploy-production job
 
-다음 서비스/도구가 EC2 `us-east-1` 서버에 설치 및 정상 기동되어 있어야 합니다.
+- `if: github.ref == 'refs/heads/main'`
+- `runs-on: [self-hosted, linux, x64, gamepedia-core, deploy, ec2-us-east-1]`
+- `environment: production`
+- 동작 clone: `~/GamePediaCoreServer-prod`
+- 동작 브랜치: `main`
 
-- Node.js 20+
-- npm
-- git
-- PM2
-- PostgreSQL
-- Redis
-- nginx
+job 내부에서 먼저 아래 검증을 합니다.
 
-### 4.2 코드 디렉토리 생성
+- 대상 디렉토리가 실제 git clone 인지
+- 디렉토리명이 `GamePediaCoreServer-prod` 인지
+- tracked 변경분이 없는지
+- 현재 checkout branch 가 `main` 인지
 
-기존 공유 clone (`~/GamePediaCoreServer`) 가 이미 있다면 그 안에서 다음 명령으로 두 개의 전용 clone 을 생성할 수 있습니다.
+검증 후에는 아래만 수행합니다.
+
+- `git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main" "${GITHUB_SHA}"`
+- `git checkout main`
+- `git reset --hard "${GITHUB_SHA}"`
+- `./deploy.sh`
+
+### 3.3 deploy-staging job
+
+- `if: github.ref == 'refs/heads/staging'`
+- `runs-on: [self-hosted, linux, x64, gamepedia-core, deploy, ec2-us-east-1]`
+- `environment: staging`
+- 동작 clone: `~/GamePediaCoreServer-staging`
+- 동작 브랜치: `staging`
+
+검증과 git 동기화 방식은 production 과 동일하지만 대상 clone 과 branch 만 다릅니다.
+
+### 3.4 SSH secrets 제거
+
+이제 workflow 에서는 아래 값이 더 이상 필요하지 않습니다.
+
+- `EC2_HOST`
+- `EC2_USER`
+- `EC2_SSH_KEY`
+
+배포 job 이 EC2 내부에서 직접 실행되므로 inbound SSH 는 운영자 접속용으로만 유지하면 됩니다.
+
+### 3.5 GitHub Environment 변수
+
+deploy job 은 GitHub `environment` 의 `vars` 도 함께 읽습니다.
+
+- `SKIP_PRISMA_MIGRATE_DEPLOY`
+- `FORCE_PM2_RECREATE`
+
+기본값은 둘 다 `0` 으로 간주됩니다. 따라서 평소에는 값을 비워 두고, 최초 전환이나 Prisma baseline 점검 기간에만 일시적으로 설정하는 것을 권장합니다.
+
+## 4. Deploy Script 동작
+
+공통 배포 스크립트: [`scripts/server/deploy-instance.sh`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/scripts/server/deploy-instance.sh)
+
+환경별 래퍼:
+
+- production: [`deploy.sh`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/deploy.sh)
+- staging: [`deploy-staging.sh`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/deploy-staging.sh)
+
+공통 스크립트가 수행하는 일:
+
+1. 실행 위치가 환경 전용 clone 인지 검증
+2. 현재 branch 가 환경 전용 branch 인지 검증
+3. workflow 가 넘긴 `EXPECTED_GIT_SHA` 와 현재 `HEAD` 가 같은지 검증
+4. `package-lock.json` 존재 검증 후 `npm ci`
+5. Node `dotenv` 로 실제 앱 로딩 순서 그대로 env 검증
+6. `NODE_ENV=<env> npx prisma generate`
+7. 필요 시 `NODE_ENV=<env> npx prisma migrate deploy`
+8. PM2 프로세스의 현재 `pm_cwd` 가 전용 clone 경로인지 검사
+9. 다르면 delete 후 start, 맞으면 restart, 필요 시 `FORCE_PM2_RECREATE=1` 강제 재등록
+10. start/restart 이후 PM2 `pm_cwd` 를 다시 읽어 최종 검증
+11. `pm2 save`
+
+중요:
+
+- deploy script 는 네트워크에서 새 commit 을 가져오지 않습니다.
+- deploy script 는 env 파일을 `source` 하지 않습니다.
+- PM2 `cwd` 가 어긋난 상태면 그냥 restart 하지 않고 recreate 합니다.
+
+## 5. Env 로딩 규칙
+
+앱, Prisma, 배포 env 검증은 모두 아래 순서로 env 파일을 읽습니다.
+
+1. `.env`
+2. `.env.local`
+3. `.env.${NODE_ENV}`
+4. `.env.${NODE_ENV}.local`
+
+예:
+
+- production: `.env` -> `.env.local` -> `.env.production` -> `.env.production.local`
+- staging: `.env` -> `.env.local` -> `.env.staging` -> `.env.staging.local`
+
+필수 조건:
+
+- production clone 에는 `.env.production` 또는 `.env.production.local` 이 반드시 있어야 합니다.
+- staging clone 에는 `.env.staging` 또는 `.env.staging.local` 이 반드시 있어야 합니다.
+
+배포 검증 기준:
+
+- `DATABASE_URL` 의 DB 이름이 환경별 값과 일치해야 합니다.
+- `APP_WEB_BASE_URL` 이 환경별 도메인과 일치해야 합니다.
+- `API_PUBLIC_BASE_URL` 이 있으면 환경별 도메인과 일치해야 합니다.
+- `PORT` 가 있으면 환경별 포트와 일치해야 합니다.
+
+### 5.1 bash source 를 쓰지 않는 이유
+
+과거에는 deploy script 가 `.env*` 파일을 bash `source` 했지만, 아래와 같은 값이 있으면 쉘 문법 오류가 날 수 있습니다.
+
+```dotenv
+MAIL_FROM=GamePedia <no-reply@example.com>
+```
+
+문제 포인트:
+
+- 공백이 포함된 값
+- `<`, `>`, `(`, `)`, `!`, `&` 같은 shell 메타문자
+- quote escape 누락
+
+현재 구조는 bash `source` 에 의존하지 않고 Node `dotenv` 로만 읽으므로 위 문제를 회피합니다.
+
+## 6. Runner 라벨 전략
+
+현재 권장 라벨:
+
+- 기본: `self-hosted`, `linux`, `x64`
+- 커스텀: `gamepedia-core`, `deploy`, `ec2-us-east-1`
+
+이 저장소는 production/staging 을 한 EC2 에서 함께 운영하므로, runner 를 환경별로 두 개 설치할 필요는 없습니다.
+
+권장 이유:
+
+- `gamepedia-core`: 이 저장소 전용 runner 라우팅
+- `deploy`: validate 와 구분되는 배포 전용 역할
+- `ec2-us-east-1`: 잘못된 리전에 job 이 붙는 것 방지
+
+상세 설치 절차는 [`docs/runner-setup.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/runner-setup.md)를 따릅니다.
+
+## 7. 최초 1회 전환 체크리스트
+
+### 7.1 사전 준비
+
+1. `~/GamePediaCoreServer-prod`, `~/GamePediaCoreServer-staging` 가 존재하는지 확인
+2. 각 clone 의 env 파일 확인
+3. `pm2 status core-server`, `pm2 status core-server-staging` 로 현재 상태 확인
+4. GitHub repository `Settings -> Actions -> Runners` 에서 self-hosted runner 등록
+
+### 7.2 clone 정리
+
+기존 공유 clone 에서 부트스트랩이 필요하면:
 
 ```bash
 cd ~/GamePediaCoreServer
 bash scripts/server/bootstrap-clones.sh
 ```
 
-직접 clone 할 수도 있습니다.
+### 7.3 staging 먼저 재등록
+
+`staging` 을 먼저 새 cwd 로 재등록하고 검증합니다.
 
 ```bash
-git clone <repo-url> ~/GamePediaCoreServer-prod
-git -C ~/GamePediaCoreServer-prod checkout main
-
-git clone <repo-url> ~/GamePediaCoreServer-staging
-git -C ~/GamePediaCoreServer-staging checkout staging
-```
-
-### 4.3 환경 변수 파일
-
-애플리케이션과 Prisma CLI 는 모두 아래 순서로 env 를 읽습니다.
-
-1. `.env`
-2. `.env.local`
-3. `.env.${NODE_ENV}`
-4. `.env.${NODE_ENV}.local`
-
-권장 방식:
-
-- 공통 기본값: `.env.production`, `.env.staging`
-- 서버별 override / 비밀값: `.env.production.local`, `.env.staging.local`
-
-파일 우선순위는 아래와 같습니다. 아래쪽일수록 최종 우선순위가 높습니다.
-
-1. `.env`
-2. `.env.local`
-3. `.env.${NODE_ENV}`
-4. `.env.${NODE_ENV}.local`
-
-환경별 필수 파일은 다음과 같습니다.
-
-| clone | 반드시 있어야 하는 파일 | 선택 파일 | 최종 우선순위 |
-| --- | --- | --- | --- |
-| `~/GamePediaCoreServer-prod` | `.env.production` 또는 `.env.production.local` | `.env`, `.env.local` | `.env.production.local` > `.env.production` > `.env.local` > `.env` |
-| `~/GamePediaCoreServer-staging` | `.env.staging` 또는 `.env.staging.local` | `.env`, `.env.local` | `.env.staging.local` > `.env.staging` > `.env.local` > `.env` |
-
-예시 파일:
-
-- production: [`.env.production.example`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.env.production.example)
-- staging: [`.env.staging.example`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.env.staging.example)
-
-### 4.4 PM2 등록
-
-각 clone 디렉토리에서 한 번씩 배포 래퍼를 실행하면 PM2 가 새 `cwd` 기준으로 등록됩니다.
-
-```bash
-cd ~/GamePediaCoreServer-prod
-./deploy.sh
-
 cd ~/GamePediaCoreServer-staging
-./deploy-staging.sh
-```
-
-이후 확인:
-
-```bash
-pm2 status core-server
+FORCE_PM2_RECREATE=1 SKIP_PRISMA_MIGRATE_DEPLOY=1 ./deploy-staging.sh
 pm2 status core-server-staging
-pm2 save
+pm2 jlist | node -e 'const fs=require("fs");const items=JSON.parse(fs.readFileSync(0,"utf8"));const app=items.find((entry)=>entry.name==="core-server-staging");console.log(app?.pm2_env?.pm_cwd || "missing");'
+curl -I http://127.0.0.1:3101/health
+curl -I https://staging-gamepedia-api.duckdns.org/health
 ```
 
-## 5. GitHub Actions 배포 흐름
+확인 포인트:
 
-워크플로우 파일: [`.github/workflows/deploy.yml`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.github/workflows/deploy.yml)
+- PM2 app 이름이 `core-server-staging` 인지
+- `pm_cwd` 가 `~/GamePediaCoreServer-staging` 인지
+- localhost 와 public staging domain 이 모두 응답하는지
 
-동작:
+### 7.4 staging workflow 검증
 
-1. `main` 또는 `staging` push 시 validate job 이 `npm ci`, `npm test --if-present`, `npm run lint --if-present` 를 수행합니다.
-2. `main` 이면 production job 만 실행됩니다.
-3. `staging` 이면 staging job 만 실행됩니다.
-4. GitHub Actions 는 `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY` 로 EC2 에 SSH 접속합니다.
-5. 원격 서버에서 전용 디렉토리 존재 여부, 디렉토리명, 현재 git branch 를 먼저 검증합니다.
-6. 검증 통과 시에만 전용 디렉토리의 배포 래퍼를 실행합니다.
+1. `staging` branch 에 테스트 commit push
+2. Actions 에서 `validate` 는 GitHub-hosted runner, `deploy-staging` 은 self-hosted runner 로 실행되는지 확인
+3. workflow 로그에서 SSH action 이 전혀 없음을 확인
+4. EC2 에서 `pm2 logs core-server-staging --lines 100` 점검
 
-GitHub Secrets 는 반드시 현재 `us-east-1` EC2 를 가리켜야 합니다.
+### 7.5 production 전환
 
-## 6. 배포 스크립트 동작
-
-공통 로직 파일: [`scripts/server/deploy-instance.sh`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/scripts/server/deploy-instance.sh)
-
-각 환경에서 다음을 강제합니다.
-
-- 전용 디렉토리 이름 검증
-- 현재 clone 이 올바른 branch (`main` 또는 `staging`) 인지 fail-fast 검증
-- `git pull --ff-only`
-- `package-lock.json` 이 있으면 `npm ci`, 없으면 `npm install`
-- env 파일 로드
-- 환경별 전용 env 파일 (`.env.production(.local)` / `.env.staging(.local)`) 존재 검증
-- DB 이름, public URL, port 검증
-- `npx prisma generate`
-- `SKIP_PRISMA_MIGRATE_DEPLOY=1` 이 아니면 `npx prisma migrate deploy`
-- 기존 PM2 프로세스의 `pm_cwd` 가 다르면 delete 후 start 로 재등록
-- `FORCE_PM2_RECREATE=1` 이면 PM2 프로세스를 강제로 delete 후 start
-- `pm2 save`
-
-수동 배포:
+staging 검증이 끝난 뒤 production 을 재등록합니다.
 
 ```bash
 cd ~/GamePediaCoreServer-prod
-./deploy.sh
-
-cd ~/GamePediaCoreServer-staging
-./deploy-staging.sh
+FORCE_PM2_RECREATE=1 SKIP_PRISMA_MIGRATE_DEPLOY=1 ./deploy.sh
+pm2 status core-server
+pm2 jlist | node -e 'const fs=require("fs");const items=JSON.parse(fs.readFileSync(0,"utf8"));const app=items.find((entry)=>entry.name==="core-server");console.log(app?.pm2_env?.pm_cwd || "missing");'
+curl -I http://127.0.0.1:3001/health
+curl -I https://gamepedia-api.duckdns.org/health
 ```
 
-### 6.1 SQL dump 복구 직후의 Prisma 점검
+그 다음 `main` 에 테스트 반영을 수행합니다.
 
-Prisma 공식 문서 기준으로 `migrate deploy` 는 production/test 환경에서 pending migration 적용 용도로 사용하는 것이 맞지만, drift 는 감지하지 못합니다. 또한 기존 DB 를 Prisma Migrate 에 붙이는 경우에는 `_prisma_migrations` 를 baseline / resolve 로 맞춰 두어야 합니다. 복구 직후 DB 가 SQL dump 로만 되살아났고 `_prisma_migrations` 상태가 불확실하다면, 바로 `migrate deploy` 를 돌리는 것은 안전하지 않을 수 있습니다.
+### 7.6 Prisma 안전장치
 
-점검 절차:
+`_prisma_migrations` 상태가 불명확하거나 dump 복구 직후라면, 최초 전환에서는 `SKIP_PRISMA_MIGRATE_DEPLOY=1` 로 두고 먼저 애플리케이션/PM2/cwd 만 안정화합니다.
+
+점검 SQL:
 
 ```sql
 SELECT migration_name, finished_at, rolled_back_at
@@ -188,129 +255,54 @@ FROM _prisma_migrations
 ORDER BY finished_at NULLS FIRST, migration_name;
 ```
 
-확인 기준:
+정상화 이후에만 `SKIP_PRISMA_MIGRATE_DEPLOY` 없이 일반 배포로 전환합니다.
 
-- 최신 dump 복구 후 `_prisma_migrations` 가 비어 있거나 누락되면 baseline/resolve 없이 바로 `migrate deploy` 하지 않습니다.
-- `_prisma_migrations` 에 실패 흔적이 있으면 `rolled_back_at`, `logs` 를 먼저 점검합니다.
-- 현재 `prisma/migrations` 디렉토리와 DB 의 end-state 가 같아야 안전합니다.
+## 8. 롤백 방법
 
-복구 직후 1회 배포에서 migration 을 건너뛰려면:
+### 8.1 workflow 구조 롤백
 
-```bash
-cd ~/GamePediaCoreServer-prod
-SKIP_PRISMA_MIGRATE_DEPLOY=1 ./deploy.sh
-```
+새 self-hosted runner 방식이 문제를 만들면 다음 순서로 롤백합니다.
 
-baseline 이 필요한 경우 Prisma 공식 절차처럼 `prisma migrate resolve --applied <migration>` 으로 `_prisma_migrations` 를 맞춘 다음부터 `migrate deploy` 를 재개해야 합니다.
+1. GitHub repository 에서 self-hosted deploy workflow 를 비활성화하거나 revert commit 을 push
+2. 필요 시 self-hosted runner service 중지
+3. 기존 SSH workflow 를 되살릴지, 아니면 수동 배포로 잠시 운영할지 결정
 
-## 7. nginx 기준값
+### 8.2 코드 롤백
 
-저장소 안에 nginx 설정 파일은 없으므로, 서버에는 아래와 같은 reverse proxy 구조가 유지되어야 합니다.
-
-```nginx
-server {
-    listen 80;
-    server_name gamepedia-api.duckdns.org;
-
-    location / {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-
-server {
-    listen 80;
-    server_name staging-gamepedia-api.duckdns.org;
-
-    location / {
-        proxy_pass http://127.0.0.1:3101;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-변경 후 확인:
+staging 예시:
 
 ```bash
-sudo nginx -t
-sudo systemctl reload nginx
+cd ~/GamePediaCoreServer-staging
+git fetch --prune origin
+git checkout staging
+git reset --hard <last-known-good-sha>
+SKIP_PRISMA_MIGRATE_DEPLOY=1 ./deploy-staging.sh
 ```
 
-## 8. DuckDNS / 외부 접근
-
-- `gamepedia-api.duckdns.org` 는 현재 EC2 public IP 를 가리켜야 합니다.
-- `staging-gamepedia-api.duckdns.org` 도 같은 EC2 public IP 를 가리켜야 합니다.
-- Security Group 은 80/443 과 SSH 접근 정책을 현재 운영 기준에 맞게 열어야 합니다.
-
-## 9. 롤백 절차
-
-중요:
-
-- 이 저장소의 배포 스크립트는 forward-only Prisma 마이그레이션을 사용합니다.
-- 코드만 되돌리는 임시 롤백은 가능하지만, 이미 적용된 스키마 변경과 충돌할 수 있습니다.
-- DB 문제까지 포함한 롤백은 백업 복구 또는 fix-forward migration 을 기준으로 판단해야 합니다.
-
-임시 코드 롤백 예시:
-
-```bash
-cd ~/GamePediaCoreServer-prod
-git log --oneline -n 10
-git checkout <last-known-good-commit>
-npm ci
-NODE_ENV=production npx prisma generate
-pm2 restart ecosystem.config.js --only core-server --env production --update-env
-pm2 save
-```
+production 도 동일하게 `main` / `~/GamePediaCoreServer-prod` / `./deploy.sh` 기준으로 수행합니다.
 
 주의:
 
-- 위 방법은 서버에서만 임시 복구하는 방식입니다.
-- 다음 CI/CD 실행 시 branch HEAD 가 다시 배포되므로, Git 저장소에서도 `revert` 또는 fix-forward 커밋을 만들어야 합니다.
+- 이미 적용된 Prisma migration 은 자동 롤백되지 않습니다.
+- 스키마 문제는 DB 백업 복구 또는 fix-forward migration 기준으로 판단해야 합니다.
+- PM2 `cwd` 까지 흔들린 경우 `FORCE_PM2_RECREATE=1` 을 함께 사용합니다.
 
-## 10. 신규 서버 재구성 체크
+## 9. 보안그룹 권장 상태
 
-1. `us-east-1` EC2 생성 및 SSH 접속 확인
-2. Node.js 20, npm, git, PM2 설치
-3. PostgreSQL / Redis / nginx 설치 및 기동
-4. DuckDNS 가 새 public IP 를 가리키도록 갱신
-5. 저장소를 `~/GamePediaCoreServer-prod`, `~/GamePediaCoreServer-staging` 로 각각 clone
-6. `.env.production(.local)` / `.env.staging(.local)` 작성
-7. PM2 등록 및 `pm2 save`
-8. nginx 프록시 설정 적용
-9. GitHub Secrets 의 `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY` 를 새 서버 기준으로 갱신
-10. `main` 과 `staging` 에서 각각 테스트 배포 수행
+권장 방향:
 
-## 11. 최초 1회 전환 체크
+- `80/tcp`, `443/tcp`: 서비스 공개 정책에 맞게 허용
+- `22/tcp`: 운영자 고정 IP 또는 VPN/bastion IP 만 허용
+- GitHub Actions 용으로 `22/tcp` 를 `0.0.0.0/0` 에 열 필요 없음
+- EC2 outbound `443/tcp`: GitHub 와 npm registry 접근을 위해 허용 필요
 
-기존 PM2 프로세스가 옛 `~/GamePediaCoreServer` `cwd` 를 들고 있을 수 있으므로, 최초 1회 전환 때는 recreate 기준으로 맞추는 것이 가장 안전합니다.
+핵심 차이:
 
-권장 순서:
+- 예전 구조는 GitHub-hosted runner 가 EC2 로 inbound SSH 해야 했습니다.
+- 현재 구조는 EC2 가 GitHub 로 outbound HTTPS 하면 되므로 SSH 공개 범위를 대폭 줄일 수 있습니다.
 
-```bash
-cd ~/GamePediaCoreServer
-bash scripts/server/bootstrap-clones.sh
+## 10. 참고 문서
 
-pm2 delete core-server || true
-pm2 delete core-server-staging || true
-
-cd ~/GamePediaCoreServer-prod
-FORCE_PM2_RECREATE=1 SKIP_PRISMA_MIGRATE_DEPLOY=1 ./deploy.sh
-
-cd ~/GamePediaCoreServer-staging
-FORCE_PM2_RECREATE=1 SKIP_PRISMA_MIGRATE_DEPLOY=1 ./deploy-staging.sh
-
-pm2 status core-server
-pm2 status core-server-staging
-pm2 save
-```
-
-그 다음:
-
-- `_prisma_migrations` 점검이 끝나면 `SKIP_PRISMA_MIGRATE_DEPLOY` 없이 정상 배포로 전환합니다.
-- 이후부터는 `FORCE_PM2_RECREATE` 없이 일반 `./deploy.sh`, `./deploy-staging.sh` 를 사용합니다.
+- self-hosted runner 설치/서비스화: [`docs/runner-setup.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/runner-setup.md)
+- PM2 설정: [`ecosystem.config.js`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/ecosystem.config.js)
+- clone bootstrap: [`scripts/server/bootstrap-clones.sh`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/scripts/server/bootstrap-clones.sh)

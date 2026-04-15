@@ -410,6 +410,8 @@ cd ~/GamePediaCoreServer-staging
 - `core-server` -> `~/GamePediaCoreServer-prod`
 - `core-server-staging` -> `~/GamePediaCoreServer-staging`
 
+이 `cwd` 가 어긋나면 배포 스크립트가 자동으로 실패시키거나 recreate 합니다.
+
 ## Search Notes
 
 - 검색은 서버 번역이 아니라 `normalize -> locale alias resolve -> candidate generation -> IGDB fetch -> rerank` 순서로 동작합니다.
@@ -423,9 +425,10 @@ CI/CD 와 운영 절차는 [`docs/cicd.md`](/Users/hwangseokbeom/Documents/GitHu
 
 현재 기준 요약:
 
-- `main` push -> GitHub Actions -> `~/GamePediaCoreServer-prod` -> `./deploy.sh` -> PM2 `core-server`
-- `staging` push -> GitHub Actions -> `~/GamePediaCoreServer-staging` -> `./deploy-staging.sh` -> PM2 `core-server-staging`
+- `main` push -> GitHub-hosted validate -> EC2 self-hosted deploy -> `~/GamePediaCoreServer-prod` -> `./deploy.sh` -> PM2 `core-server`
+- `staging` push -> GitHub-hosted validate -> EC2 self-hosted deploy -> `~/GamePediaCoreServer-staging` -> `./deploy-staging.sh` -> PM2 `core-server-staging`
 - nginx 는 `gamepedia-api.duckdns.org -> 127.0.0.1:3001`, `staging-gamepedia-api.duckdns.org -> 127.0.0.1:3101`
+- runner 설치/서비스화 절차는 [`docs/runner-setup.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/runner-setup.md)를 기준으로 유지합니다.
 
 ## 9. API 구조 개요
 
