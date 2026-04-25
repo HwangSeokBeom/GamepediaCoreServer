@@ -7,6 +7,11 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "deploy:production": "bash ./deploy.sh",
+    "deploy:staging": "bash ./deploy-staging.sh",
+    "deploy:validate:production": "NODE_ENV=production node ./scripts/server/validate-deploy-env.js production",
+    "deploy:validate:staging": "NODE_ENV=staging node ./scripts/server/validate-deploy-env.js staging",
+    "deploy:bootstrap:server": "bash ./scripts/server/bootstrap-clones.sh",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio"

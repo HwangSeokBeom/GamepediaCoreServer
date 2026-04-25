@@ -149,9 +149,15 @@ flowchart LR
 
 ```text
 GamePediaCoreServer/
+├── docs/
+│   └── cicd.md
 ├── prisma/
 │   ├── schema.prisma
 │   └── migrations/
+├── scripts/
+│   └── server/
+│       ├── bootstrap-clones.sh
+│       └── deploy-instance.sh
 ├── src/
 │   ├── app.js
 │   ├── server.js
@@ -197,8 +203,12 @@ GamePediaCoreServer/
 │       └── auth.validator.js
 ├── ecosystem.config.js
 ├── deploy.sh
+├── deploy-staging.sh
 ├── prisma.config.js
-└── .env.production
+├── .env.production
+├── .env.staging
+├── .env.production.example
+└── .env.staging.example
 ```
 
 주의할 점:
@@ -295,7 +305,7 @@ Prisma는 PostgreSQL 스키마와 애플리케이션 모델 사이를 연결합�
 3. `.env.${NODE_ENV}`
 4. `.env.${NODE_ENV}.local`
 
-배포 스크립트 [`deploy.sh`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/deploy.sh)는 `.env.production`을 직접 로드합니다.
+배포 스크립트와 Prisma CLI도 같은 순서를 기준으로 동작합니다. 운영 서버에서는 `.env.production` / `.env.staging` 에 공통값을 두고, 서버별 override 와 비밀값은 `.env.production.local` / `.env.staging.local` 로 분리하는 것을 권장합니다.
 
 ### 6.1 핵심 서버/DB
 
@@ -356,40 +366,16 @@ Prisma는 PostgreSQL 스키마와 애플리케이션 모델 사이를 연결합�
 | `REDIS_URL` | Redis 연결 문자열. 현재는 부팅 시 연결 점검 용도 | 선택 |
 | `PROFILE_IMAGE_MAX_SIZE_BYTES` | 업로드 가능한 프로필 이미지 최대 크기 | 예 |
 
-### 6.7 `.env.production` 예시
+### 6.7 예시 파일
 
-```env
-NODE_ENV=production
-HOST=0.0.0.0
-PORT=3001
+- 로컬 개발 기준: [`.env.example`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.env.example)
+- production 기준: [`.env.production.example`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.env.production.example)
+- staging 기준: [`.env.staging.example`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.env.staging.example)
 
-DATABASE_URL=postgresql://user:password@db-host:5432/gamepedia
+현재 운영 기준값은 다음과 같습니다.
 
-JWT_ACCESS_SECRET=change-me
-JWT_REFRESH_SECRET=change-me-too
-ACCESS_TOKEN_EXPIRES_IN=15m
-REFRESH_TOKEN_EXPIRES_IN=30d
-BCRYPT_SALT_ROUNDS=12
-PASSWORD_RESET_TOKEN_TTL_MINUTES=60
-
-APP_WEB_BASE_URL=https://app.example.com
-API_PUBLIC_BASE_URL=https://api.example.com
-MOBILE_APP_STEAM_CALLBACK_URL=gamepedia://steam/callback
-
-MAIL_MODE=log
-MAIL_PORT=587
-MAIL_SECURE=false
-
-APPLE_CLIENT_ID=com.example.gamepedia
-GOOGLE_CLIENT_ID=google-client-id.apps.googleusercontent.com
-STEAM_API_KEY=steam-api-key
-STEAM_WEB_API_BASE_URL=https://api.steampowered.com/
-TWITCH_CLIENT_ID=twitch-client-id
-TWITCH_CLIENT_SECRET=twitch-client-secret
-
-REDIS_URL=redis://127.0.0.1:6379/0
-PROFILE_IMAGE_MAX_SIZE_BYTES=5242880
-```
+- production: `PORT=3001`, `DATABASE_URL -> gamepedia_core`, `https://gamepedia-api.duckdns.org`
+- staging: `PORT=3101`, `DATABASE_URL -> gamepedia_core_staging`, `https://staging-gamepedia-api.duckdns.org`
 
 ## 7. 설치 및 실행
 
@@ -402,13 +388,14 @@ npx prisma migrate dev
 npm run dev
 ```
 
-### 7.2 프로덕션 실행
+### 7.2 프로덕션 / 스테이징 실행
 
 ```bash
-npm install
-npx prisma generate
-npx prisma migrate deploy
-pm2 start ecosystem.config.js --only core-server --env production
+cd ~/GamePediaCoreServer-prod
+./deploy.sh
+
+cd ~/GamePediaCoreServer-staging
+./deploy-staging.sh
 ```
 
 ### 7.3 PM2 설정
@@ -417,6 +404,13 @@ pm2 start ecosystem.config.js --only core-server --env production
 
 - `core-server`
 - `core-server-staging`
+
+운영 서버에서 위 프로세스는 기본적으로 다음 `cwd` 를 사용하도록 맞춰져 있습니다.
+
+- `core-server` -> `~/GamePediaCoreServer-prod`
+- `core-server-staging` -> `~/GamePediaCoreServer-staging`
+
+이 `cwd` 가 어긋나면 배포 스크립트가 자동으로 실패시키거나 recreate 합니다.
 
 ## Search Notes
 
@@ -427,26 +421,16 @@ pm2 start ecosystem.config.js --only core-server --env production
 
 ## 8. 배포 방법
 
-현재 저장소에는 AWS EC2 환경을 전제로 한 배포 스크립트 [`deploy.sh`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/deploy.sh)가 포함되어 있습니다.
+현재 실제 운영 배포 기준은 [`docs/manual-deploy.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/manual-deploy.md)입니다.
 
-배포 순서:
+현재 기준 요약:
 
-1. 워킹 트리가 깨끗한지 확인
-2. `main` 브랜치 최신 코드 fetch/pull
-3. `npm ci` 또는 `npm install`
-4. `.env.production` 로드
-5. `npx prisma generate`
-6. `npx prisma migrate deploy`
-7. `pm2 start` 또는 `pm2 restart`
-8. `pm2 save`
-
-직접 수동 배포 시 최소 명령은 다음과 같습니다.
-
-```bash
-npm install
-npx prisma migrate deploy
-pm2 start ecosystem.config.js --only core-server --env production
-```
+- 운영자는 로컬에서 `dev -> staging -> main` 순서로 머지합니다.
+- EC2 에 SSH 접속해 `git fetch` + `git reset --hard origin/<branch>` + `pm2 restart` 방식으로 수동 배포합니다.
+- `staging` 검증 성공 후에만 `production` 을 반영합니다.
+- nginx 는 `gamepedia-api.duckdns.org -> 127.0.0.1:3001`, `staging-gamepedia-api.duckdns.org -> 127.0.0.1:3101`
+- self-hosted runner 자동배포는 현재 비활성화 상태이며, 참고용 문서는 [`docs/cicd.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/cicd.md)입니다.
+- runner 설치/서비스화 참고는 [`docs/runner-setup.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/runner-setup.md)에서 확인합니다.
 
 ## 9. API 구조 개요
 
