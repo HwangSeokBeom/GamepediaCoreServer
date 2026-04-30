@@ -153,6 +153,17 @@ flowchart LR
 - 추천 요청과 결과는 `ai_recommendation_logs`, 일일 사용량은 `ai_usage_limits`에 저장됩니다.
 - 동일 요청은 `AI_RECOMMENDATION_CACHE_TTL_SECONDS` 동안 서버 메모리 캐시에 저장됩니다. 캐시는 프로세스 재시작 시 사라지며, userId/query/platforms/preferredGenres/excludedGameIds/limit 기준으로 분리됩니다.
 
+### 3.9 AI 리뷰 요약 / 장단점 추출
+
+- `GET /api/v1/ai/games/:gameId/review-summary`
+- Access Token 인증 필수
+- 특정 게임의 사용자 리뷰를 기반으로 전체 요약, 장점, 단점, 추천/비추천 사용자, 주요 키워드를 생성합니다.
+- LLM은 리뷰 텍스트 요약만 담당하며 `title`, `coverUrl`, `rating` 같은 정적 게임 정보는 만들지 않습니다.
+- 리뷰가 3개 미만이면 LLM을 호출하지 않고 `REVIEW_SUMMARY_NOT_AVAILABLE`을 반환합니다.
+- `LLM_API_KEY`가 없거나 LLM 장애/timeout/invalid JSON이 발생하면 rule-based fallback summary를 생성해 정상 응답합니다.
+- 요약 결과는 `ai_review_summaries`, 일일 사용량은 `ai_usage_limits.review_summary_count`에 저장됩니다.
+- 같은 `gameId + sourceReviewHash` 요약은 DB 캐시로 반환하며, MVP 정책상 캐시 hit는 usage count를 증가시키지 않습니다.
+
 ## 4. 실제 프로젝트 구조
 
 아래는 현재 저장소 기준의 실제 구조입니다.
@@ -379,12 +390,13 @@ Prisma는 PostgreSQL 스키마와 애플리케이션 모델 사이를 연결합�
 | `LLM_MODEL` | OpenAI 호환 chat completions 모델명 | 아니오 |
 | `LLM_TIMEOUT_MS` | LLM 호출 timeout(ms) | 아니오 |
 | `AI_RECOMMENDATION_DAILY_LIMIT` | 사용자별 일일 AI 추천 요청 제한 | 아니오 |
+| `AI_REVIEW_SUMMARY_DAILY_LIMIT` | 사용자별 일일 AI 리뷰 요약 생성 제한. 없으면 추천 제한 기본값을 따름 | 아니오 |
 | `AI_RECOMMENDATION_CACHE_TTL_SECONDS` | 동일 추천 요청에 대한 서버 메모리 캐시 TTL. `0`이면 비활성화 | 아니오 |
 
 주의:
 
 - `LLM_API_KEY`는 iOS 앱에 넣지 않고 서버 환경 변수로만 관리합니다.
-- `LLM_API_KEY`가 비어 있으면 외부 LLM 호출 없이 fallback 추천이 동작합니다.
+- `LLM_API_KEY`가 비어 있으면 외부 LLM 호출 없이 fallback 추천/리뷰 요약이 동작합니다.
 - 로컬 실제 키는 커밋 대상 예시 파일 대신 `.env.development.local` 등에 넣어 관리합니다.
 - Gemini 테스트는 `LLM_PROVIDER=gemini`, `LLM_MODEL=gemini-2.5-flash` 또는 `gemini-2.5-flash-lite`를 사용합니다.
 - Groq 테스트는 `LLM_PROVIDER=groq`, 기본 `LLM_MODEL=llama-3.1-8b-instant`, 기본 `LLM_BASE_URL=https://api.groq.com/openai/v1`를 사용합니다.
@@ -552,6 +564,7 @@ CI/CD 와 운영 절차는 [`docs/cicd.md`](/Users/hwangseokbeom/Documents/GitHu
 ### 9.9 AI Recommendation
 
 - `POST /api/v1/ai/game-recommendations`
+- `GET /api/v1/ai/games/:gameId/review-summary`
 
 AI 추천은 이 서버의 기존 `/games`, `/reviews` root route와 달리 신규 iOS 연동 계약에 맞춰 `/api/v1` prefix를 포함합니다.  
 따라서 iOS가 호출해야 하는 최종 path는 `/api/v1/ai/game-recommendations`이며, `src/app.js`에서 추가 prefix를 붙이지 않습니다.
@@ -678,6 +691,64 @@ psql "$DATABASE_URL" -c "select model, prompt_tokens, completion_tokens, result_
 ```
 
 Gemini 호출 성공 시 `model`은 `gemini-2.5-flash` 계열로 저장되고, Groq 호출 성공 시 기본 `model`은 `llama-3.1-8b-instant`로 저장됩니다. fallback 사용 시 `mock-rule-based`로 저장됩니다.
+
+### 9.10 AI Review Summary
+
+AI 리뷰 요약은 `/api/v1` prefix를 포함합니다. iOS가 호출해야 하는 최종 path는 `GET /api/v1/ai/games/:gameId/review-summary`입니다.
+
+성공 응답:
+
+```json
+{
+  "success": true,
+  "data": {
+    "gameId": 1942,
+    "summary": "대부분의 리뷰는 느긋한 플레이와 높은 자유도를 장점으로 언급합니다.",
+    "pros": ["농장 관리와 탐험의 균형이 좋다는 의견이 많습니다."],
+    "cons": ["초반에는 해야 할 일이 많아 다소 복잡하게 느껴질 수 있습니다."],
+    "recommendedFor": ["느긋한 게임을 선호하는 사용자"],
+    "notRecommendedFor": ["빠른 전투와 경쟁 중심 플레이를 원하는 사용자"],
+    "keywords": ["힐링", "자유도", "농장"],
+    "reviewCount": 24,
+    "sourceReviewHash": "hash...",
+    "generatedAt": "2026-04-30T00:00:00.000Z",
+    "disclaimer": "AI 리뷰 요약은 사용자 리뷰를 기반으로 생성되며, 실제 경험과 다를 수 있습니다."
+  }
+}
+```
+
+에러 응답 예시:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "REVIEW_SUMMARY_NOT_AVAILABLE",
+    "message": "요약할 리뷰가 충분하지 않습니다."
+  }
+}
+```
+
+주요 에러 코드:
+
+- `VALIDATION_FAILED`
+- `UNAUTHORIZED`
+- `REVIEW_SUMMARY_NOT_AVAILABLE`
+- `AI_DAILY_LIMIT_EXCEEDED`
+- `AI_REVIEW_SUMMARY_FAILED`
+
+동작 정책:
+
+- Access Token 인증이 필수입니다.
+- `gameId`는 positive safe integer path parameter만 허용합니다.
+- 기존 리뷰 목록 정책과 동일하게 차단 관계의 작성자 리뷰는 요약 대상에서 제외합니다.
+- 요약에는 리뷰 id, 평점, 작성일, 본문만 사용하며 userId/email/nickname 같은 개인 식별 정보는 LLM prompt에 넣지 않습니다.
+- prompt에는 최신성과 평점 다양성을 고려해 최대 30개 리뷰를 보내고, 각 본문은 최대 500자로 자릅니다.
+- `sourceReviewHash`는 대상 리뷰 전체의 `reviewId`, `updatedAt`, `content`를 reviewId 기준으로 정렬해 SHA-256으로 계산합니다. 리뷰 추가/수정/삭제로 대상 집합이 바뀌면 hash가 달라집니다.
+- 같은 `gameId + sourceReviewHash`가 `ai_review_summaries`에 있으면 DB 캐시를 반환하고 usage count를 증가시키지 않습니다.
+- 캐시 miss로 새 LLM/fallback summary를 생성할 때만 `ai_usage_limits.review_summary_count`를 증가시킵니다.
+- `LLM_API_KEY`가 없거나 LLM이 실패하면 평균 평점, 긍정/부정 리뷰 수, 리뷰 텍스트 키워드 기반 fallback summary를 저장/반환합니다.
+- iOS 앱은 `LLM_API_KEY`를 절대 포함하지 않고 서버 API만 호출해야 합니다.
 
 ## 10. iOS 앱과의 연동 방식
 

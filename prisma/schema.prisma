@@ -474,6 +474,7 @@ model AiUsageLimit {
   userId              String   @map("user_id") @db.Uuid
   usageDate           DateTime @map("usage_date") @db.Date
   recommendationCount Int      @default(0) @map("recommendation_count")
+  reviewSummaryCount  Int      @default(0) @map("review_summary_count")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
   user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -481,4 +482,26 @@ model AiUsageLimit {
   @@unique([userId, usageDate])
   @@index([usageDate])
   @@map("ai_usage_limits")
+}
+
+model AiReviewSummary {
+  id                 BigInt   @id @default(autoincrement())
+  gameId             BigInt   @map("game_id")
+  summary            String   @db.Text
+  pros               Json
+  cons               Json
+  recommendedFor     Json     @map("recommended_for")
+  notRecommendedFor  Json     @map("not_recommended_for")
+  keywords           Json
+  reviewCount        Int      @map("review_count")
+  sourceReviewHash   String   @map("source_review_hash") @db.Char(64)
+  model              String?  @db.VarChar(100)
+  promptTokens       Int      @default(0) @map("prompt_tokens")
+  completionTokens   Int      @default(0) @map("completion_tokens")
+  generatedAt        DateTime @default(now()) @map("generated_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@unique([gameId, sourceReviewHash])
+  @@index([gameId])
+  @@map("ai_review_summaries")
 }

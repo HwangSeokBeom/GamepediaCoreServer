@@ -148,6 +148,7 @@ const env = {
   llmModel: readEnv('LLM_MODEL') ?? llmProviderDefaults.model,
   llmTimeoutMs: parseNumber('LLM_TIMEOUT_MS', '8000'),
   aiRecommendationDailyLimit: parseNumber('AI_RECOMMENDATION_DAILY_LIMIT', '20'),
+  aiReviewSummaryDailyLimit: parseNumber('AI_REVIEW_SUMMARY_DAILY_LIMIT', readEnv('AI_RECOMMENDATION_DAILY_LIMIT') ?? '20'),
   aiRecommendationCacheTtlSeconds: parseNonNegativeNumber('AI_RECOMMENDATION_CACHE_TTL_SECONDS', '300')
 };
 
