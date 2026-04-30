@@ -9,7 +9,10 @@ const { aiGameRecommendationRequestSchema } = require('../../src/modules/ai/ai.s
 const aiClient = require('../../src/modules/ai/ai.client');
 const aiService = require('../../src/modules/ai/ai.service');
 const { mergeCandidates } = require('../../src/modules/recommendation/game-candidate.provider');
-const { rankCandidates } = require('../../src/modules/recommendation/recommendation-ranker');
+const { rankCandidateDetails, rankCandidates } = require('../../src/modules/recommendation/recommendation-ranker');
+const {
+  buildPreferenceProfileFromData
+} = require('../../src/modules/recommendation/user-personalization.service');
 const {
   normalizeLimit,
   validateLlmReviewSummaryResponse,
@@ -75,6 +78,10 @@ test('AI request validation accepts the public request contract', () => {
     platforms: ['PC', 'Nintendo Switch'],
     preferredGenres: ['Simulation', 'Adventure'],
     excludedGameIds: [123, '456'],
+    personalization: true,
+    includeOwned: false,
+    includeReviewed: true,
+    includeFavorites: false,
     limit: 10
   });
 
@@ -82,6 +89,10 @@ test('AI request validation accepts the public request contract', () => {
   assert.deepEqual(parsed.platforms, ['PC', 'Nintendo Switch']);
   assert.deepEqual(parsed.preferredGenres, ['Simulation', 'Adventure']);
   assert.deepEqual(parsed.excludedGameIds, [123, '456']);
+  assert.equal(parsed.personalization, true);
+  assert.equal(parsed.includeOwned, false);
+  assert.equal(parsed.includeReviewed, true);
+  assert.equal(parsed.includeFavorites, false);
   assert.equal(parsed.limit, 10);
 });
 
@@ -185,6 +196,71 @@ test('fallback ranker returns stable recommendation items', () => {
   assert.ok(rankedItems[0].matchTags.length > 0);
 });
 
+test('personalization profile is empty but usable without user data', () => {
+  const profile = buildPreferenceProfileFromData({
+    userId: '00000000-0000-0000-0000-000000000000'
+  });
+
+  assert.equal(profile.personalizationAvailable, false);
+  assert.deepEqual(profile.likedGameIds, []);
+  assert.deepEqual(profile.reviewedGameIds, []);
+  assert.deepEqual(profile.playedGameIds, []);
+  assert.deepEqual(profile.topGenres, []);
+});
+
+test('high-rated and favorite genre overlap boosts similar candidates', () => {
+  const profile = buildPreferenceProfileFromData({
+    userId: '00000000-0000-0000-0000-000000000000',
+    favorites: [{ gameId: '900', createdAt: new Date('2026-01-01T00:00:00Z') }],
+    reviews: [{
+      gameId: '901',
+      rating: 5,
+      content: '힐링되고 농장 운영이 좋았습니다.',
+      createdAt: new Date('2026-01-02T00:00:00Z'),
+      updatedAt: new Date('2026-01-02T00:00:00Z')
+    }],
+    metadataByGameId: new Map([
+      ['900', { gameId: '900', title: 'Liked Farm', genres: ['Simulation'], platforms: ['PC'] }],
+      ['901', { gameId: '901', title: 'Great Farm', genres: ['Simulation'], platforms: ['PC'] }]
+    ])
+  });
+  const ranked = rankCandidateDetails({
+    candidates: sampleCandidates,
+    query: '추천',
+    personalizationProfile: profile
+  });
+
+  assert.equal(ranked[0].candidate.gameId, '100');
+  assert.ok(ranked[0].personalizationSignals.includes('highRatedGenreMatch'));
+  assert.ok(ranked[0].scoreBreakdown.personalization > 0);
+});
+
+test('low-rated genre overlap applies a personalization penalty', () => {
+  const profile = buildPreferenceProfileFromData({
+    userId: '00000000-0000-0000-0000-000000000000',
+    reviews: [{
+      gameId: '902',
+      rating: 1.5,
+      content: '전략 장르는 너무 피곤했습니다.',
+      createdAt: new Date('2026-01-03T00:00:00Z'),
+      updatedAt: new Date('2026-01-03T00:00:00Z')
+    }],
+    metadataByGameId: new Map([
+      ['902', { gameId: '902', title: 'Bad Strategy', genres: ['Strategy'], platforms: ['PC'] }]
+    ])
+  });
+  const ranked = rankCandidateDetails({
+    candidates: sampleCandidates,
+    query: '추천',
+    personalizationProfile: profile
+  });
+  const strategyCandidate = ranked.find((item) => item.candidate.gameId === '200');
+
+  assert.ok(strategyCandidate.personalizationSignals.includes('lowRatedGenrePenalty'));
+  assert.ok(strategyCandidate.scoreBreakdown.negativePersonalization > 0);
+  assert.notEqual(ranked[0].candidate.gameId, '200');
+});
+
 test('invalid LLM JSON uses fallback ranking', () => {
   const validated = validateLlmRecommendationResponse({
     rawContent: '{invalid json',
@@ -207,7 +283,7 @@ test('validator removes gameIds outside candidates and duplicate gameIds', () =>
     rawContent: JSON.stringify({
       items: [
         { gameId: '999', reason: '후보 밖 게임', matchTags: ['제거'], confidence: 1.5 },
-        { gameId: '100', reason: '좋은 후보입니다.'.repeat(20), matchTags: ['힐링', '힐링', '짧은 세션', '싱글', '초과'], confidence: 1.5 },
+        { gameId: '100', reason: '좋은 후보입니다.'.repeat(20), matchTags: ['relaxing visual novel', 'ShortInteractiveStory', 'Visual Novel', 'single_player', 'low'], confidence: 1.5 },
         { gameId: '100', reason: '중복', matchTags: [], confidence: 0.2 },
         { gameId: '300', reason: '', matchTags: [], confidence: -1 }
       ]
@@ -226,9 +302,34 @@ test('validator removes gameIds outside candidates and duplicate gameIds', () =>
   assert.equal(validated.items[0].confidence, 1);
   assert.equal(validated.items[1].confidence, 0);
   assert.ok(validated.items[0].reason.length <= 160);
-  assert.ok(validated.items[0].matchTags.length <= 4);
+  assert.deepEqual(validated.items[0].rawMatchTags, ['relaxing visual novel', 'ShortInteractiveStory', 'Visual Novel', 'single_player', 'low']);
+  assert.deepEqual(validated.items[0].canonicalTags, ['relaxing_visual_novel', 'short_interactive_story', 'visual_novel', 'singleplayer', 'low_difficulty']);
+  assert.deepEqual(validated.items[0].matchTags, validated.items[0].canonicalTags);
+  assert.deepEqual(validated.items[0].displayTags, ['Relaxing Visual Novel', 'Short Interactive Story', 'Visual Novel', 'Singleplayer', 'Low Difficulty']);
   assert.ok(validated.items[1].reason.length > 0);
   assert.ok(validated.items[1].matchTags.length > 0);
+  assert.ok(validated.items[1].canonicalTags.length > 0);
+  assert.ok(validated.items[1].displayTags.every((tag) => !/[가-힣]/.test(tag)));
+});
+
+test('recommendation fallback items keep stable normalized tag schema', () => {
+  const validated = validateLlmRecommendationResponse({
+    rawContent: '{invalid json',
+    candidates: sampleCandidates,
+    limit: 2,
+    fallbackContext: {
+      query: '30분 힐링 게임',
+      platforms: ['Nintendo Switch'],
+      preferredGenres: ['Simulation']
+    }
+  });
+
+  assert.equal(validated.source, 'fallback');
+  assert.ok(validated.items.length > 0);
+  assert.ok(validated.items.every((item) => Array.isArray(item.rawMatchTags)));
+  assert.ok(validated.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+  assert.ok(validated.items.every((item) => item.matchTags.every((tag) => /^[a-z0-9_]+$/.test(tag))));
+  assert.ok(validated.items.every((item) => item.displayTags.every((tag) => !/[가-힣]/.test(tag))));
 });
 
 test('daily usage limit throws AI_DAILY_LIMIT_EXCEEDED', async () => {
@@ -493,6 +594,47 @@ test('LLM client falls back on provider HTTP failures', async () => {
   }
 });
 
+test('LLM client falls back on provider timeouts', async () => {
+  const originalFetch = global.fetch;
+  const originalProvider = env.llmProvider;
+  const originalApiKey = env.llmApiKey;
+  const originalBaseUrl = env.llmBaseUrl;
+  const originalModel = env.llmModel;
+  const originalTimeoutMs = env.llmTimeoutMs;
+  let abortObserved = false;
+
+  env.llmProvider = 'openai';
+  env.llmApiKey = 'test-key';
+  env.llmBaseUrl = 'https://api.openai.com/v1';
+  env.llmModel = 'gpt-4o-mini';
+  env.llmTimeoutMs = 1;
+  global.fetch = async (url, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => {
+      abortObserved = true;
+      reject(new Error('aborted'));
+    });
+  });
+
+  try {
+    const response = await aiClient.createChatCompletion({
+      systemPrompt: 'system',
+      userPrompt: '{}',
+      retryCount: 0
+    });
+
+    assert.equal(abortObserved, true);
+    assert.equal(response.skipped, true);
+    assert.equal(response.model, 'mock-rule-based');
+  } finally {
+    global.fetch = originalFetch;
+    env.llmProvider = originalProvider;
+    env.llmApiKey = originalApiKey;
+    env.llmBaseUrl = originalBaseUrl;
+    env.llmModel = originalModel;
+    env.llmTimeoutMs = originalTimeoutMs;
+  }
+});
+
 test('service returns fallback recommendations without an LLM API key', async () => {
   const originalApiKey = env.llmApiKey;
   const originalTwitchClientId = env.twitchClientId;
@@ -511,6 +653,7 @@ test('service returns fallback recommendations without an LLM API key', async ()
       platforms: ['PC', 'Nintendo Switch'],
       preferredGenres: ['Simulation', 'Adventure'],
       excludedGameIds: [123, 456],
+      personalization: false,
       limit: 10
     });
 
@@ -518,11 +661,67 @@ test('service returns fallback recommendations without an LLM API key', async ()
     assert.equal(response.disclaimer, 'AI 추천은 참고용이며 실제 취향과 다를 수 있습니다.');
     assert.ok(response.items.length > 0);
     assert.ok(response.items.every((item) => !['123', '456'].includes(String(item.gameId))));
+    assert.ok(response.items.every((item) => Array.isArray(item.rawMatchTags)));
+    assert.ok(response.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+    assert.ok(response.items.every((item) => item.matchTags.every((tag) => /^[a-z0-9_]+$/.test(tag))));
+    assert.ok(response.items.every((item) => item.displayTags.every((tag) => !/[가-힣]/.test(tag))));
   } finally {
     env.llmApiKey = originalApiKey;
     env.twitchClientId = originalTwitchClientId;
     env.twitchClientSecret = originalTwitchClientSecret;
     prisma.aiRecommendationLog.create = originalCreate;
+  }
+});
+
+test('service succeeds with personalization enabled when the user has no profile data', async () => {
+  const originalApiKey = env.llmApiKey;
+  const originalTwitchClientId = env.twitchClientId;
+  const originalTwitchClientSecret = env.twitchClientSecret;
+  const originalCacheTtlSeconds = env.aiRecommendationCacheTtlSeconds;
+  const originalCreate = prisma.aiRecommendationLog.create;
+  const originalFavoriteFindMany = prisma.favoriteGame.findMany;
+  const originalReviewFindMany = prisma.review.findMany;
+  const originalLibraryFindMany = prisma.userGameLibrary.findMany;
+  const originalMappingFindMany = prisma.steamIgdbMapping.findMany;
+
+  env.llmApiKey = null;
+  env.twitchClientId = null;
+  env.twitchClientSecret = null;
+  env.aiRecommendationCacheTtlSeconds = 0;
+  prisma.aiRecommendationLog.create = async () => ({ id: 'log-id' });
+  prisma.favoriteGame.findMany = async () => [];
+  prisma.review.findMany = async () => [];
+  prisma.userGameLibrary.findMany = async () => [];
+  prisma.steamIgdbMapping.findMany = async () => [];
+
+  try {
+    const response = await aiService.createGameRecommendations({
+      userId: '00000000-0000-0000-0000-000000000000',
+      query: '짧게 즐길 인디 게임',
+      platforms: ['PC'],
+      preferredGenres: ['Indie'],
+      excludedGameIds: [],
+      personalization: true,
+      limit: 5
+    });
+
+    assert.ok(response.items.length > 0);
+    assert.equal(response.meta.personalizationAvailable, false);
+    assert.equal(response.meta.personalizationUsed, false);
+    assert.equal(response.meta.fallbackUsed, true);
+    assert.equal(response.meta.source, 'rule_based_fallback');
+    assert.ok(response.items.every((item) => item.source === 'rule_based'));
+    assert.ok(response.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+  } finally {
+    env.llmApiKey = originalApiKey;
+    env.twitchClientId = originalTwitchClientId;
+    env.twitchClientSecret = originalTwitchClientSecret;
+    env.aiRecommendationCacheTtlSeconds = originalCacheTtlSeconds;
+    prisma.aiRecommendationLog.create = originalCreate;
+    prisma.favoriteGame.findMany = originalFavoriteFindMany;
+    prisma.review.findMany = originalReviewFindMany;
+    prisma.userGameLibrary.findMany = originalLibraryFindMany;
+    prisma.steamIgdbMapping.findMany = originalMappingFindMany;
   }
 });
 
@@ -556,11 +755,16 @@ test('service returns fallback recommendations when LLM returns invalid JSON', a
       platforms: ['PC'],
       preferredGenres: ['Simulation'],
       excludedGameIds: [],
+      personalization: false,
       limit: 10
     });
 
     assert.match(response.requestId, /^ai-rec-/);
     assert.ok(response.items.length > 0);
+    assert.ok(response.items.every((item) => Array.isArray(item.rawMatchTags)));
+    assert.ok(response.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+    assert.ok(response.items.every((item) => item.matchTags.every((tag) => /^[a-z0-9_]+$/.test(tag))));
+    assert.ok(response.items.every((item) => item.displayTags.every((tag) => !/[가-힣]/.test(tag))));
     assert.equal(storedPayload.data.model, 'mock-rule-based');
     assert.equal(storedPayload.data.promptTokens, 0);
     assert.equal(storedPayload.data.completionTokens, 0);
@@ -633,10 +837,14 @@ test('service stores Groq model and usage tokens on successful LLM recommendatio
       platforms: ['PC'],
       preferredGenres: ['Simulator'],
       excludedGameIds: [],
+      personalization: false,
       limit: 5
     });
 
     assert.deepEqual(response.items.map((item) => item.gameId), [17000, 132181]);
+    assert.deepEqual(response.items[0].canonicalTags.slice(0, 2), ['relaxing', 'short_session']);
+    assert.deepEqual(response.items[0].matchTags, response.items[0].canonicalTags);
+    assert.ok(response.items[0].displayTags.every((tag) => !/[가-힣]/.test(tag)));
     assert.equal(storedPayload.data.model, 'llama-3.1-8b-instant');
     assert.equal(storedPayload.data.promptTokens, 55);
     assert.equal(storedPayload.data.completionTokens, 21);
@@ -1061,6 +1269,10 @@ test('route returns wrapped success response and clamps limit 100 to at most 10 
       assert.ok(payload.data.items.length <= 10);
       assert.ok(payload.data.items.every((item) => typeof item.gameId === 'number'));
       assert.ok(payload.data.items.every((item) => ![123, 456].includes(item.gameId)));
+      assert.ok(payload.data.items.every((item) => Array.isArray(item.rawMatchTags)));
+      assert.ok(payload.data.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+      assert.ok(payload.data.items.every((item) => item.matchTags.every((tag) => /^[a-z0-9_]+$/.test(tag))));
+      assert.ok(payload.data.items.every((item) => item.displayTags.every((tag) => !/[가-힣]/.test(tag))));
       assert.equal(payload.data.disclaimer, 'AI 추천은 참고용이며 실제 취향과 다를 수 있습니다.');
     });
   } finally {

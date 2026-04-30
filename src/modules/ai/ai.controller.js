@@ -18,7 +18,11 @@ const createGameRecommendations = asyncHandler(async (req, res) => {
     platforms: req.body.platforms,
     preferredGenres: req.body.preferredGenres,
     excludedGameIds: req.body.excludedGameIds,
-    limit: req.body.limit
+    limit: req.body.limit,
+    personalization: req.body.personalization,
+    includeOwned: req.body.includeOwned,
+    includeReviewed: req.body.includeReviewed,
+    includeFavorites: req.body.includeFavorites
   });
 
   res.status(200).json(successResponse(result));

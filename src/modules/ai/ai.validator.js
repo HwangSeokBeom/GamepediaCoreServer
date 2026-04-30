@@ -1,9 +1,10 @@
 const { rankCandidates } = require('../recommendation/recommendation-ranker');
+const { normalizeRecommendationTags } = require('./tag-normalizer');
 
 const MIN_LIMIT = 5;
 const MAX_LIMIT = 10;
 const MAX_REASON_LENGTH = 160;
-const MAX_MATCH_TAGS = 4;
+const MAX_MATCH_TAGS = 5;
 const MAX_REVIEW_SUMMARY_LENGTH = 300;
 const MAX_REVIEW_LIST_ITEMS = 8;
 
@@ -57,6 +58,121 @@ function normalizeTags(value) {
   }
 
   return tags.slice(0, MAX_MATCH_TAGS);
+}
+
+function normalizeRawMatchTags(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenTags = new Set();
+  const tags = [];
+
+  for (const tag of value) {
+    const normalizedTag = truncateText(tag, 80);
+
+    if (!normalizedTag || seenTags.has(normalizedTag)) {
+      continue;
+    }
+
+    seenTags.add(normalizedTag);
+    tags.push(normalizedTag);
+  }
+
+  return tags;
+}
+
+function buildFallbackReasonTags({ candidate, fallbackItem, source }) {
+  const reasonTags = [source === 'fallback' ? 'default_ranking' : null];
+
+  if (Number(candidate?.rating) >= 85) {
+    reasonTags.push('high_rated');
+  }
+
+  if (fallbackItem?.personalizationSignals?.length > 0) {
+    reasonTags.push('personalized');
+  }
+
+  reasonTags.push('good_match');
+
+  return reasonTags.filter(Boolean);
+}
+
+function normalizeItemTagFields({
+  item,
+  fallbackItem,
+  candidate,
+  source
+}) {
+  const rawMatchTags = normalizeRawMatchTags(
+    item?.rawMatchTags
+    ?? item?.matchTags
+    ?? item?.displayTags
+    ?? fallbackItem?.rawMatchTags
+    ?? fallbackItem?.matchTags
+    ?? []
+  );
+  const reasonTags = buildFallbackReasonTags({ candidate, fallbackItem, source });
+  let normalizedTags = normalizeRecommendationTags({
+    rawTags: rawMatchTags,
+    matchTags: rawMatchTags,
+    displayTags: item?.displayTags,
+    genres: candidate?.genres,
+    themes: candidate?.themes,
+    keywords: candidate?.keywords,
+    reasonTags,
+    maxCount: MAX_MATCH_TAGS
+  });
+
+  if (normalizedTags.canonicalTags.length === 0) {
+    normalizedTags = normalizeRecommendationTags({
+      rawTags: ['default_ranking', 'good_match'],
+      reasonTags,
+      maxCount: MAX_MATCH_TAGS
+    });
+  }
+
+  return {
+    rawMatchTags,
+    canonicalTags: normalizedTags.canonicalTags,
+    matchTags: normalizedTags.canonicalTags,
+    displayTags: normalizedTags.displayTags
+  };
+}
+
+function normalizeRecommendationItem(item, {
+  candidate,
+  fallbackItem,
+  source
+}) {
+  const tagFields = normalizeItemTagFields({
+    item,
+    fallbackItem,
+    candidate,
+    source
+  });
+
+  return {
+    ...item,
+    ...tagFields,
+    source
+  };
+}
+
+function normalizeRecommendationItemList({
+  items,
+  candidates,
+  fallbackItems = [],
+  source
+}) {
+  const candidateMap = new Map(candidates.map((candidate) => [String(candidate.gameId), candidate]));
+  const fallbackItemMap = new Map(fallbackItems.map((item) => [String(item.gameId), item]));
+
+  return (items ?? []).map((item) => normalizeRecommendationItem(item, {
+    candidate: candidateMap.get(String(item.gameId)),
+    fallbackItem: fallbackItemMap.get(String(item.gameId)),
+    source
+  }));
 }
 
 function normalizeTextList(value, { maxItems = MAX_REVIEW_LIST_ITEMS, maxLength = 40 } = {}) {
@@ -176,7 +292,7 @@ function sanitizeRecommendationItems({
   limit,
   fallbackItems = []
 }) {
-  const candidateIds = new Set(candidates.map((candidate) => String(candidate.gameId)));
+  const candidateMap = new Map(candidates.map((candidate) => [String(candidate.gameId), candidate]));
   const fallbackItemMap = new Map(fallbackItems.map((item) => [String(item.gameId), item]));
   const seenIds = new Set();
   const items = [];
@@ -184,21 +300,34 @@ function sanitizeRecommendationItems({
   for (const item of rawItems ?? []) {
     const gameId = String(item?.gameId ?? '').trim();
 
-    if (!candidateIds.has(gameId) || seenIds.has(gameId)) {
+    if (!candidateMap.has(gameId) || seenIds.has(gameId)) {
       continue;
     }
 
     seenIds.add(gameId);
+    const candidate = candidateMap.get(gameId);
     const fallbackItem = fallbackItemMap.get(gameId);
     const reason = truncateText(item?.reason, MAX_REASON_LENGTH) || fallbackItem?.reason || '요청한 조건과 잘 맞는 후보 게임입니다.';
     const matchTags = normalizeTags(item?.matchTags);
+    const rawMatchTags = normalizeRawMatchTags(
+      item?.rawMatchTags
+      ?? item?.matchTags
+      ?? item?.displayTags
+      ?? fallbackItem?.matchTags
+      ?? []
+    );
 
-    items.push({
+    items.push(normalizeRecommendationItem({
       gameId,
       reason,
       matchTags: matchTags.length > 0 ? matchTags : fallbackItem?.matchTags ?? [],
+      rawMatchTags,
       confidence: clampConfidence(item?.confidence)
-    });
+    }, {
+      candidate,
+      fallbackItem,
+      source: 'llm'
+    }));
 
     if (items.length >= limit) {
       break;
@@ -221,15 +350,24 @@ function validateLlmRecommendationResponse({
     query: fallbackContext.query,
     platforms: fallbackContext.platforms,
     preferredGenres: fallbackContext.preferredGenres,
-    limit: normalizedLimit
+    limit: normalizedLimit,
+    personalizationProfile: fallbackContext.personalizationProfile,
+    knownGameIdsForPenalty: fallbackContext.knownGameIdsForPenalty
+  });
+  const normalizedFallbackItems = normalizeRecommendationItemList({
+    items: fallbackItems,
+    candidates,
+    fallbackItems,
+    source: 'fallback'
   });
 
   if (!payload) {
     return {
       source: 'fallback',
+      validationErrorReason: 'json_parse_failed',
       normalizedQuery: null,
       intent: null,
-      items: fallbackItems
+      items: normalizedFallbackItems
     };
   }
 
@@ -243,14 +381,16 @@ function validateLlmRecommendationResponse({
   if (items.length === 0) {
     return {
       source: 'fallback',
+      validationErrorReason: 'no_valid_candidate_items',
       normalizedQuery: typeof payload.normalizedQuery === 'string' ? payload.normalizedQuery.trim() : null,
       intent: payload.intent ?? null,
-      items: fallbackItems
+      items: normalizedFallbackItems
     };
   }
 
   return {
     source: 'llm',
+    validationErrorReason: null,
     normalizedQuery: typeof payload.normalizedQuery === 'string' ? payload.normalizedQuery.trim() : null,
     intent: payload.intent ?? null,
     items

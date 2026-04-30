@@ -123,8 +123,11 @@ function normalizeCandidate(game) {
     coverUrl: game.coverUrl ?? null,
     platforms: Array.isArray(game.platforms) ? game.platforms.filter(Boolean) : [],
     genres: Array.isArray(game.genres) ? game.genres.filter(Boolean) : [],
+    themes: Array.isArray(game.themes) ? game.themes.filter(Boolean) : [],
+    keywords: Array.isArray(game.keywords) ? game.keywords.filter(Boolean) : [],
     rating: typeof game.rating === 'number' ? Math.round(game.rating * 10) / 10 : null,
-    summary: typeof game.summary === 'string' ? game.summary : null
+    summary: typeof game.summary === 'string' ? game.summary : null,
+    candidateSource: game.candidateSource ?? 'candidate_provider'
   };
 }
 

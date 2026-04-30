@@ -12,9 +12,16 @@ const {
 } = require('./ai.prompt');
 const {
   inferIntent,
-  normalizeRecommendationQuery
+  normalizeRecommendationQuery,
+  rankCandidateDetails
 } = require('../recommendation/recommendation-ranker');
 const { getGameCandidates } = require('../recommendation/game-candidate.provider');
+const {
+  applyGameMetadataToProfile,
+  buildUserPreferenceProfile,
+  createEmptyPreferenceProfile,
+  sanitizePreferenceProfileForPrompt
+} = require('../recommendation/user-personalization.service');
 const {
   normalizeLimit,
   validateLlmReviewSummaryResponse,
@@ -48,14 +55,29 @@ function normalizeGameIdList(gameIds) {
     .filter(Boolean))];
 }
 
-function buildCacheKey({ userId, query, platforms, preferredGenres, excludedGameIds, limit }) {
+function buildCacheKey({
+  userId,
+  query,
+  platforms,
+  preferredGenres,
+  excludedGameIds,
+  limit,
+  personalization = true,
+  includeOwned = false,
+  includeReviewed = false,
+  includeFavorites = false
+}) {
   return JSON.stringify({
     userId,
     query,
     platforms: [...(platforms ?? [])].sort(),
     preferredGenres: [...(preferredGenres ?? [])].sort(),
     excludedGameIds: normalizeGameIdList(excludedGameIds).sort(),
-    limit
+    limit,
+    personalization,
+    includeOwned,
+    includeReviewed,
+    includeFavorites
   });
 }
 
@@ -132,7 +154,13 @@ function normalizeIntent(rawIntent, fallbackIntent) {
   };
 }
 
-function assembleResponseItems({ recommendations, candidates }) {
+function assembleResponseItems({
+  recommendations,
+  candidates,
+  personalized,
+  fallbackUsed,
+  recommendationSource
+}) {
   const candidateMap = new Map(candidates.map((candidate) => [String(candidate.gameId), candidate]));
 
   return recommendations
@@ -152,16 +180,60 @@ function assembleResponseItems({ recommendations, candidates }) {
       return {
         gameId: numericGameId,
         title: candidate.title,
+        name: candidate.title,
         coverUrl: candidate.coverUrl,
+        imageUrl: candidate.coverUrl,
         platforms: candidate.platforms,
         genres: candidate.genres,
+        themes: candidate.themes ?? [],
+        keywords: candidate.keywords ?? [],
         rating: candidate.rating,
         reason: recommendation.reason,
+        rawMatchTags: recommendation.rawMatchTags ?? [],
+        canonicalTags: recommendation.canonicalTags ?? [],
         matchTags: recommendation.matchTags,
-        confidence: recommendation.confidence
+        displayTags: recommendation.displayTags ?? [],
+        confidence: recommendation.confidence,
+        source: recommendation.source === 'fallback' ? 'rule_based' : 'llm',
+        recommendationSource,
+        personalized,
+        fallbackUsed
       };
     })
     .filter(Boolean);
+}
+
+function buildKnownGameIdsForRequest(profile, {
+  includeOwned = false,
+  includeReviewed = false,
+  includeFavorites = false
+}) {
+  return normalizeGameIdList([
+    ...(!includeOwned ? profile.ownedGameIds ?? [] : []),
+    ...(!includeReviewed ? profile.reviewedGameIds ?? [] : []),
+    ...(!includeFavorites ? profile.likedGameIds ?? [] : [])
+  ]);
+}
+
+function filterKnownCandidates(candidates, knownGameIds) {
+  const knownGameIdSet = new Set(normalizeGameIdList(knownGameIds));
+  const filteredCandidates = (candidates ?? []).filter((candidate) => !knownGameIdSet.has(String(candidate.gameId)));
+
+  return filteredCandidates.length > 0 ? filteredCandidates : candidates;
+}
+
+function buildFallbackLlmResult() {
+  return {
+    content: null,
+    model: 'mock-rule-based',
+    promptTokens: 0,
+    completionTokens: 0,
+    skipped: true
+  };
+}
+
+function getTopCandidateIds(candidates, limit = 5) {
+  return candidates.slice(0, limit).map((candidate) => String(candidate.gameId));
 }
 
 async function writeRecommendationLog({
@@ -203,26 +275,48 @@ async function createGameRecommendations({
   platforms = [],
   preferredGenres = [],
   excludedGameIds = [],
-  limit
+  limit,
+  personalization = true,
+  includeOwned = false,
+  includeReviewed = false,
+  includeFavorites = false
 }) {
   const startedAt = Date.now();
   const requestId = buildRequestId();
   const normalizedLimit = normalizeLimit(limit);
   const normalizedExcludedGameIds = normalizeGameIdList(excludedGameIds);
+  const personalizationRequested = personalization !== false;
+
+  logger.info('AI recommendation request started', {
+    userId,
+    queryLength: typeof query === 'string' ? query.length : 0,
+    limit: normalizedLimit,
+    personalizationRequested,
+    excludedCount: normalizedExcludedGameIds.length
+  });
+
   const cacheKey = buildCacheKey({
     userId,
     query,
     platforms,
     preferredGenres,
     excludedGameIds: normalizedExcludedGameIds,
-    limit: normalizedLimit
+    limit: normalizedLimit,
+    personalization: personalizationRequested,
+    includeOwned,
+    includeReviewed,
+    includeFavorites
   });
   const cachedResponse = readCachedResponse(cacheKey);
 
   if (cachedResponse) {
     const response = {
       ...cachedResponse,
-      requestId
+      requestId,
+      meta: {
+        ...(cachedResponse.meta ?? {}),
+        source: 'cache'
+      }
     };
 
     await writeRecommendationLog({
@@ -241,17 +335,57 @@ async function createGameRecommendations({
   }
 
   const fallbackIntent = inferIntent({ query, platforms });
-  const candidates = await getGameCandidates({
+  const profileStartedAt = Date.now();
+  const initialPersonalizationProfile = personalizationRequested
+    ? await buildUserPreferenceProfile({ userId })
+    : createEmptyPreferenceProfile(userId);
+  const candidateStartedAt = Date.now();
+  const rawCandidates = await getGameCandidates({
     query,
     platforms,
     preferredGenres,
     excludedGameIds: normalizedExcludedGameIds
+  });
+  const personalizationProfile = personalizationRequested
+    ? applyGameMetadataToProfile(initialPersonalizationProfile, rawCandidates)
+    : initialPersonalizationProfile;
+  const knownGameIdsForPenalty = buildKnownGameIdsForRequest(personalizationProfile, {
+    includeOwned,
+    includeReviewed,
+    includeFavorites
+  });
+  const candidates = filterKnownCandidates(rawCandidates, knownGameIdsForPenalty);
+
+  logger.info('AI recommendation candidates generated', {
+    userId,
+    candidateCount: rawCandidates.length,
+    afterExcludedCount: candidates.length,
+    personalizedBoostApplied: personalizationRequested && personalizationProfile.personalizationAvailable,
+    topCandidateIds: getTopCandidateIds(candidates),
+    elapsedMs: Date.now() - candidateStartedAt,
+    profileElapsedMs: candidateStartedAt - profileStartedAt
   });
 
   if (candidates.length === 0) {
     throw new AppError(404, 'CANDIDATE_NOT_FOUND', 'No candidate games were found for AI recommendation');
   }
 
+  const rankedCandidates = rankCandidateDetails({
+    candidates,
+    query,
+    platforms,
+    preferredGenres,
+    personalizationProfile,
+    knownGameIdsForPenalty
+  });
+  const candidatesForLlm = rankedCandidates.map((detail) => ({
+    ...detail.candidate,
+    score: Math.round(detail.score * 1000) / 1000,
+    scoreBreakdown: detail.scoreBreakdown,
+    personalizationSignals: detail.personalizationSignals,
+    matchedUserSignals: detail.matchedUserSignals,
+    candidateSource: detail.candidateSource
+  }));
   const systemPrompt = buildSystemPrompt();
   const userPrompt = buildUserPrompt({
     query,
@@ -259,38 +393,82 @@ async function createGameRecommendations({
     preferredGenres,
     excludedGameIds: normalizedExcludedGameIds,
     limit: normalizedLimit,
-    candidates
+    candidates: candidatesForLlm,
+    normalizedIntent: fallbackIntent,
+    userPreferenceProfile: sanitizePreferenceProfileForPrompt(personalizationProfile)
   });
-  const llmResult = await aiClient.createChatCompletion({ systemPrompt, userPrompt });
+  let llmResult;
+  const llmStartedAt = Date.now();
+
+  try {
+    llmResult = await aiClient.createChatCompletion({ systemPrompt, userPrompt });
+  } catch (error) {
+    logger.warn('LLM request threw; AI recommendation will use fallback', {
+      userId,
+      message: error?.message ?? 'unknown'
+    });
+    llmResult = buildFallbackLlmResult();
+  }
+
   const validatedResult = validateLlmRecommendationResponse({
     rawContent: llmResult.content,
-    candidates,
+    candidates: candidatesForLlm,
     limit: normalizedLimit,
     fallbackContext: {
       query,
       platforms,
-      preferredGenres
+      preferredGenres,
+      personalizationProfile,
+      knownGameIdsForPenalty
     }
   });
   const intent = normalizeIntent(validatedResult.intent, fallbackIntent);
   const normalizedQuery = validatedResult.normalizedQuery || normalizeRecommendationQuery(query, intent);
+  const fallbackUsed = validatedResult.source !== 'llm' || llmResult.skipped;
+  const recommendationSource = fallbackUsed ? 'rule_based_fallback' : 'llm';
   const items = assembleResponseItems({
     recommendations: validatedResult.items,
-    candidates
+    candidates: candidatesForLlm,
+    personalized: personalizationRequested && personalizationProfile.personalizationAvailable,
+    fallbackUsed,
+    recommendationSource
   });
+
+  logger.info('[AIRecommendation] response tags normalized', {
+    itemCount: items.length,
+    fallbackUsed,
+    source: recommendationSource
+  });
+
+  if (fallbackUsed) {
+    logger.info('[AIRecommendation] fallback tags normalized', {
+      itemCount: items.length
+    });
+  }
   const usedLlmResult = validatedResult.source === 'llm' && !llmResult.skipped;
+  const llmConfig = aiClient.getLlmConfig();
 
   if (!usedLlmResult && !llmResult.skipped) {
-    const llmConfig = aiClient.getLlmConfig();
-
     logger.warn('LLM response rejected; AI recommendation will use fallback ranking', {
       provider: llmConfig.provider,
       model: llmResult.model ?? llmConfig.model,
       status: null,
       timeoutMs: llmConfig.timeoutMs,
-      reason: 'invalid_llm_response'
+      latencyMs: Date.now() - llmStartedAt,
+      fallbackUsed: true,
+      validationErrorReason: validatedResult.validationErrorReason ?? 'invalid_llm_response'
     });
   }
+
+  logger.info('AI recommendation LLM completed', {
+    provider: llmConfig.provider,
+    model: llmResult.model ?? llmConfig.model,
+    timeoutMs: llmConfig.timeoutMs,
+    status: usedLlmResult ? 'success' : (llmResult.skipped ? 'skipped' : 'fallback'),
+    latencyMs: Date.now() - llmStartedAt,
+    fallbackUsed,
+    validationErrorReason: validatedResult.validationErrorReason ?? null
+  });
 
   if (items.length === 0) {
     throw new AppError(500, 'AI_RECOMMENDATION_FAILED', 'AI recommendation failed');
@@ -300,6 +478,14 @@ async function createGameRecommendations({
     normalizedQuery,
     intent,
     items,
+    meta: {
+      personalizationUsed: personalizationRequested && personalizationProfile.personalizationAvailable,
+      personalizationAvailable: personalizationProfile.personalizationAvailable,
+      fallbackUsed,
+      source: recommendationSource,
+      candidateCount: candidatesForLlm.length,
+      generatedAt: new Date().toISOString()
+    },
     disclaimer: DISCLAIMER
   };
   const response = {
@@ -319,6 +505,15 @@ async function createGameRecommendations({
     promptTokens: usedLlmResult ? (llmResult.promptTokens ?? 0) : 0,
     completionTokens: usedLlmResult ? (llmResult.completionTokens ?? 0) : 0,
     latencyMs: Date.now() - startedAt
+  });
+
+  logger.info('AI recommendation response completed', {
+    userId,
+    itemCount: items.length,
+    personalizationUsed: responseWithoutRequestId.meta.personalizationUsed,
+    fallbackUsed,
+    source: recommendationSource,
+    elapsedMs: Date.now() - startedAt
   });
 
   return response;

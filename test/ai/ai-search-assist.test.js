@@ -159,7 +159,7 @@ test('AI search assist validator removes outside and duplicate gameIds and repai
         { gameId: '999', matchReason: '후보 밖 게임', matchTags: ['제거'], confidence: 2 },
         { gameId: '100', matchReason: '', matchTags: [], confidence: 2 },
         { gameId: '100', matchReason: '중복', matchTags: ['중복'], confidence: 0.1 },
-        { gameId: '300', matchReason: '좋은 후보입니다.'.repeat(20), matchTags: ['퍼즐', '퍼즐', '짧은 세션', '스위치', '초과'], confidence: -1 }
+        { gameId: '300', matchReason: '좋은 후보입니다.'.repeat(20), matchTags: ['relaxing visual novel', 'ShortInteractiveStory', 'Visual Novel', 'single_player', 'low'], confidence: -1 }
       ]
     }),
     candidates: sampleCandidates,
@@ -174,7 +174,10 @@ test('AI search assist validator removes outside and duplicate gameIds and repai
   assert.ok(validated.items[0].matchReason.length > 0);
   assert.ok(validated.items[0].matchTags.length > 0);
   assert.ok(validated.items[1].matchReason.length <= 160);
-  assert.ok(validated.items[1].matchTags.length <= 4);
+  assert.deepEqual(validated.items[1].rawMatchTags, ['relaxing visual novel', 'ShortInteractiveStory', 'Visual Novel', 'single_player', 'low']);
+  assert.deepEqual(validated.items[1].canonicalTags, ['relaxing_visual_novel', 'short_interactive_story', 'visual_novel', 'singleplayer', 'low_difficulty']);
+  assert.deepEqual(validated.items[1].matchTags, validated.items[1].canonicalTags);
+  assert.deepEqual(validated.items[1].displayTags, ['Relaxing Visual Novel', 'Short Interactive Story', 'Visual Novel', 'Singleplayer', 'Low Difficulty']);
   assert.equal(validated.intent.unknownKey, undefined);
   assert.ok(validated.suggestedQueries.length <= 5);
   assert.ok(validated.suggestedQueries.every((query) => query.length >= 2 && query.length <= 60));
@@ -192,6 +195,10 @@ test('AI search assist validator uses fallback ranking on invalid JSON', () => {
   assert.ok(validated.items.length <= 5);
   assert.equal(validated.items[0].gameId, '100');
   assert.ok(validated.suggestedQueries.length > 0);
+  assert.ok(validated.items.every((item) => Array.isArray(item.rawMatchTags)));
+  assert.ok(validated.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+  assert.ok(validated.items.every((item) => item.matchTags.every((tag) => /^[a-z0-9_]+$/.test(tag))));
+  assert.ok(validated.items.every((item) => item.displayTags.every((tag) => !/[가-힣]/.test(tag))));
 });
 
 test('AI search assist daily usage limit throws AI_SEARCH_DAILY_LIMIT_EXCEEDED', async () => {
@@ -276,6 +283,10 @@ test('AI search assist service returns fallback success without an LLM API key',
     assert.equal(response.originalQuery, '퇴근 후 30분 정도 할 수 있는 힐링 게임');
     assert.equal(response.fallbackUsed, true);
     assert.ok(response.items.length > 0);
+    assert.ok(response.items.every((item) => Array.isArray(item.rawMatchTags)));
+    assert.ok(response.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+    assert.ok(response.items.every((item) => item.matchTags.every((tag) => /^[a-z0-9_]+$/.test(tag))));
+    assert.ok(response.items.every((item) => item.displayTags.every((tag) => !/[가-힣]/.test(tag))));
     assert.equal(response.disclaimer, 'AI 검색 보조 결과는 참고용이며 실제 검색 결과와 다를 수 있습니다.');
   } finally {
     env.llmApiKey = originalApiKey;
@@ -322,6 +333,10 @@ test('AI search assist service returns fallback success when LLM returns invalid
 
     assert.equal(response.fallbackUsed, true);
     assert.ok(response.items.length > 0);
+    assert.ok(response.items.every((item) => Array.isArray(item.rawMatchTags)));
+    assert.ok(response.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+    assert.ok(response.items.every((item) => item.matchTags.every((tag) => /^[a-z0-9_]+$/.test(tag))));
+    assert.ok(response.items.every((item) => item.displayTags.every((tag) => !/[가-힣]/.test(tag))));
     assert.equal(storedPayload.data.model, 'mock-rule-based');
     assert.equal(storedPayload.data.promptTokens, 0);
     assert.equal(storedPayload.data.completionTokens, 0);
@@ -452,6 +467,10 @@ test('AI search assist route returns wrapped success response and clamps limit 1
       assert.ok(payload.data.items.length <= 20);
       assert.ok(payload.data.items.every((item) => typeof item.gameId === 'number'));
       assert.ok(payload.data.items.every((item) => typeof item.matchReason === 'string' && item.matchReason.length > 0));
+      assert.ok(payload.data.items.every((item) => Array.isArray(item.rawMatchTags)));
+      assert.ok(payload.data.items.every((item) => Array.isArray(item.canonicalTags) && item.canonicalTags.length > 0));
+      assert.ok(payload.data.items.every((item) => item.matchTags.every((tag) => /^[a-z0-9_]+$/.test(tag))));
+      assert.ok(payload.data.items.every((item) => item.displayTags.every((tag) => !/[가-힣]/.test(tag))));
       assert.equal(payload.data.fallbackUsed, true);
       assert.equal(payload.data.disclaimer, 'AI 검색 보조 결과는 참고용이며 실제 검색 결과와 다를 수 있습니다.');
     });

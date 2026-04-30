@@ -11,6 +11,10 @@ const aiGameRecommendationRequestSchema = z.object({
     z.string().trim().regex(/^\d+$/),
     z.number().int().positive()
   ])).max(200).optional().default([]),
+  personalization: z.boolean().optional().default(true),
+  includeOwned: z.boolean().optional().default(false),
+  includeReviewed: z.boolean().optional().default(false),
+  includeFavorites: z.boolean().optional().default(false),
   limit: z.number().int().positive().max(100).optional().default(10)
 }).strict();
 

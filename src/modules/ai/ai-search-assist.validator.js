@@ -6,11 +6,12 @@ const {
   normalizeSearchQuery,
   rankSearchCandidates
 } = require('../recommendation/search-assist-ranker');
+const { normalizeRecommendationTags } = require('./tag-normalizer');
 
 const MIN_LIMIT = 5;
 const MAX_LIMIT = 20;
 const MAX_MATCH_REASON_LENGTH = 160;
-const MAX_MATCH_TAGS = 4;
+const MAX_MATCH_TAGS = 5;
 const MAX_SUGGESTED_QUERIES = 5;
 const INTENT_KEYS = new Set([
   'mood',
@@ -72,6 +73,98 @@ function normalizeStringList(values, { maxItems, maxLength }) {
   }
 
   return normalizedValues.slice(0, maxItems);
+}
+
+function normalizeRawMatchTags(value) {
+  return normalizeStringList(value, {
+    maxItems: 20,
+    maxLength: 80
+  });
+}
+
+function buildFallbackReasonTags({ candidate, source }) {
+  return [
+    source === 'fallback' ? 'default_ranking' : null,
+    Number(candidate?.rating) >= 85 ? 'high_rated' : null,
+    'good_match'
+  ].filter(Boolean);
+}
+
+function normalizeItemTagFields({
+  item,
+  fallbackItem,
+  candidate,
+  source
+}) {
+  const rawMatchTags = normalizeRawMatchTags(
+    item?.rawMatchTags
+    ?? item?.matchTags
+    ?? item?.displayTags
+    ?? fallbackItem?.rawMatchTags
+    ?? fallbackItem?.matchTags
+    ?? []
+  );
+  const reasonTags = buildFallbackReasonTags({ candidate, source });
+  let normalizedTags = normalizeRecommendationTags({
+    rawTags: rawMatchTags,
+    matchTags: rawMatchTags,
+    displayTags: item?.displayTags,
+    genres: candidate?.genres,
+    themes: candidate?.themes,
+    keywords: candidate?.keywords,
+    reasonTags,
+    maxCount: MAX_MATCH_TAGS
+  });
+
+  if (normalizedTags.canonicalTags.length === 0) {
+    normalizedTags = normalizeRecommendationTags({
+      rawTags: ['default_ranking', 'good_match'],
+      reasonTags,
+      maxCount: MAX_MATCH_TAGS
+    });
+  }
+
+  return {
+    rawMatchTags,
+    canonicalTags: normalizedTags.canonicalTags,
+    matchTags: normalizedTags.canonicalTags,
+    displayTags: normalizedTags.displayTags
+  };
+}
+
+function normalizeSearchItem(item, {
+  candidate,
+  fallbackItem,
+  source
+}) {
+  const tagFields = normalizeItemTagFields({
+    item,
+    fallbackItem,
+    candidate,
+    source
+  });
+
+  return {
+    ...item,
+    ...tagFields,
+    source
+  };
+}
+
+function normalizeSearchItemList({
+  items,
+  candidates,
+  fallbackItems = [],
+  source
+}) {
+  const candidateMap = new Map(candidates.map((candidate) => [String(candidate.gameId), candidate]));
+  const fallbackItemMap = new Map(fallbackItems.map((item) => [String(item.gameId), item]));
+
+  return (items ?? []).map((item) => normalizeSearchItem(item, {
+    candidate: candidateMap.get(String(item.gameId)),
+    fallbackItem: fallbackItemMap.get(String(item.gameId)),
+    source
+  }));
 }
 
 function parseLlmContent(rawContent) {
@@ -168,13 +261,25 @@ function sanitizeSearchItems({
       maxItems: MAX_MATCH_TAGS,
       maxLength: 24
     });
+    const rawMatchTags = normalizeRawMatchTags(
+      item?.rawMatchTags
+      ?? item?.matchTags
+      ?? item?.displayTags
+      ?? fallbackItem?.matchTags
+      ?? []
+    );
 
-    items.push({
+    items.push(normalizeSearchItem({
       gameId,
       matchReason,
       matchTags: matchTags.length > 0 ? matchTags : fallbackTags,
+      rawMatchTags,
       confidence: clampConfidence(item?.confidence)
-    });
+    }, {
+      candidate,
+      fallbackItem,
+      source: 'llm'
+    }));
 
     if (items.length >= limit) {
       break;
@@ -203,6 +308,12 @@ function validateLlmSearchAssistResponse({
     genres: fallbackContext.genres,
     limit: normalizedLimit
   });
+  const normalizedFallbackItems = normalizeSearchItemList({
+    items: fallbackItems,
+    candidates,
+    fallbackItems,
+    source: 'fallback'
+  });
   const payload = parseLlmContent(rawContent);
 
   if (!payload) {
@@ -211,7 +322,7 @@ function validateLlmSearchAssistResponse({
       normalizedQuery: normalizeSearchQuery(fallbackContext.query, fallbackIntent),
       intent: fallbackIntent,
       suggestedQueries: fallbackSuggestedQueries,
-      items: fallbackItems
+      items: normalizedFallbackItems
     };
   }
 
@@ -236,7 +347,7 @@ function validateLlmSearchAssistResponse({
       normalizedQuery,
       intent,
       suggestedQueries,
-      items: fallbackItems
+      items: normalizedFallbackItems
     };
   }
 

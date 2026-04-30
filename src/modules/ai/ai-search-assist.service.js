@@ -132,10 +132,17 @@ function assembleResponseItems({ items, candidates }) {
         coverUrl: candidate.coverUrl,
         platforms: candidate.platforms,
         genres: candidate.genres,
+        themes: candidate.themes ?? [],
+        keywords: candidate.keywords ?? [],
         rating: candidate.rating,
         matchReason: item.matchReason,
+        reason: item.matchReason,
+        rawMatchTags: item.rawMatchTags ?? [],
+        canonicalTags: item.canonicalTags ?? [],
         matchTags: item.matchTags,
-        confidence: item.confidence
+        displayTags: item.displayTags ?? [],
+        confidence: item.confidence,
+        source: item.source === 'fallback' ? 'fallback' : 'llm'
       };
     })
     .filter(Boolean);
@@ -275,6 +282,11 @@ async function createSearchAssist({
   const items = assembleResponseItems({
     items: validatedResult.items,
     candidates
+  });
+
+  logger.info('[AISearchAssist] response tags normalized', {
+    itemCount: items.length,
+    fallbackUsed
   });
 
   if (items.length === 0) {
