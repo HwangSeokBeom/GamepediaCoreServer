@@ -49,6 +49,17 @@ function parseNumber(name, fallbackValue) {
   return parsedValue;
 }
 
+function parseNonNegativeNumber(name, fallbackValue) {
+  const rawValue = readEnv(name) ?? fallbackValue;
+  const parsedValue = Number(rawValue);
+
+  if (!Number.isInteger(parsedValue) || parsedValue < 0) {
+    throw new Error(`Environment variable ${name} must be a non-negative integer`);
+  }
+
+  return parsedValue;
+}
+
 function parseBoolean(name, fallbackValue) {
   const rawValue = (readEnv(name) ?? fallbackValue).toLowerCase();
 
@@ -77,6 +88,30 @@ const nodeEnv = readEnv('NODE_ENV') ?? bootstrapNodeEnv;
 const isDevelopmentLike = nodeEnv === 'development' || nodeEnv === 'test';
 const mailModeFallback = readEnv('EMAIL_DELIVERY_MODE') ?? 'log';
 const port = parseNumber('PORT', '3000');
+const llmProvider = (readEnv('LLM_PROVIDER') ?? 'openai').toLowerCase();
+
+function getLlmProviderDefaults(provider) {
+  if (provider === 'gemini') {
+    return {
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-2.5-flash'
+    };
+  }
+
+  if (provider === 'groq') {
+    return {
+      baseUrl: 'https://api.groq.com/openai/v1',
+      model: 'llama-3.1-8b-instant'
+    };
+  }
+
+  return {
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini'
+  };
+}
+
+const llmProviderDefaults = getLlmProviderDefaults(llmProvider);
 
 const env = {
   nodeEnv,
@@ -106,7 +141,14 @@ const env = {
   steamWebApiBaseUrl: parseUrl('STEAM_WEB_API_BASE_URL', 'https://api.steampowered.com/'),
   redisUrl: readEnv('REDIS_URL'),
   twitchClientId: readEnv('TWITCH_CLIENT_ID'),
-  twitchClientSecret: readEnv('TWITCH_CLIENT_SECRET')
+  twitchClientSecret: readEnv('TWITCH_CLIENT_SECRET'),
+  llmProvider,
+  llmApiKey: readEnv('LLM_API_KEY'),
+  llmBaseUrl: parseUrl('LLM_BASE_URL', llmProviderDefaults.baseUrl),
+  llmModel: readEnv('LLM_MODEL') ?? llmProviderDefaults.model,
+  llmTimeoutMs: parseNumber('LLM_TIMEOUT_MS', '8000'),
+  aiRecommendationDailyLimit: parseNumber('AI_RECOMMENDATION_DAILY_LIMIT', '20'),
+  aiRecommendationCacheTtlSeconds: parseNonNegativeNumber('AI_RECOMMENDATION_CACHE_TTL_SECONDS', '300')
 };
 
 function validateEnv(config) {

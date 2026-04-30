@@ -63,37 +63,39 @@ enum UserPresenceState {
 }
 
 model User {
-  id                  String            @id @default(uuid()) @db.Uuid
-  email               String            @unique @db.VarChar(320)
-  passwordHash        String            @map("password_hash") @db.VarChar(255)
-  passwordAuthEnabled Boolean           @default(true) @map("password_auth_enabled")
-  nickname            String            @unique @db.VarChar(50)
-  profileImageUrl     String?           @map("profile_image_url") @db.Text
-  status              UserStatus        @default(ACTIVE)
-  createdAt           DateTime          @default(now()) @map("created_at")
-  updatedAt           DateTime          @updatedAt @map("updated_at")
-  blockedByUsers      UserBlock[]       @relation("BlockedUser")
-  blockingUsers       UserBlock[]       @relation("BlockingUser")
-  favoriteGames       FavoriteGame[]
-  friendOf            Friendship[]      @relation("FriendshipFriend")
-  friendships         Friendship[]      @relation("FriendshipUser")
-  receivedFriendRequests FriendRequest[] @relation("FriendRequestToUser")
-  sentFriendRequests  FriendRequest[]   @relation("FriendRequestFromUser")
-  gameLibraryEntries  UserGameLibrary[]
-  activityEvents      UserActivityEvent[]
-  notifications       UserNotification[]
-  passwordResetTokens PasswordResetToken[]
-  presenceSnapshot    UserPresenceSnapshot?
-  privacySettings     UserPrivacySettings?
-  refreshTokens       RefreshToken[]
-  reportsSubmitted    Report[]          @relation("UserReports")
-  reviews             Review[]
-  reviewLikes         ReviewLike[]
-  reviewComments      ReviewComment[]
+  id                     String                  @id @default(uuid()) @db.Uuid
+  email                  String                  @unique @db.VarChar(320)
+  passwordHash           String                  @map("password_hash") @db.VarChar(255)
+  passwordAuthEnabled    Boolean                 @default(true) @map("password_auth_enabled")
+  nickname               String                  @unique @db.VarChar(50)
+  profileImageUrl        String?                 @map("profile_image_url") @db.Text
+  status                 UserStatus              @default(ACTIVE)
+  createdAt              DateTime                @default(now()) @map("created_at")
+  updatedAt              DateTime                @updatedAt @map("updated_at")
+  blockedByUsers         UserBlock[]             @relation("BlockedUser")
+  blockingUsers          UserBlock[]             @relation("BlockingUser")
+  favoriteGames          FavoriteGame[]
+  friendOf               Friendship[]            @relation("FriendshipFriend")
+  friendships            Friendship[]            @relation("FriendshipUser")
+  receivedFriendRequests FriendRequest[]         @relation("FriendRequestToUser")
+  sentFriendRequests     FriendRequest[]         @relation("FriendRequestFromUser")
+  gameLibraryEntries     UserGameLibrary[]
+  activityEvents         UserActivityEvent[]
+  aiRecommendationLogs   AiRecommendationLog[]
+  aiUsageLimits          AiUsageLimit[]
+  notifications          UserNotification[]
+  passwordResetTokens    PasswordResetToken[]
+  presenceSnapshot       UserPresenceSnapshot?
+  privacySettings        UserPrivacySettings?
+  refreshTokens          RefreshToken[]
+  reportsSubmitted       Report[]                @relation("UserReports")
+  reviews                Review[]
+  reviewLikes            ReviewLike[]
+  reviewComments         ReviewComment[]
   reviewCommentReactions ReviewCommentReaction[]
-  reviewCommentReports ReviewCommentReport[] @relation("ReviewCommentReporter")
-  socialAccounts      SocialAccount[]
-  titles              UserTitle[]
+  reviewCommentReports   ReviewCommentReport[]   @relation("ReviewCommentReporter")
+  socialAccounts         SocialAccount[]
+  titles                 UserTitle[]
 
   @@map("users")
 }
@@ -130,17 +132,17 @@ model PasswordResetToken {
 }
 
 model Review {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  gameId    String   @map("game_id") @db.VarChar(100)
-  rating    Decimal  @db.Decimal(2, 1)
-  content   String   @db.Text
-  containsSpoiler Boolean @default(false) @map("contains_spoiler")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  likes     ReviewLike[]
-  comments  ReviewComment[]
+  id              String          @id @default(uuid()) @db.Uuid
+  userId          String          @map("user_id") @db.Uuid
+  gameId          String          @map("game_id") @db.VarChar(100)
+  rating          Decimal         @db.Decimal(2, 1)
+  content         String          @db.Text
+  containsSpoiler Boolean         @default(false) @map("contains_spoiler")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  likes           ReviewLike[]
+  comments        ReviewComment[]
 
   @@index([gameId, createdAt])
   @@index([userId, createdAt])
@@ -163,24 +165,24 @@ model ReviewLike {
 }
 
 model ReviewComment {
-  id               String        @id @default(uuid()) @db.Uuid
-  reviewId         String        @map("review_id") @db.Uuid
-  userId           String        @map("user_id") @db.Uuid
-  parentCommentId  String?       @map("parent_comment_id") @db.Uuid
-  rootCommentId    String        @map("root_comment_id") @db.Uuid
-  replyToCommentId String?       @map("reply_to_comment_id") @db.Uuid
-  content          String        @db.Text
-  depth            Int           @default(0)
-  isDeleted        Boolean       @default(false) @map("is_deleted")
-  deletedAt        DateTime?     @map("deleted_at")
-  createdAt        DateTime      @default(now()) @map("created_at")
-  updatedAt        DateTime      @updatedAt @map("updated_at")
-  review           Review        @relation(fields: [reviewId], references: [id], onDelete: Cascade)
-  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parentComment    ReviewComment? @relation("ReviewCommentParent", fields: [parentCommentId], references: [id], onDelete: Cascade)
-  replies          ReviewComment[] @relation("ReviewCommentParent")
-  replyToComment   ReviewComment? @relation("ReviewCommentReplyTarget", fields: [replyToCommentId], references: [id], onDelete: SetNull)
-  replyTargets     ReviewComment[] @relation("ReviewCommentReplyTarget")
+  id               String                  @id @default(uuid()) @db.Uuid
+  reviewId         String                  @map("review_id") @db.Uuid
+  userId           String                  @map("user_id") @db.Uuid
+  parentCommentId  String?                 @map("parent_comment_id") @db.Uuid
+  rootCommentId    String                  @map("root_comment_id") @db.Uuid
+  replyToCommentId String?                 @map("reply_to_comment_id") @db.Uuid
+  content          String                  @db.Text
+  depth            Int                     @default(0)
+  isDeleted        Boolean                 @default(false) @map("is_deleted")
+  deletedAt        DateTime?               @map("deleted_at")
+  createdAt        DateTime                @default(now()) @map("created_at")
+  updatedAt        DateTime                @updatedAt @map("updated_at")
+  review           Review                  @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentComment    ReviewComment?          @relation("ReviewCommentParent", fields: [parentCommentId], references: [id], onDelete: Cascade)
+  replies          ReviewComment[]         @relation("ReviewCommentParent")
+  replyToComment   ReviewComment?          @relation("ReviewCommentReplyTarget", fields: [replyToCommentId], references: [id], onDelete: SetNull)
+  replyTargets     ReviewComment[]         @relation("ReviewCommentReplyTarget")
   reactions        ReviewCommentReaction[]
   reports          ReviewCommentReport[]
 
@@ -237,14 +239,14 @@ model FavoriteGame {
 }
 
 model FriendRequest {
-  id        String              @id @default(uuid()) @db.Uuid
-  fromUserId String             @map("from_user_id") @db.Uuid
-  toUserId  String              @map("to_user_id") @db.Uuid
-  status    FriendRequestStatus @default(PENDING)
-  createdAt DateTime            @default(now()) @map("created_at")
-  updatedAt DateTime            @updatedAt @map("updated_at")
-  fromUser  User                @relation("FriendRequestFromUser", fields: [fromUserId], references: [id], onDelete: Cascade)
-  toUser    User                @relation("FriendRequestToUser", fields: [toUserId], references: [id], onDelete: Cascade)
+  id         String              @id @default(uuid()) @db.Uuid
+  fromUserId String              @map("from_user_id") @db.Uuid
+  toUserId   String              @map("to_user_id") @db.Uuid
+  status     FriendRequestStatus @default(PENDING)
+  createdAt  DateTime            @default(now()) @map("created_at")
+  updatedAt  DateTime            @updatedAt @map("updated_at")
+  fromUser   User                @relation("FriendRequestFromUser", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser     User                @relation("FriendRequestToUser", fields: [toUserId], references: [id], onDelete: Cascade)
 
   @@index([fromUserId, status, createdAt])
   @@index([toUserId, status, createdAt])
@@ -266,19 +268,19 @@ model Friendship {
 }
 
 model SocialAccount {
-  id              String   @id @default(uuid()) @db.Uuid
-  userId          String   @map("user_id") @db.Uuid
-  provider        String   @db.VarChar(30)
-  providerSubject String   @map("provider_subject") @db.VarChar(255)
-  personaName     String?  @map("persona_name") @db.VarChar(100)
-  profileUrl      String?  @map("profile_url") @db.Text
-  avatarUrl       String?  @map("avatar_url") @db.Text
-  lastSteamSyncAt DateTime? @map("last_steam_sync_at")
-  steamRecentPlayedSnapshot Json? @map("steam_recent_played_snapshot")
-  linkedAt        DateTime @default(now()) @map("linked_at")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                        String    @id @default(uuid()) @db.Uuid
+  userId                    String    @map("user_id") @db.Uuid
+  provider                  String    @db.VarChar(30)
+  providerSubject           String    @map("provider_subject") @db.VarChar(255)
+  personaName               String?   @map("persona_name") @db.VarChar(100)
+  profileUrl                String?   @map("profile_url") @db.Text
+  avatarUrl                 String?   @map("avatar_url") @db.Text
+  lastSteamSyncAt           DateTime? @map("last_steam_sync_at")
+  steamRecentPlayedSnapshot Json?     @map("steam_recent_played_snapshot")
+  linkedAt                  DateTime  @default(now()) @map("linked_at")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
+  user                      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerSubject])
   @@unique([userId, provider])
@@ -300,20 +302,20 @@ model UserTitle {
 }
 
 model UserGameLibrary {
-  id             String            @id @default(uuid()) @db.Uuid
-  userId         String            @map("user_id") @db.Uuid
-  gameSource     GameSource        @map("game_source")
-  externalGameId String            @map("external_game_id") @db.VarChar(100)
-  gameName       String            @map("game_name") @db.VarChar(200)
-  coverUrl       String?           @map("cover_url") @db.Text
-  status         GameLibraryStatus
-  startedAt      DateTime?         @map("started_at")
-  completedAt    DateTime?         @map("completed_at")
-  lastPlayedAt   DateTime?         @map("last_played_at")
-  playtimeMinutes Int?             @map("playtime_minutes")
-  createdAt      DateTime          @default(now()) @map("created_at")
-  updatedAt      DateTime          @updatedAt @map("updated_at")
-  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id              String            @id @default(uuid()) @db.Uuid
+  userId          String            @map("user_id") @db.Uuid
+  gameSource      GameSource        @map("game_source")
+  externalGameId  String            @map("external_game_id") @db.VarChar(100)
+  gameName        String            @map("game_name") @db.VarChar(200)
+  coverUrl        String?           @map("cover_url") @db.Text
+  status          GameLibraryStatus
+  startedAt       DateTime?         @map("started_at")
+  completedAt     DateTime?         @map("completed_at")
+  lastPlayedAt    DateTime?         @map("last_played_at")
+  playtimeMinutes Int?              @map("playtime_minutes")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, gameSource, externalGameId])
   @@index([userId, status, updatedAt])
@@ -322,15 +324,15 @@ model UserGameLibrary {
 }
 
 model SteamIgdbMapping {
-  id              String   @id @default(uuid()) @db.Uuid
-  steamAppId      String   @unique @map("steam_appid") @db.VarChar(100)
-  igdbGameId      String?  @map("igdb_game_id") @db.VarChar(100)
-  matchedTitle    String?  @map("matched_title") @db.VarChar(200)
-  confidenceScore Float    @map("confidence_score")
+  id              String               @id @default(uuid()) @db.Uuid
+  steamAppId      String               @unique @map("steam_appid") @db.VarChar(100)
+  igdbGameId      String?              @map("igdb_game_id") @db.VarChar(100)
+  matchedTitle    String?              @map("matched_title") @db.VarChar(200)
+  confidenceScore Float                @map("confidence_score")
   matchStatus     SteamIgdbMatchStatus @default(UNMATCHED) @map("match_status")
-  matchedAt       DateTime @map("matched_at")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  matchedAt       DateTime             @map("matched_at")
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
 
   @@index([igdbGameId])
   @@map("steam_igdb_mappings")
@@ -378,19 +380,19 @@ model SearchQuery {
 }
 
 model UserNotification {
-  id            String   @id @default(uuid()) @db.Uuid
-  userId        String   @map("user_id") @db.Uuid
-  type          String   @db.VarChar(50)
-  title         String   @db.VarChar(120)
-  message       String   @db.Text
-  relatedGameId String?  @map("related_game_id") @db.VarChar(100)
-  dedupeKey     String?  @map("dedupe_key") @db.VarChar(160)
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  type          String    @db.VarChar(50)
+  title         String    @db.VarChar(120)
+  message       String    @db.Text
+  relatedGameId String?   @map("related_game_id") @db.VarChar(100)
+  dedupeKey     String?   @map("dedupe_key") @db.VarChar(160)
   payload       Json?
-  isRead        Boolean  @default(false) @map("is_read")
+  isRead        Boolean   @default(false) @map("is_read")
   readAt        DateTime? @map("read_at")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
   @@index([userId, isRead, createdAt])
@@ -436,14 +438,47 @@ model UserPresenceSnapshot {
 }
 
 model UserPrivacySettings {
-  userId            String   @id @map("user_id") @db.Uuid
-  showFriendsList   Boolean  @default(true) @map("show_friends_list")
-  showRecentlyPlayed Boolean @default(true) @map("show_recently_played")
-  showLikedGames    Boolean  @default(true) @map("show_liked_games")
-  showReviews       Boolean  @default(true) @map("show_reviews")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId             String   @id @map("user_id") @db.Uuid
+  showFriendsList    Boolean  @default(true) @map("show_friends_list")
+  showRecentlyPlayed Boolean  @default(true) @map("show_recently_played")
+  showLikedGames     Boolean  @default(true) @map("show_liked_games")
+  showReviews        Boolean  @default(true) @map("show_reviews")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_privacy_settings")
+}
+
+model AiRecommendationLog {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @map("user_id") @db.Uuid
+  query            String   @db.Text
+  normalizedQuery  String   @map("normalized_query") @db.Text
+  intent           Json
+  resultGameIds    String[] @map("result_game_ids")
+  model            String   @db.VarChar(100)
+  promptTokens     Int      @default(0) @map("prompt_tokens")
+  completionTokens Int      @default(0) @map("completion_tokens")
+  latencyMs        Int      @default(0) @map("latency_ms")
+  createdAt        DateTime @default(now()) @map("created_at")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("ai_recommendation_logs")
+}
+
+model AiUsageLimit {
+  id                  String   @id @default(uuid()) @db.Uuid
+  userId              String   @map("user_id") @db.Uuid
+  usageDate           DateTime @map("usage_date") @db.Date
+  recommendationCount Int      @default(0) @map("recommendation_count")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, usageDate])
+  @@index([usageDate])
+  @@map("ai_usage_limits")
 }

@@ -45,7 +45,11 @@ async function startServer() {
         host: env.host,
         port: env.port,
         localhostUrl,
-        lanUrl
+        lanUrl,
+        llmProvider: env.llmProvider,
+        llmModel: env.llmModel,
+        llmBaseUrl: env.llmBaseUrl,
+        llmApiKeyConfigured: Boolean(env.llmApiKey)
       });
     });
   } catch (error) {

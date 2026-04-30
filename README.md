@@ -143,6 +143,16 @@ flowchart LR
 - 특정 유저 차단 / 차단 해제
 - 차단 유저의 리뷰를 목록에서 숨기는 moderation hook 포함
 
+### 3.8 AI 게임 추천 큐레이터
+
+- `POST /api/v1/ai/game-recommendations`
+- Access Token 인증 필수
+- 서버가 IGDB/내부 fallback 후보를 먼저 만들고, LLM은 후보 목록 안의 `gameId`만 선택합니다.
+- `LLM_PROVIDER=openai|gemini|groq`과 OpenAI-compatible chat completions endpoint를 사용합니다.
+- `LLM_API_KEY`가 없거나 LLM 응답이 유효하지 않으면 rule-based fallback 랭킹으로 응답하고 로그 모델은 `mock-rule-based`로 저장합니다.
+- 추천 요청과 결과는 `ai_recommendation_logs`, 일일 사용량은 `ai_usage_limits`에 저장됩니다.
+- 동일 요청은 `AI_RECOMMENDATION_CACHE_TTL_SECONDS` 동안 서버 메모리 캐시에 저장됩니다. 캐시는 프로세스 재시작 시 사라지며, userId/query/platforms/preferredGenres/excludedGameIds/limit 기준으로 분리됩니다.
+
 ## 4. 실제 프로젝트 구조
 
 아래는 현재 저장소 기준의 실제 구조입니다.
@@ -359,14 +369,35 @@ Prisma는 PostgreSQL 스키마와 애플리케이션 모델 사이를 연결합�
 | `TWITCH_CLIENT_ID` | IGDB 접근용 Twitch Client ID | 게임 API 사용 시 |
 | `TWITCH_CLIENT_SECRET` | IGDB 접근용 Twitch Client Secret | 게임 API 사용 시 |
 
-### 6.6 기타
+### 6.6 AI 추천
+
+| 변수 | 설명 | 필수 |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `openai`, `gemini`, `groq`. 기본값은 `openai` | 아니오 |
+| `LLM_API_KEY` | 서버에서만 사용하는 LLM API Key. 없으면 fallback 추천 사용 | 아니오 |
+| `LLM_BASE_URL` | OpenAI-compatible base URL. Gemini 기본값은 `https://generativelanguage.googleapis.com/v1beta/openai`, Groq 기본값은 `https://api.groq.com/openai/v1` | 아니오 |
+| `LLM_MODEL` | OpenAI 호환 chat completions 모델명 | 아니오 |
+| `LLM_TIMEOUT_MS` | LLM 호출 timeout(ms) | 아니오 |
+| `AI_RECOMMENDATION_DAILY_LIMIT` | 사용자별 일일 AI 추천 요청 제한 | 아니오 |
+| `AI_RECOMMENDATION_CACHE_TTL_SECONDS` | 동일 추천 요청에 대한 서버 메모리 캐시 TTL. `0`이면 비활성화 | 아니오 |
+
+주의:
+
+- `LLM_API_KEY`는 iOS 앱에 넣지 않고 서버 환경 변수로만 관리합니다.
+- `LLM_API_KEY`가 비어 있으면 외부 LLM 호출 없이 fallback 추천이 동작합니다.
+- 로컬 실제 키는 커밋 대상 예시 파일 대신 `.env.development.local` 등에 넣어 관리합니다.
+- Gemini 테스트는 `LLM_PROVIDER=gemini`, `LLM_MODEL=gemini-2.5-flash` 또는 `gemini-2.5-flash-lite`를 사용합니다.
+- Groq 테스트는 `LLM_PROVIDER=groq`, 기본 `LLM_MODEL=llama-3.1-8b-instant`, 기본 `LLM_BASE_URL=https://api.groq.com/openai/v1`를 사용합니다.
+- AI 추천 로그에는 사용자 원문 query가 저장됩니다. 운영에서 보존 기간/마스킹 정책이 필요하면 별도 데이터 정책을 추가해야 합니다.
+
+### 6.7 기타
 
 | 변수 | 설명 | 필수 |
 | --- | --- | --- |
 | `REDIS_URL` | Redis 연결 문자열. 현재는 부팅 시 연결 점검 용도 | 선택 |
 | `PROFILE_IMAGE_MAX_SIZE_BYTES` | 업로드 가능한 프로필 이미지 최대 크기 | 예 |
 
-### 6.7 예시 파일
+### 6.8 예시 파일
 
 - 로컬 개발 기준: [`.env.example`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.env.example)
 - production 기준: [`.env.production.example`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/.env.production.example)
@@ -517,6 +548,136 @@ CI/CD 와 운영 절차는 [`docs/cicd.md`](/Users/hwangseokbeom/Documents/GitHu
 - `POST /reports`
 - `POST /users/:userId/block`
 - `DELETE /users/:userId/block`
+
+### 9.9 AI Recommendation
+
+- `POST /api/v1/ai/game-recommendations`
+
+AI 추천은 이 서버의 기존 `/games`, `/reviews` root route와 달리 신규 iOS 연동 계약에 맞춰 `/api/v1` prefix를 포함합니다.  
+따라서 iOS가 호출해야 하는 최종 path는 `/api/v1/ai/game-recommendations`이며, `src/app.js`에서 추가 prefix를 붙이지 않습니다.
+
+요청:
+
+```json
+{
+  "query": "퇴근하고 30분 정도 할 수 있는 힐링 게임 추천해줘",
+  "platforms": ["PC", "Nintendo Switch"],
+  "preferredGenres": ["Simulation", "Adventure"],
+  "excludedGameIds": [123, 456],
+  "limit": 10
+}
+```
+
+성공 응답:
+
+```json
+{
+  "success": true,
+  "data": {
+    "requestId": "ai-rec-...",
+    "normalizedQuery": "퇴근 후 짧게 즐길 수 있는 힐링 게임",
+    "intent": {
+      "mood": ["relaxing", "cozy"],
+      "sessionLength": "short",
+      "playMode": "singleplayer",
+      "difficulty": "low",
+      "platforms": ["PC", "Nintendo Switch"]
+    },
+    "items": [
+      {
+        "gameId": 1942,
+        "title": "Stardew Valley",
+        "coverUrl": "https://...",
+        "platforms": ["PC", "Nintendo Switch"],
+        "genres": ["Simulator", "Role-playing"],
+        "rating": 89.2,
+        "reason": "짧은 플레이 세션으로도 농장 관리와 탐험을 즐길 수 있어요.",
+        "matchTags": ["힐링", "짧은 세션", "싱글플레이"],
+        "confidence": 0.91
+      }
+    ],
+    "disclaimer": "AI 추천은 참고용이며 실제 취향과 다를 수 있습니다."
+  }
+}
+```
+
+`items[]` 필드는 항상 다음 타입으로 내려갑니다.
+
+```json
+{
+  "gameId": 1942,
+  "title": "string",
+  "coverUrl": null,
+  "platforms": ["string"],
+  "genres": ["string"],
+  "rating": 89.2,
+  "reason": "string",
+  "matchTags": ["string"],
+  "confidence": 0.91
+}
+```
+
+에러 응답 예시:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "AI_DAILY_LIMIT_EXCEEDED",
+    "message": "Daily AI recommendation limit exceeded"
+  }
+}
+```
+
+주요 에러 코드:
+
+- `VALIDATION_FAILED`
+- `AI_DAILY_LIMIT_EXCEEDED`
+- `AI_RECOMMENDATION_FAILED`
+- `CANDIDATE_NOT_FOUND`
+- `UNAUTHORIZED`
+
+동작 정책:
+
+- Access Token 인증이 필수입니다.
+- `limit`은 서버에서 5~10 범위로 보정됩니다.
+- `excludedGameIds`는 후보 생성과 최종 결과에서 제외됩니다.
+- LLM 응답의 `title`, `coverUrl`, `platforms`, `genres`, `rating`은 신뢰하지 않고 서버 후보 데이터 기준으로 최종 응답을 재조립합니다.
+- LLM이 invalid JSON, 후보 외 `gameId`, 중복 `gameId`, 빈 reason/tags를 반환해도 서버가 검증/보정하거나 fallback ranking으로 복구합니다.
+- 캐시 hit도 사용자 호출로 간주해 daily usage count를 증가시킵니다.
+
+curl 예시:
+
+```bash
+curl -X POST "http://localhost:3001/api/v1/ai/game-recommendations" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "퇴근하고 30분 정도 할 수 있는 힐링 게임 추천해줘",
+    "platforms": ["PC", "Nintendo Switch"],
+    "preferredGenres": ["Simulation", "Adventure"],
+    "excludedGameIds": [123, 456],
+    "limit": 10
+  }'
+```
+
+운영/스테이징 호출 경로:
+
+- production: `https://gamepedia-api.duckdns.org/api/v1/ai/game-recommendations`
+- staging: `https://staging-gamepedia-api.duckdns.org/api/v1/ai/game-recommendations`
+
+LLM provider 검증:
+
+```bash
+npm run dev
+curl -X POST "http://localhost:3001/api/v1/ai/game-recommendations" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"퇴근하고 30분 정도 할 수 있는 힐링 게임 추천해줘","limit":10}'
+psql "$DATABASE_URL" -c "select model, prompt_tokens, completion_tokens, result_game_ids, created_at from ai_recommendation_logs order by created_at desc limit 5;"
+```
+
+Gemini 호출 성공 시 `model`은 `gemini-2.5-flash` 계열로 저장되고, Groq 호출 성공 시 기본 `model`은 `llama-3.1-8b-instant`로 저장됩니다. fallback 사용 시 `mock-rule-based`로 저장됩니다.
 
 ## 10. iOS 앱과의 연동 방식
 

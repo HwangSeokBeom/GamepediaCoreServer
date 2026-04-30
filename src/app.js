@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const { env } = require('./config/env');
+const aiRoutes = require('./modules/ai/ai.routes');
 const authRoutes = require('./routes/auth.routes');
 const favoriteRoutes = require('./modules/favorite/favorite.routes');
 const igdbRoutes = require('./modules/igdb/igdb.routes');
@@ -44,6 +45,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/auth', authRoutes);
+app.use(aiRoutes);
 app.use(favoriteRoutes);
 app.use(igdbRoutes);
 app.use(libraryRoutes);

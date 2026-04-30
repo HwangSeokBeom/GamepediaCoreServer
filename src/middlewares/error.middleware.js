@@ -41,6 +41,12 @@ function errorHandler(error, req, res, next) {
     return;
   }
 
+  if (error instanceof SyntaxError && error.type === 'entity.parse.failed') {
+    logger.warn('Request failed due to malformed JSON body', buildRequestMeta(req));
+    res.status(400).json(errorResponse('VALIDATION_FAILED', 'Request body must be valid JSON'));
+    return;
+  }
+
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === 'P2002') {
       logger.warn('Request failed due to Prisma unique constraint', {
