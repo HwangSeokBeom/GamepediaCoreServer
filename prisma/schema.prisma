@@ -82,6 +82,7 @@ model User {
   gameLibraryEntries     UserGameLibrary[]
   activityEvents         UserActivityEvent[]
   aiRecommendationLogs   AiRecommendationLog[]
+  aiSearchLogs           AiSearchLog[]
   aiUsageLimits          AiUsageLimit[]
   notifications          UserNotification[]
   passwordResetTokens    PasswordResetToken[]
@@ -474,6 +475,7 @@ model AiUsageLimit {
   userId              String   @map("user_id") @db.Uuid
   usageDate           DateTime @map("usage_date") @db.Date
   recommendationCount Int      @default(0) @map("recommendation_count")
+  searchAssistCount   Int      @default(0) @map("search_assist_count")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
   user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -481,4 +483,24 @@ model AiUsageLimit {
   @@unique([userId, usageDate])
   @@index([usageDate])
   @@map("ai_usage_limits")
+}
+
+model AiSearchLog {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @map("user_id") @db.Uuid
+  query            String   @db.Text
+  normalizedQuery  String   @map("normalized_query") @db.Text
+  intent           Json
+  resultGameIds    Int[]    @map("result_game_ids")
+  model            String   @db.VarChar(100)
+  promptTokens     Int      @default(0) @map("prompt_tokens")
+  completionTokens Int      @default(0) @map("completion_tokens")
+  latencyMs        Int      @default(0) @map("latency_ms")
+  fallbackUsed     Boolean  @default(false) @map("fallback_used")
+  createdAt        DateTime @default(now()) @map("created_at")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("ai_search_logs")
 }

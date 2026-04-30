@@ -4,7 +4,12 @@ const { env } = require('../../config/env');
 const { logger } = require('../../utils/logger');
 const { AppError } = require('../../utils/error-response');
 const aiClient = require('./ai.client');
-const { buildSystemPrompt, buildUserPrompt } = require('./ai.prompt');
+const {
+  buildReviewSummarySystemPrompt,
+  buildReviewSummaryUserPrompt,
+  buildSystemPrompt,
+  buildUserPrompt
+} = require('./ai.prompt');
 const {
   inferIntent,
   normalizeRecommendationQuery
@@ -12,10 +17,14 @@ const {
 const { getGameCandidates } = require('../recommendation/game-candidate.provider');
 const {
   normalizeLimit,
+  validateLlmReviewSummaryResponse,
   validateLlmRecommendationResponse
 } = require('./ai.validator');
 
 const DISCLAIMER = 'AI 추천은 참고용이며 실제 취향과 다를 수 있습니다.';
+const REVIEW_SUMMARY_SAMPLE_LIMIT = 30;
+const REVIEW_SUMMARY_MIN_LLM_REVIEWS = 3;
+const REVIEW_SUMMARY_FALLBACK_TEXT = 'AI 요약을 일시적으로 생성하지 못했어요. 등록된 리뷰를 기준으로 다시 시도할 수 있습니다.';
 const responseCache = new Map();
 
 function buildRequestId() {
@@ -315,10 +324,215 @@ async function createGameRecommendations({
   return response;
 }
 
+function normalizeRating(value) {
+  if (value == null) {
+    return null;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
+
+function normalizeAverageRating(value) {
+  const numericValue = normalizeRating(value);
+
+  if (numericValue == null) {
+    return null;
+  }
+
+  return Math.round(numericValue * 10) / 10;
+}
+
+function sanitizeReviewContent(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim().replace(/\s+/g, ' ').slice(0, 500);
+}
+
+async function fetchReviewSummarySource(gameId) {
+  const normalizedGameId = String(gameId);
+  const where = {
+    gameId: normalizedGameId
+  };
+  const [reviews, aggregation] = await Promise.all([
+    prisma.review.findMany({
+      where,
+      orderBy: [
+        { createdAt: 'desc' },
+        { id: 'desc' }
+      ],
+      take: REVIEW_SUMMARY_SAMPLE_LIMIT,
+      select: {
+        id: true,
+        rating: true,
+        content: true,
+        createdAt: true
+      }
+    }),
+    prisma.review.aggregate({
+      where,
+      _count: {
+        id: true
+      },
+      _avg: {
+        rating: true
+      }
+    })
+  ]);
+
+  return {
+    reviews,
+    reviewCount: aggregation?._count?.id ?? 0,
+    averageRating: normalizeAverageRating(aggregation?._avg?.rating ?? null)
+  };
+}
+
+function buildReviewSummaryResponse({
+  gameId,
+  status,
+  reason,
+  reviewCount,
+  fallbackUsed,
+  summary,
+  highlights = [],
+  pros = [],
+  cons = [],
+  generatedAt = new Date().toISOString()
+}) {
+  return {
+    gameId: String(gameId),
+    status,
+    reason,
+    fallbackUsed,
+    reviewCount,
+    summary,
+    highlights,
+    pros,
+    cons,
+    generatedAt
+  };
+}
+
+async function getGameReviewSummary({ gameId }) {
+  const { reviews, reviewCount, averageRating } = await fetchReviewSummarySource(gameId);
+
+  if (reviewCount === 0) {
+    logger.info('[AIReviewSummary] completed', {
+      gameId,
+      status: 'empty',
+      reason: 'NO_REVIEWS',
+      reviewCount,
+      fallbackUsed: false
+    });
+
+    return buildReviewSummaryResponse({
+      gameId,
+      status: 'empty',
+      reason: 'NO_REVIEWS',
+      reviewCount: 0,
+      fallbackUsed: false,
+      summary: '아직 요약할 리뷰가 없어요.'
+    });
+  }
+
+  if (reviewCount < REVIEW_SUMMARY_MIN_LLM_REVIEWS) {
+    logger.info('[AIReviewSummary] completed', {
+      gameId,
+      status: 'empty',
+      reason: 'INSUFFICIENT_REVIEWS',
+      reviewCount,
+      fallbackUsed: false
+    });
+
+    return buildReviewSummaryResponse({
+      gameId,
+      status: 'empty',
+      reason: 'INSUFFICIENT_REVIEWS',
+      reviewCount,
+      fallbackUsed: false,
+      summary: '아직 AI 요약을 만들기에는 리뷰가 조금 부족해요.'
+    });
+  }
+
+  const systemPrompt = buildReviewSummarySystemPrompt();
+  const userPrompt = buildReviewSummaryUserPrompt({
+    gameId,
+    reviewCount,
+    averageRating,
+    reviews: reviews.map((review) => ({
+      rating: normalizeRating(review.rating),
+      content: sanitizeReviewContent(review.content)
+    })).filter((review) => review.content)
+  });
+
+  try {
+    const llmResult = await aiClient.createChatCompletion({
+      systemPrompt,
+      userPrompt,
+      contextLabel: 'AI review summary',
+      maxTokens: 500
+    });
+    const summary = validateLlmReviewSummaryResponse({
+      rawContent: llmResult.content,
+      reviewCount
+    });
+
+    if (summary) {
+      logger.info('[AIReviewSummary] completed', {
+        gameId,
+        status: 'success',
+        reason: null,
+        reviewCount,
+        fallbackUsed: false,
+        summaryLength: summary.summary.length
+      });
+
+      return buildReviewSummaryResponse({
+        gameId,
+        status: 'success',
+        reason: null,
+        reviewCount,
+        fallbackUsed: false,
+        summary: summary.summary,
+        highlights: summary.highlights,
+        pros: summary.pros,
+        cons: summary.cons
+      });
+    }
+  } catch (error) {
+    logger.warn('[AIReviewSummary] LLM summary unavailable', {
+      gameId,
+      status: 'fallback',
+      reason: 'AI_SUMMARY_UNAVAILABLE',
+      reviewCount
+    });
+  }
+
+  logger.info('[AIReviewSummary] completed', {
+    gameId,
+    status: 'fallback',
+    reason: 'AI_SUMMARY_UNAVAILABLE',
+    reviewCount,
+    fallbackUsed: true
+  });
+
+  return buildReviewSummaryResponse({
+    gameId,
+    status: 'fallback',
+    reason: 'AI_SUMMARY_UNAVAILABLE',
+    reviewCount,
+    fallbackUsed: true,
+    summary: REVIEW_SUMMARY_FALLBACK_TEXT
+  });
+}
+
 module.exports = {
   assertAndIncrementDailyUsage,
   buildCacheKey,
   createGameRecommendations,
   getUsageDate,
+  getGameReviewSummary,
   writeRecommendationLog
 };

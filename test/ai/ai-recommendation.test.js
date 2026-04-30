@@ -12,6 +12,7 @@ const { mergeCandidates } = require('../../src/modules/recommendation/game-candi
 const { rankCandidates } = require('../../src/modules/recommendation/recommendation-ranker');
 const {
   normalizeLimit,
+  validateLlmReviewSummaryResponse,
   validateLlmRecommendationResponse
 } = require('../../src/modules/ai/ai.validator');
 
@@ -89,6 +90,38 @@ test('AI request validation rejects invalid payloads', () => {
     query: '',
     limit: -1
   }));
+});
+
+test('AI review summary validator accepts the iOS response contract', () => {
+  const summary = validateLlmReviewSummaryResponse({
+    rawContent: JSON.stringify({
+      summary: '플레이어들은 짧게 즐기기 좋은 진행과 편안한 분위기를 장점으로 언급합니다.',
+      highlights: ['짧은 세션', '편안한 분위기'],
+      pros: ['짧은 플레이 세션', '편안한 분위기'],
+      cons: ['콘텐츠 양은 제한적일 수 있음']
+    }),
+    reviewCount: 3
+  });
+
+  assert.equal(summary.summary, '플레이어들은 짧게 즐기기 좋은 진행과 편안한 분위기를 장점으로 언급합니다.');
+  assert.equal(summary.reviewCount, 3);
+  assert.deepEqual(summary.highlights, ['짧은 세션', '편안한 분위기']);
+  assert.deepEqual(summary.pros, ['짧은 플레이 세션', '편안한 분위기']);
+});
+
+test('AI review summary validator parses fenced and mixed JSON responses', () => {
+  const fenced = validateLlmReviewSummaryResponse({
+    rawContent: '```json\n{ "summary": "코드블럭 JSON도 처리합니다.", "highlights": [] }\n```',
+    reviewCount: 3
+  });
+  const mixed = validateLlmReviewSummaryResponse({
+    rawContent: '요약입니다.\n{ "summary": "설명 텍스트 사이 JSON도 처리합니다.", "pros": ["장점"], "cons": [] }\n감사합니다.',
+    reviewCount: 4
+  });
+
+  assert.equal(fenced.summary, '코드블럭 JSON도 처리합니다.');
+  assert.equal(mixed.summary, '설명 텍스트 사이 JSON도 처리합니다.');
+  assert.deepEqual(mixed.pros, ['장점']);
 });
 
 test('normalizeLimit clamps recommendations to the 5-10 range', () => {
@@ -338,7 +371,8 @@ test('LLM client resolves Groq OpenAI-compatible defaults and request shape', as
     const response = await aiClient.createChatCompletion({
       systemPrompt: 'system prompt',
       userPrompt: '{"query":"cozy"}',
-      retryCount: 0
+      retryCount: 0,
+      maxTokens: 500
     });
     const requestBody = JSON.parse(requestedOptions.body);
 
@@ -351,7 +385,8 @@ test('LLM client resolves Groq OpenAI-compatible defaults and request shape', as
     assert.equal(requestedOptions.headers.Authorization, 'Bearer groq-test-key');
     assert.equal(requestBody.model, 'llama-3.1-8b-instant');
     assert.equal(requestBody.temperature, 0.2);
-    assert.deepEqual(requestBody.response_format, { type: 'json_object' });
+    assert.equal(requestBody.max_tokens, 500);
+    assert.equal(requestBody.response_format, undefined);
     assert.deepEqual(requestBody.messages, [
       { role: 'system', content: 'system prompt' },
       { role: 'user', content: '{"query":"cozy"}' }
@@ -369,6 +404,23 @@ test('LLM client resolves Groq OpenAI-compatible defaults and request shape', as
     env.llmModel = originalModel;
     env.llmTimeoutMs = originalTimeoutMs;
   }
+});
+
+test('LLM client sanitizes provider error bodies before logging', () => {
+  const sanitized = aiClient.sanitizeLLMErrorBody({
+    error: 'bad request Bearer abc.def-456',
+    authorization: 'Bearer abc.def-123',
+    api_key: 'secret-key',
+    access_token: 'access-secret',
+    refresh_token: 'refresh-secret'
+  });
+
+  assert.match(sanitized, /Bearer <redacted>/);
+  assert.match(sanitized, /"apiKey":"<redacted>"/);
+  assert.match(sanitized, /"authorization":"<redacted>"/);
+  assert.match(sanitized, /"accessToken":"<redacted>"/);
+  assert.match(sanitized, /"refreshToken":"<redacted>"/);
+  assert.doesNotMatch(sanitized, /secret-key|access-secret|refresh-secret|abc\.def-123|abc\.def-456/);
 });
 
 test('LLM client falls back on unsupported providers', async () => {
@@ -616,6 +668,328 @@ test('route requires access token at the documented /api/v1 path', async () => {
     assert.equal(response.status, 401);
     assert.equal(payload.success, false);
     assert.equal(payload.error.code, 'UNAUTHORIZED');
+  });
+});
+
+test('AI review summary route is registered at GET /api/v1/ai/games/:gameId/review-summary', async () => {
+  await withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/v1/ai/games/245754/review-summary`);
+    const payload = await response.json();
+
+    assert.equal(response.status, 401);
+    assert.equal(payload.success, false);
+    assert.equal(payload.error.code, 'UNAUTHORIZED');
+    assert.doesNotMatch(payload.error.message, /Route GET|was not found/);
+  });
+});
+
+test('AI review summary route returns 200 with a fixed empty DTO when a game has no reviews', async () => {
+  const originalVerifyAccessToken = tokenService.verifyAccessToken;
+  const originalFindUnique = prisma.user.findUnique;
+  const originalReviewFindMany = prisma.review.findMany;
+  const originalReviewAggregate = prisma.review.aggregate;
+
+  tokenService.verifyAccessToken = () => ({
+    type: 'access',
+    sub: '00000000-0000-0000-0000-000000000000'
+  });
+  prisma.user.findUnique = async () => ({
+    id: '00000000-0000-0000-0000-000000000000',
+    email: 'test@example.com',
+    status: 'ACTIVE'
+  });
+  prisma.review.findMany = async () => [];
+  prisma.review.aggregate = async () => ({
+    _count: { id: 0 },
+    _avg: { rating: null }
+  });
+
+  try {
+    await withTestServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/v1/ai/games/245754/review-summary`, {
+        headers: {
+          Authorization: 'Bearer fake-access-token'
+        }
+      });
+      const payload = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(payload.success, true);
+      assert.equal(payload.data.gameId, '245754');
+      assert.equal(payload.data.status, 'empty');
+      assert.equal(payload.data.reason, 'NO_REVIEWS');
+      assert.equal(payload.data.reviewCount, 0);
+      assert.equal(payload.data.fallbackUsed, false);
+      assert.equal(payload.data.summary, '아직 요약할 리뷰가 없어요.');
+      assert.deepEqual(payload.data.highlights, []);
+      assert.deepEqual(payload.data.pros, []);
+      assert.deepEqual(payload.data.cons, []);
+      assert.match(payload.data.generatedAt, /^\d{4}-\d{2}-\d{2}T/);
+    });
+  } finally {
+    tokenService.verifyAccessToken = originalVerifyAccessToken;
+    prisma.user.findUnique = originalFindUnique;
+    prisma.review.findMany = originalReviewFindMany;
+    prisma.review.aggregate = originalReviewAggregate;
+  }
+});
+
+test('AI review summary route returns insufficient reviews DTO without calling LLM', async () => {
+  const originalVerifyAccessToken = tokenService.verifyAccessToken;
+  const originalFindUnique = prisma.user.findUnique;
+  const originalReviewFindMany = prisma.review.findMany;
+  const originalReviewAggregate = prisma.review.aggregate;
+  const originalCreateChatCompletion = aiClient.createChatCompletion;
+  let llmCalled = false;
+
+  tokenService.verifyAccessToken = () => ({
+    type: 'access',
+    sub: '00000000-0000-0000-0000-000000000000'
+  });
+  prisma.user.findUnique = async () => ({
+    id: '00000000-0000-0000-0000-000000000000',
+    email: 'test@example.com',
+    status: 'ACTIVE'
+  });
+  prisma.review.findMany = async () => [
+    {
+      id: 'review-1',
+      rating: 5,
+      content: '짧게 즐기기 좋습니다.',
+      createdAt: new Date()
+    },
+    {
+      id: 'review-2',
+      rating: 4,
+      content: '분위기가 편안합니다.',
+      createdAt: new Date()
+    }
+  ];
+  prisma.review.aggregate = async () => ({
+    _count: { id: 2 },
+    _avg: { rating: 4.5 }
+  });
+  aiClient.createChatCompletion = async () => {
+    llmCalled = true;
+    return { content: null, skipped: true };
+  };
+
+  try {
+    await withTestServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/v1/ai/games/245754/review-summary`, {
+        headers: {
+          Authorization: 'Bearer fake-access-token'
+        }
+      });
+      const payload = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(payload.success, true);
+      assert.equal(payload.data.gameId, '245754');
+      assert.equal(payload.data.status, 'empty');
+      assert.equal(payload.data.reason, 'INSUFFICIENT_REVIEWS');
+      assert.equal(payload.data.reviewCount, 2);
+      assert.equal(payload.data.fallbackUsed, false);
+      assert.equal(payload.data.summary, '아직 AI 요약을 만들기에는 리뷰가 조금 부족해요.');
+      assert.deepEqual(payload.data.highlights, []);
+      assert.deepEqual(payload.data.pros, []);
+      assert.deepEqual(payload.data.cons, []);
+      assert.equal(llmCalled, false);
+    });
+  } finally {
+    tokenService.verifyAccessToken = originalVerifyAccessToken;
+    prisma.user.findUnique = originalFindUnique;
+    prisma.review.findMany = originalReviewFindMany;
+    prisma.review.aggregate = originalReviewAggregate;
+    aiClient.createChatCompletion = originalCreateChatCompletion;
+  }
+});
+
+test('AI review summary route returns a fixed iOS-decodable DTO when LLM succeeds', async () => {
+  const originalVerifyAccessToken = tokenService.verifyAccessToken;
+  const originalFindUnique = prisma.user.findUnique;
+  const originalReviewFindMany = prisma.review.findMany;
+  const originalReviewAggregate = prisma.review.aggregate;
+  const originalCreateChatCompletion = aiClient.createChatCompletion;
+
+  tokenService.verifyAccessToken = () => ({
+    type: 'access',
+    sub: '00000000-0000-0000-0000-000000000000'
+  });
+  prisma.user.findUnique = async () => ({
+    id: '00000000-0000-0000-0000-000000000000',
+    email: 'test@example.com',
+    status: 'ACTIVE'
+  });
+  prisma.review.findMany = async () => [
+    {
+      id: 'review-1',
+      rating: 5,
+      content: '짧게 즐기기 좋고 분위기가 편안합니다.',
+      createdAt: new Date()
+    },
+    {
+      id: 'review-2',
+      rating: 4,
+      content: '진입 장벽이 낮아서 부담이 적었습니다.',
+      createdAt: new Date()
+    },
+    {
+      id: 'review-3',
+      rating: 4,
+      content: '친구에게 추천할 만큼 만족스러웠습니다.',
+      createdAt: new Date()
+    },
+    {
+      id: 'review-4',
+      rating: 5,
+      content: '기대보다 오래 즐길 수 있었습니다.',
+      createdAt: new Date()
+    },
+    {
+      id: 'review-5',
+      rating: 4.5,
+      content: '전반적으로 만족도가 높았습니다.',
+      createdAt: new Date()
+    }
+  ];
+  prisma.review.aggregate = async () => ({
+    _count: { id: 5 },
+    _avg: { rating: 4.7 }
+  });
+  aiClient.createChatCompletion = async () => ({
+    content: JSON.stringify({
+      summary: '플레이어들은 부담 없는 진행과 편안한 분위기를 주로 장점으로 언급합니다.',
+      highlights: ['부담 없는 진행', '편안한 분위기'],
+      pros: ['짧은 플레이 세션', '편안한 분위기'],
+      cons: []
+    }),
+    model: 'test-model',
+    promptTokens: 12,
+    completionTokens: 8,
+    skipped: false
+  });
+
+  try {
+    await withTestServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/v1/ai/games/328386/review-summary`, {
+        headers: {
+          Authorization: 'Bearer fake-access-token'
+        }
+      });
+      const payload = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(payload.success, true);
+      assert.equal(payload.data.gameId, '328386');
+      assert.equal(payload.data.status, 'success');
+      assert.equal(payload.data.reason, null);
+      assert.equal(payload.data.reviewCount, 5);
+      assert.equal(payload.data.fallbackUsed, false);
+      assert.equal(payload.data.summary, '플레이어들은 부담 없는 진행과 편안한 분위기를 주로 장점으로 언급합니다.');
+      assert.deepEqual(payload.data.highlights, ['부담 없는 진행', '편안한 분위기']);
+      assert.deepEqual(payload.data.pros, ['짧은 플레이 세션', '편안한 분위기']);
+      assert.deepEqual(payload.data.cons, []);
+      assert.match(payload.data.generatedAt, /^\d{4}-\d{2}-\d{2}T/);
+    });
+  } finally {
+    tokenService.verifyAccessToken = originalVerifyAccessToken;
+    prisma.user.findUnique = originalFindUnique;
+    prisma.review.findMany = originalReviewFindMany;
+    prisma.review.aggregate = originalReviewAggregate;
+    aiClient.createChatCompletion = originalCreateChatCompletion;
+  }
+});
+
+test('AI review summary route always returns fallback summary with fixed DTO when LLM is unavailable', async () => {
+  const originalVerifyAccessToken = tokenService.verifyAccessToken;
+  const originalFindUnique = prisma.user.findUnique;
+  const originalReviewFindMany = prisma.review.findMany;
+  const originalReviewAggregate = prisma.review.aggregate;
+  const originalCreateChatCompletion = aiClient.createChatCompletion;
+
+  tokenService.verifyAccessToken = () => ({
+    type: 'access',
+    sub: '00000000-0000-0000-0000-000000000000'
+  });
+  prisma.user.findUnique = async () => ({
+    id: '00000000-0000-0000-0000-000000000000',
+    email: 'test@example.com',
+    status: 'ACTIVE'
+  });
+  prisma.review.findMany = async () => [
+    {
+      id: 'review-1',
+      rating: 5,
+      content: '가볍게 하기 좋고 조작이 쉽습니다.',
+      createdAt: new Date()
+    },
+    {
+      id: 'review-2',
+      rating: 2,
+      content: '콘텐츠가 조금 부족하게 느껴졌습니다.',
+      createdAt: new Date()
+    },
+    {
+      id: 'review-3',
+      rating: 4,
+      content: '취향에 맞으면 계속 손이 갑니다.',
+      createdAt: new Date()
+    }
+  ];
+  prisma.review.aggregate = async () => ({
+    _count: { id: 3 },
+    _avg: { rating: 3.7 }
+  });
+  aiClient.createChatCompletion = async () => ({
+    content: null,
+    model: 'mock-rule-based',
+    promptTokens: 0,
+    completionTokens: 0,
+    skipped: true
+  });
+
+  try {
+    await withTestServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/v1/ai/games/376092/review-summary`, {
+        headers: {
+          Authorization: 'Bearer fake-access-token'
+        }
+      });
+      const payload = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(payload.success, true);
+      assert.equal(payload.data.gameId, '376092');
+      assert.equal(payload.data.status, 'fallback');
+      assert.equal(payload.data.reason, 'AI_SUMMARY_UNAVAILABLE');
+      assert.equal(payload.data.reviewCount, 3);
+      assert.equal(payload.data.fallbackUsed, true);
+      assert.equal(payload.data.summary, 'AI 요약을 일시적으로 생성하지 못했어요. 등록된 리뷰를 기준으로 다시 시도할 수 있습니다.');
+      assert.deepEqual(payload.data.highlights, []);
+      assert.deepEqual(payload.data.pros, []);
+      assert.deepEqual(payload.data.cons, []);
+      assert.match(payload.data.generatedAt, /^\d{4}-\d{2}-\d{2}T/);
+    });
+  } finally {
+    tokenService.verifyAccessToken = originalVerifyAccessToken;
+    prisma.user.findUnique = originalFindUnique;
+    prisma.review.findMany = originalReviewFindMany;
+    prisma.review.aggregate = originalReviewAggregate;
+    aiClient.createChatCompletion = originalCreateChatCompletion;
+  }
+});
+
+test('unknown routes return a normalized JSON not found envelope', async () => {
+  await withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/v1/ai/games/245754/missing-route`);
+    const payload = await response.json();
+
+    assert.equal(response.status, 404);
+    assert.equal(payload.success, false);
+    assert.equal(payload.error.code, 'NOT_FOUND');
+    assert.equal(payload.error.message, '요청한 리소스를 찾을 수 없습니다.');
+    assert.doesNotMatch(payload.error.message, /Route GET|was not found/);
   });
 });
 

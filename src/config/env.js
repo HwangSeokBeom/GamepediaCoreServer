@@ -148,7 +148,12 @@ const env = {
   llmModel: readEnv('LLM_MODEL') ?? llmProviderDefaults.model,
   llmTimeoutMs: parseNumber('LLM_TIMEOUT_MS', '8000'),
   aiRecommendationDailyLimit: parseNumber('AI_RECOMMENDATION_DAILY_LIMIT', '20'),
-  aiRecommendationCacheTtlSeconds: parseNonNegativeNumber('AI_RECOMMENDATION_CACHE_TTL_SECONDS', '300')
+  aiRecommendationCacheTtlSeconds: parseNonNegativeNumber('AI_RECOMMENDATION_CACHE_TTL_SECONDS', '300'),
+  aiSearchDailyLimit: parseNumber('AI_SEARCH_DAILY_LIMIT', readEnv('AI_RECOMMENDATION_DAILY_LIMIT') ?? '20'),
+  aiSearchCacheTtlSeconds: parseNonNegativeNumber(
+    'AI_SEARCH_CACHE_TTL_SECONDS',
+    readEnv('AI_RECOMMENDATION_CACHE_TTL_SECONDS') ?? '300'
+  )
 };
 
 function validateEnv(config) {

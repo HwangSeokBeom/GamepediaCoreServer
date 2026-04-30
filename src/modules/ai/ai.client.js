@@ -52,6 +52,57 @@ function buildChatCompletionsUrl(baseUrl) {
   return `${String(baseUrl).replace(/\/+$/, '')}/chat/completions`;
 }
 
+function sanitizeLLMErrorBody(body) {
+  if (body == null) {
+    return null;
+  }
+
+  let raw = null;
+
+  try {
+    raw = typeof body === 'string' ? body : JSON.stringify(body);
+  } catch (error) {
+    raw = String(body);
+  }
+
+  return raw
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer <redacted>')
+    .replace(/"api[_-]?key"\s*:\s*"[^"]+"/gi, '"apiKey":"<redacted>"')
+    .replace(/"authorization"\s*:\s*"[^"]+"/gi, '"authorization":"<redacted>"')
+    .replace(/"access[_-]?token"\s*:\s*"[^"]+"/gi, '"accessToken":"<redacted>"')
+    .replace(/"refresh[_-]?token"\s*:\s*"[^"]+"/gi, '"refreshToken":"<redacted>"')
+    .slice(0, 1500);
+}
+
+function buildChatCompletionRequestBody({
+  provider,
+  model,
+  systemPrompt,
+  userPrompt,
+  temperature,
+  maxTokens,
+  responseFormatEnabled
+}) {
+  const requestBody = {
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    temperature
+  };
+
+  if (Number.isSafeInteger(maxTokens) && maxTokens > 0) {
+    requestBody.max_tokens = maxTokens;
+  }
+
+  if (responseFormatEnabled && provider !== 'groq') {
+    requestBody.response_format = { type: 'json_object' };
+  }
+
+  return requestBody;
+}
+
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -69,12 +120,16 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 async function createChatCompletion({
   systemPrompt,
   userPrompt,
-  retryCount = DEFAULT_RETRY_COUNT
+  contextLabel = 'AI recommendation',
+  retryCount = DEFAULT_RETRY_COUNT,
+  maxTokens = null,
+  temperature = 0.2,
+  responseFormat = true
 }) {
   const llmConfig = getLlmConfig();
 
   if (!llmConfig.supported) {
-    logger.warn('LLM request skipped; AI recommendation will use fallback ranking', {
+    logger.warn(`LLM request skipped; ${contextLabel} will use fallback`, {
       provider: llmConfig.provider,
       model: llmConfig.model,
       status: null,
@@ -86,7 +141,7 @@ async function createChatCompletion({
   }
 
   if (!llmConfig.apiKey) {
-    logger.warn('LLM request skipped; AI recommendation will use fallback ranking', {
+    logger.warn(`LLM request skipped; ${contextLabel} will use fallback`, {
       provider: llmConfig.provider,
       model: llmConfig.model,
       status: null,
@@ -100,6 +155,27 @@ async function createChatCompletion({
   const startedAt = Date.now();
   let lastError = null;
   const requestUrl = buildChatCompletionsUrl(llmConfig.baseUrl);
+  const responseFormatEnabled = responseFormat === true && llmConfig.provider !== 'groq';
+  const requestBody = buildChatCompletionRequestBody({
+    provider: llmConfig.provider,
+    model: llmConfig.model,
+    systemPrompt,
+    userPrompt,
+    temperature,
+    maxTokens,
+    responseFormatEnabled
+  });
+  const requestLogMeta = {
+    provider: llmConfig.provider,
+    model: llmConfig.model,
+    timeoutMs: llmConfig.timeoutMs,
+    messagesCount: requestBody.messages.length,
+    systemPromptLength: typeof systemPrompt === 'string' ? systemPrompt.length : 0,
+    userPromptLength: typeof userPrompt === 'string' ? userPrompt.length : 0,
+    responseFormatEnabled,
+    maxTokens: requestBody.max_tokens ?? null,
+    temperature
+  };
 
   for (let attempt = 0; attempt <= retryCount; attempt += 1) {
     try {
@@ -109,22 +185,14 @@ async function createChatCompletion({
           Authorization: `Bearer ${llmConfig.apiKey}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          model: llmConfig.model,
-          response_format: { type: 'json_object' },
-          temperature: 0.2,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ]
-        })
+        body: JSON.stringify(requestBody)
       }, llmConfig.timeoutMs);
 
       if (!response.ok) {
         const responseText = await response.text().catch(() => '');
         const error = new Error(`LLM request failed with status ${response.status}`);
         error.status = response.status;
-        error.body = responseText.slice(0, 500);
+        error.body = responseText;
         throw error;
       }
 
@@ -148,12 +216,11 @@ async function createChatCompletion({
     }
   }
 
-  logger.warn('LLM request failed; AI recommendation will use fallback ranking', {
-    provider: llmConfig.provider,
-    model: llmConfig.model,
-    timeoutMs: llmConfig.timeoutMs,
-    message: lastError?.message ?? 'unknown',
-    status: lastError?.status ?? null
+  logger.warn(`LLM request failed; ${contextLabel} will use fallback`, {
+    ...requestLogMeta,
+    status: lastError?.status ?? null,
+    sanitizedErrorBody: sanitizeLLMErrorBody(lastError?.body),
+    errorMessage: lastError?.message ?? 'unknown'
   });
 
   return buildMockResponse();
@@ -161,5 +228,6 @@ async function createChatCompletion({
 
 module.exports = {
   createChatCompletion,
-  getLlmConfig
+  getLlmConfig,
+  sanitizeLLMErrorBody
 };

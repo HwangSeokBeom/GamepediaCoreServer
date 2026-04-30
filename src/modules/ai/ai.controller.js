@@ -24,6 +24,15 @@ const createGameRecommendations = asyncHandler(async (req, res) => {
   res.status(200).json(successResponse(result));
 });
 
+const getGameReviewSummary = asyncHandler(async (req, res) => {
+  const result = await aiService.getGameReviewSummary({
+    gameId: req.params.gameId
+  });
+
+  res.status(200).json(successResponse(result));
+});
+
 module.exports = {
-  createGameRecommendations
+  createGameRecommendations,
+  getGameReviewSummary
 };

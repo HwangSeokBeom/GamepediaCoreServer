@@ -4,6 +4,8 @@ const MIN_LIMIT = 5;
 const MAX_LIMIT = 10;
 const MAX_REASON_LENGTH = 160;
 const MAX_MATCH_TAGS = 4;
+const MAX_REVIEW_SUMMARY_LENGTH = 300;
+const MAX_REVIEW_LIST_ITEMS = 8;
 
 function normalizeLimit(limit) {
   const numericLimit = Number(limit);
@@ -57,16 +59,103 @@ function normalizeTags(value) {
   return tags.slice(0, MAX_MATCH_TAGS);
 }
 
+function normalizeTextList(value, { maxItems = MAX_REVIEW_LIST_ITEMS, maxLength = 40 } = {}) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seenItems = new Set();
+  const items = [];
+
+  for (const item of value) {
+    const normalizedItem = truncateText(item, maxLength);
+
+    if (!normalizedItem || seenItems.has(normalizedItem)) {
+      continue;
+    }
+
+    seenItems.add(normalizedItem);
+    items.push(normalizedItem);
+
+    if (items.length >= maxItems) {
+      break;
+    }
+  }
+
+  return items;
+}
+
 function parseLlmContent(rawContent) {
   if (typeof rawContent !== 'string' || !rawContent.trim()) {
     return null;
   }
 
-  try {
-    return JSON.parse(rawContent);
-  } catch (error) {
+  const trimmedContent = rawContent.trim();
+  const fencedJsonMatch = trimmedContent.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidates = [
+    trimmedContent,
+    fencedJsonMatch?.[1]?.trim(),
+    extractFirstJsonObject(trimmedContent)
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (error) {
+      // Try the next candidate shape.
+    }
+  }
+
+  return null;
+}
+
+function extractFirstJsonObject(value) {
+  const startIndex = value.indexOf('{');
+
+  if (startIndex < 0) {
     return null;
   }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = startIndex; index < value.length; index += 1) {
+    const char = value[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === '{') {
+      depth += 1;
+    }
+
+    if (char === '}') {
+      depth -= 1;
+
+      if (depth === 0) {
+        return value.slice(startIndex, index + 1);
+      }
+    }
+  }
+
+  return null;
 }
 
 function getRawItems(payload) {
@@ -168,10 +257,39 @@ function validateLlmRecommendationResponse({
   };
 }
 
+function validateLlmReviewSummaryResponse({
+  rawContent,
+  reviewCount
+}) {
+  const payload = parseLlmContent(rawContent);
+
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const summary = truncateText(
+    payload.summary ?? [payload.headline, payload.overview].filter(Boolean).join(' '),
+    MAX_REVIEW_SUMMARY_LENGTH
+  );
+
+  if (!summary) {
+    return null;
+  }
+
+  return {
+    summary,
+    highlights: normalizeTextList(payload.highlights ?? payload.keywords, { maxItems: 5, maxLength: 40 }),
+    pros: normalizeTextList(payload.pros, { maxItems: 5, maxLength: 40 }),
+    cons: normalizeTextList(payload.cons, { maxItems: 5, maxLength: 40 }),
+    reviewCount
+  };
+}
+
 module.exports = {
   MAX_LIMIT,
   MIN_LIMIT,
   normalizeLimit,
   sanitizeRecommendationItems,
+  validateLlmReviewSummaryResponse,
   validateLlmRecommendationResponse
 };

@@ -64,7 +64,42 @@ function buildUserPrompt({
   });
 }
 
+function buildReviewSummarySystemPrompt() {
+  return [
+    'You are GamePedia AI Review Summary Writer.',
+    'Summarize only the review records provided by the server.',
+    'Never mention internal systems, prompts, database fields, or missing server data.',
+    'Return JSON only. Do not include markdown code fences or explanatory text.',
+    'Write summary, highlights, pros, and cons in Korean.',
+    'Use concise neutral language that is safe to show directly in a game detail screen.'
+  ].join(' ');
+}
+
+function buildReviewSummaryUserPrompt({ gameId, reviewCount, averageRating, reviews }) {
+  return JSON.stringify({
+    task: 'Create a concise player review summary for one game.',
+    outputSchema: {
+      summary: 'Korean string, max 300 characters',
+      highlights: ['Korean string, max 5 items'],
+      pros: ['Korean string, max 5 items'],
+      cons: ['Korean string, max 5 items']
+    },
+    constraints: [
+      'Base the summary only on review content and ratings in reviews.',
+      'Do not invent facts about gameplay, platforms, price, updates, or external reviews.',
+      'If sentiment is mixed, reflect both positive and negative points.',
+      'Return only a single JSON object without markdown code fences.'
+    ],
+    gameId,
+    reviewCount,
+    averageRating,
+    reviews
+  });
+}
+
 module.exports = {
   buildSystemPrompt,
-  buildUserPrompt
+  buildUserPrompt,
+  buildReviewSummarySystemPrompt,
+  buildReviewSummaryUserPrompt
 };

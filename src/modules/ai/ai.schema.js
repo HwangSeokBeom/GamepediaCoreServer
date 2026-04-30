@@ -14,6 +14,14 @@ const aiGameRecommendationRequestSchema = z.object({
   limit: z.number().int().positive().max(100).optional().default(10)
 }).strict();
 
+const aiReviewSummaryParamsSchema = z.object({
+  gameId: z.string()
+    .trim()
+    .regex(/^\d+$/)
+    .transform((value) => Number(value))
+    .refine((value) => Number.isSafeInteger(value) && value > 0)
+});
+
 function flattenAiIssues(issues) {
   return issues.map((issue) => ({
     field: issue.path.join('.'),
@@ -22,10 +30,11 @@ function flattenAiIssues(issues) {
 }
 
 function buildAiValidationError(error) {
-  return new AppError(400, 'VALIDATION_FAILED', 'AI recommendation request validation failed', flattenAiIssues(error.issues));
+  return new AppError(400, 'VALIDATION_FAILED', 'AI 요청 형식이 올바르지 않습니다.', flattenAiIssues(error.issues));
 }
 
 module.exports = {
   aiGameRecommendationRequestSchema,
+  aiReviewSummaryParamsSchema,
   buildAiValidationError
 };
