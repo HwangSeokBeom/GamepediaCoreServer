@@ -1,9 +1,15 @@
 node_modules
 .env
+.env.local
+.env.production
 .env.*
 !.env.example
 !.env.production.example
 !.env.staging.example
+firebase-adminsdk*.json
+*firebase-admin*.json
+*.p8
+AuthKey_*.p8
 dist
 build
 .DS_Store

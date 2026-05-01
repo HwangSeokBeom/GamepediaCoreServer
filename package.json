@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "test": "node --test",
     "deploy:production": "bash ./deploy.sh",
     "deploy:staging": "bash ./deploy-staging.sh",
     "deploy:validate:production": "NODE_ENV=production node ./scripts/server/validate-deploy-env.js production",
@@ -24,6 +25,7 @@
     "bcrypt": "^6.0.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "firebase-admin": "^13.8.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
     "nodemailer": "^8.0.4",

@@ -5,8 +5,93 @@ const { logger } = require('../utils/logger');
 const { errorResponse } = require('../utils/api-response');
 const { AppError } = require('../utils/error-response');
 
+const DEFAULT_ERROR_MESSAGES = {
+  UNAUTHORIZED: '인증이 필요합니다.',
+  FORBIDDEN: '접근 권한이 없습니다.',
+  NOT_FOUND: '요청한 리소스를 찾을 수 없습니다.',
+  VALIDATION_FAILED: '요청 형식이 올바르지 않습니다.',
+  INTERNAL_SERVER_ERROR: '서버 오류가 발생했습니다.'
+};
+const UNSAFE_MESSAGE_PATTERNS = [
+  /Route\s+\w+/i,
+  /was not found/i,
+  /PrismaClientKnownRequestError/i,
+  /\bInvalid\b/,
+  /\bstack\b/i,
+  /Unhandled request error/i,
+  /\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bWHERE\b/i,
+  /\/Users\/|\/var\/|\/app\/|[A-Z]:\\/i,
+  /access token|refresh token|authorization/i
+];
+const SENSITIVE_QUERY_KEYS = new Set([
+  'access_token',
+  'refresh_token',
+  'token',
+  'authorization'
+]);
+
+function sanitizeRequestPath(originalUrl) {
+  if (typeof originalUrl !== 'string') {
+    return '';
+  }
+
+  try {
+    const url = new URL(originalUrl, 'http://gamepedia.local');
+
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) {
+        url.searchParams.set(key, '[REDACTED]');
+      }
+    }
+
+    return `${url.pathname}${url.search}`;
+  } catch (error) {
+    return originalUrl.replace(/(access_token|refresh_token|token|authorization)=([^&]+)/gi, '$1=[REDACTED]');
+  }
+}
+
+function getPublicErrorMessage(code, message) {
+  const normalizedMessage = typeof message === 'string' ? message : '';
+
+  if (!normalizedMessage || UNSAFE_MESSAGE_PATTERNS.some((pattern) => pattern.test(normalizedMessage))) {
+    return DEFAULT_ERROR_MESSAGES[code] ?? DEFAULT_ERROR_MESSAGES.INTERNAL_SERVER_ERROR;
+  }
+
+  return normalizedMessage;
+}
+
+function sanitizeErrorDetails(details) {
+  if (!details) {
+    return details;
+  }
+
+  if (Array.isArray(details)) {
+    return details.map((detail) => sanitizeErrorDetails(detail));
+  }
+
+  if (typeof details !== 'object') {
+    return typeof details === 'string'
+      ? getPublicErrorMessage('VALIDATION_FAILED', details)
+      : details;
+  }
+
+  return Object.fromEntries(Object.entries(details).map(([key, value]) => {
+    if (key === 'message' && typeof value === 'string') {
+      return [key, getPublicErrorMessage('VALIDATION_FAILED', value)];
+    }
+
+    return [key, sanitizeErrorDetails(value)];
+  }));
+}
+
 function notFoundHandler(req, res) {
-  res.status(404).json(errorResponse('NOT_FOUND', `Route ${req.method} ${req.originalUrl} was not found`));
+  logger.warn('Request route not found', {
+    ...buildRequestMeta(req),
+    statusCode: 404,
+    code: 'NOT_FOUND'
+  });
+
+  res.status(404).json(errorResponse('NOT_FOUND', DEFAULT_ERROR_MESSAGES.NOT_FOUND));
 }
 
 function isAppleLoginRequest(req) {
@@ -16,7 +101,7 @@ function isAppleLoginRequest(req) {
 function buildRequestMeta(req) {
   return {
     method: req.method,
-    path: req.originalUrl,
+    path: sanitizeRequestPath(req.originalUrl),
     ip: req.ip,
     remoteAddress: req.socket?.remoteAddress ?? null
   };
@@ -37,7 +122,26 @@ function errorHandler(error, req, res, next) {
       context: isAppleLoginRequest(req) ? 'apple-login' : undefined
     });
 
-    res.status(error.statusCode).json(errorResponse(error.code, error.message, error.details));
+    const sanitizedDetails = sanitizeErrorDetails(error.details);
+    const publicExtra = error.code === 'AI_LIBRARY_CURATOR_DAILY_LIMIT_EXCEEDED' &&
+      sanitizedDetails &&
+      typeof sanitizedDetails === 'object' &&
+      !Array.isArray(sanitizedDetails)
+      ? sanitizedDetails
+      : undefined;
+
+    res.status(error.statusCode).json(errorResponse(
+      error.code,
+      getPublicErrorMessage(error.code, error.message),
+      publicExtra ? undefined : sanitizedDetails,
+      publicExtra
+    ));
+    return;
+  }
+
+  if (error instanceof SyntaxError && error.type === 'entity.parse.failed') {
+    logger.warn('Request failed due to malformed JSON body', buildRequestMeta(req));
+    res.status(400).json(errorResponse('VALIDATION_FAILED', DEFAULT_ERROR_MESSAGES.VALIDATION_FAILED));
     return;
   }
 

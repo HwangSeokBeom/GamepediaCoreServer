@@ -3,7 +3,7 @@ const { env } = require('./env');
 const { logger } = require('../utils/logger');
 
 const prisma = new PrismaClient({
-  log: env.nodeEnv === 'development' ? ['query', 'warn', 'error'] : ['warn', 'error']
+  log: env.prismaQueryLogging ? ['query', 'warn', 'error'] : ['warn', 'error']
 });
 
 function describeDatabaseConnection(databaseUrl) {

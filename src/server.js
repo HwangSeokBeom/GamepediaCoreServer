@@ -2,6 +2,7 @@ const os = require('os');
 const { app } = require('./app');
 const { env } = require('./config/env');
 const { connectDatabase, disconnectDatabase } = require('./config/prisma');
+const { initializeFirebaseAdmin } = require('./config/firebase-admin');
 const { probeRedisConnection } = require('./config/redis');
 const { logger } = require('./utils/logger');
 
@@ -37,6 +38,7 @@ async function startServer() {
   try {
     await connectDatabase();
     await probeRedisConnection();
+    const firebaseState = initializeFirebaseAdmin();
 
     server = app.listen(env.port, env.host, () => {
       const { lanUrl, localhostUrl } = buildServerUrls();
@@ -45,7 +47,13 @@ async function startServer() {
         host: env.host,
         port: env.port,
         localhostUrl,
-        lanUrl
+        lanUrl,
+        llmProvider: env.llmProvider,
+        llmModel: env.llmModel,
+        llmBaseUrl: env.llmBaseUrl,
+        llmApiKeyConfigured: Boolean(env.llmApiKey),
+        pushEnabled: firebaseState.enabled,
+        pushDisabledReason: firebaseState.reason
       });
     });
   } catch (error) {

@@ -11,6 +11,7 @@ const steamService = require('../../services/steam.service');
 const { deleteStoredProfileImage, buildStoredProfileImagePath } = require('./profile-image.storage');
 const userActivityService = require('./user-activity.service');
 const userPresenceService = require('./user-presence.service');
+const { publishNotificationPush } = require('../notifications/notification-push.publisher');
 const {
   RECOMMENDATION_WIDGET_CACHE_TTL_MS
 } = require('./user-social.constants');
@@ -262,7 +263,7 @@ async function createNotification({
   dedupeKey = null
 }) {
   try {
-    await prisma.userNotification.create({
+    const notification = await prisma.userNotification.create({
       data: {
         userId,
         type,
@@ -273,6 +274,9 @@ async function createNotification({
         dedupeKey
       }
     });
+
+    await publishNotificationPush(notification);
+    return notification;
   } catch (error) {
     logger.warn('notification-create-failed', {
       userId,
@@ -280,6 +284,7 @@ async function createNotification({
       code: error?.code ?? null,
       message: error?.message ?? 'Notification create failed'
     });
+    return null;
   }
 }
 

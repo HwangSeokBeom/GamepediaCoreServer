@@ -49,6 +49,17 @@ function parseNumber(name, fallbackValue) {
   return parsedValue;
 }
 
+function parseNonNegativeNumber(name, fallbackValue) {
+  const rawValue = readEnv(name) ?? fallbackValue;
+  const parsedValue = Number(rawValue);
+
+  if (!Number.isInteger(parsedValue) || parsedValue < 0) {
+    throw new Error(`Environment variable ${name} must be a non-negative integer`);
+  }
+
+  return parsedValue;
+}
+
 function parseBoolean(name, fallbackValue) {
   const rawValue = (readEnv(name) ?? fallbackValue).toLowerCase();
 
@@ -75,11 +86,37 @@ function parseEnum(name, fallbackValue, allowedValues) {
 
 const nodeEnv = readEnv('NODE_ENV') ?? bootstrapNodeEnv;
 const isDevelopmentLike = nodeEnv === 'development' || nodeEnv === 'test';
+const appEnv = readEnv('APP_ENV') ?? nodeEnv;
 const mailModeFallback = readEnv('EMAIL_DELIVERY_MODE') ?? 'log';
 const port = parseNumber('PORT', '3000');
+const llmProvider = (readEnv('LLM_PROVIDER') ?? 'openai').toLowerCase();
+
+function getLlmProviderDefaults(provider) {
+  if (provider === 'gemini') {
+    return {
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-2.5-flash'
+    };
+  }
+
+  if (provider === 'groq') {
+    return {
+      baseUrl: 'https://api.groq.com/openai/v1',
+      model: 'llama-3.1-8b-instant'
+    };
+  }
+
+  return {
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini'
+  };
+}
+
+const llmProviderDefaults = getLlmProviderDefaults(llmProvider);
 
 const env = {
   nodeEnv,
+  appEnv,
   host: readEnv('HOST') ?? '0.0.0.0',
   port,
   databaseUrl: requireEnv('DATABASE_URL'),
@@ -106,7 +143,33 @@ const env = {
   steamWebApiBaseUrl: parseUrl('STEAM_WEB_API_BASE_URL', 'https://api.steampowered.com/'),
   redisUrl: readEnv('REDIS_URL'),
   twitchClientId: readEnv('TWITCH_CLIENT_ID'),
-  twitchClientSecret: readEnv('TWITCH_CLIENT_SECRET')
+  twitchClientSecret: readEnv('TWITCH_CLIENT_SECRET'),
+  llmProvider,
+  llmApiKey: readEnv('LLM_API_KEY'),
+  llmBaseUrl: parseUrl('LLM_BASE_URL', llmProviderDefaults.baseUrl),
+  llmModel: readEnv('LLM_MODEL') ?? llmProviderDefaults.model,
+  llmTimeoutMs: parseNumber('LLM_TIMEOUT_MS', '8000'),
+  aiRecommendationDailyLimit: parseNumber('AI_RECOMMENDATION_DAILY_LIMIT', '20'),
+  aiRecommendationCacheTtlSeconds: parseNonNegativeNumber('AI_RECOMMENDATION_CACHE_TTL_SECONDS', '300'),
+  aiLibraryCuratorDailyLimit: parseNumber(
+    'AI_LIBRARY_CURATOR_DAILY_LIMIT',
+    readEnv('AI_RECOMMENDATION_DAILY_LIMIT') ?? '20'
+  ),
+  aiLibraryCuratorCacheTtlSeconds: parseNonNegativeNumber(
+    'AI_LIBRARY_CURATOR_CACHE_TTL_SECONDS',
+    readEnv('AI_RECOMMENDATION_CACHE_TTL_SECONDS') ?? '300'
+  ),
+  aiSearchDailyLimit: parseNumber('AI_SEARCH_DAILY_LIMIT', readEnv('AI_RECOMMENDATION_DAILY_LIMIT') ?? '20'),
+  aiSearchCacheTtlSeconds: parseNonNegativeNumber(
+    'AI_SEARCH_CACHE_TTL_SECONDS',
+    readEnv('AI_RECOMMENDATION_CACHE_TTL_SECONDS') ?? '300'
+  ),
+  firebaseAdminCredentialsPath: readEnv('FIREBASE_ADMIN_CREDENTIALS_PATH'),
+  firebaseAdminCredentialsBase64Configured: Boolean(readEnv('FIREBASE_ADMIN_CREDENTIALS_BASE64')),
+  firebaseAdminProjectId: readEnv('FIREBASE_ADMIN_PROJECT_ID'),
+  firebaseAdminClientEmailConfigured: Boolean(readEnv('FIREBASE_ADMIN_CLIENT_EMAIL')),
+  firebaseAdminPrivateKeyConfigured: Boolean(readEnv('FIREBASE_ADMIN_PRIVATE_KEY')),
+  prismaQueryLogging: parseBoolean('PRISMA_QUERY_LOGGING', 'false')
 };
 
 function validateEnv(config) {

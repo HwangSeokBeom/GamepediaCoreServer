@@ -14,6 +14,7 @@ const {
   updatePresenceFromActivityEvent,
   updatePresenceFromSteamSync
 } = require('./user-presence.service');
+const { publishNotificationPush } = require('../notifications/notification-push.publisher');
 const {
   FRIEND_ACTIVITY_DEDUPE_WINDOW_MS,
   FRIEND_ACTIVITY_FEED_DEFAULT_LIMIT,
@@ -521,7 +522,7 @@ async function dispatchActivityNotifications({ activityEvent, actor = null }) {
       continue;
     }
 
-    await prisma.userNotification.create({
+    const createdNotification = await prisma.userNotification.create({
       data: {
         userId: recipientUserId,
         type: notification.type,
@@ -532,6 +533,7 @@ async function dispatchActivityNotifications({ activityEvent, actor = null }) {
         payload: notification.payload
       }
     });
+    await publishNotificationPush(createdNotification);
     dispatchedCount += 1;
   }
 

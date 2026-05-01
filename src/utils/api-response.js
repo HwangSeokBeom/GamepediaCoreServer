@@ -5,12 +5,13 @@ function successResponse(data) {
   };
 }
 
-function errorResponse(code, message, details) {
+function errorResponse(code, message, details, extra = undefined) {
   return {
     success: false,
     error: {
       code,
       message,
+      ...(extra && typeof extra === 'object' ? extra : {}),
       ...(details ? { details } : {})
     }
   };
