@@ -122,10 +122,19 @@ function errorHandler(error, req, res, next) {
       context: isAppleLoginRequest(req) ? 'apple-login' : undefined
     });
 
+    const sanitizedDetails = sanitizeErrorDetails(error.details);
+    const publicExtra = error.code === 'AI_LIBRARY_CURATOR_DAILY_LIMIT_EXCEEDED' &&
+      sanitizedDetails &&
+      typeof sanitizedDetails === 'object' &&
+      !Array.isArray(sanitizedDetails)
+      ? sanitizedDetails
+      : undefined;
+
     res.status(error.statusCode).json(errorResponse(
       error.code,
       getPublicErrorMessage(error.code, error.message),
-      sanitizeErrorDetails(error.details)
+      publicExtra ? undefined : sanitizedDetails,
+      publicExtra
     ));
     return;
   }

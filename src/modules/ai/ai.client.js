@@ -13,13 +13,15 @@ function sleep(ms) {
   });
 }
 
-function buildMockResponse() {
+function buildMockResponse({ reason = 'request_failed', status = null } = {}) {
   return {
     content: null,
     model: 'mock-rule-based',
     promptTokens: 0,
     completionTokens: 0,
-    skipped: true
+    skipped: true,
+    skipReason: reason,
+    status
   };
 }
 
@@ -137,7 +139,7 @@ async function createChatCompletion({
       reason: 'unsupported_provider'
     });
 
-    return buildMockResponse();
+    return buildMockResponse({ reason: 'unsupported_provider' });
   }
 
   if (!llmConfig.apiKey) {
@@ -149,7 +151,7 @@ async function createChatCompletion({
       reason: 'missing_api_key'
     });
 
-    return buildMockResponse();
+    return buildMockResponse({ reason: 'missing_api_key' });
   }
 
   const startedAt = Date.now();
@@ -223,7 +225,10 @@ async function createChatCompletion({
     errorMessage: lastError?.message ?? 'unknown'
   });
 
-  return buildMockResponse();
+  return buildMockResponse({
+    reason: lastError?.name === 'AbortError' || /aborted/i.test(lastError?.message ?? '') ? 'timeout' : 'request_failed',
+    status: lastError?.status ?? null
+  });
 }
 
 module.exports = {

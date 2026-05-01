@@ -384,6 +384,61 @@ async function getLocalReviewSummary(gameId) {
   };
 }
 
+async function getLocalStoredGameSummary(gameId) {
+  const normalizedGameId = normalizeGameId(gameId);
+
+  if (!normalizedGameId) {
+    return null;
+  }
+
+  const [libraryEntry, localReviewSummary] = await Promise.all([
+    prisma.userGameLibrary.findFirst({
+      where: {
+        gameSource: 'IGDB',
+        externalGameId: normalizedGameId
+      },
+      orderBy: [
+        { updatedAt: 'desc' },
+        { createdAt: 'desc' }
+      ],
+      select: {
+        externalGameId: true,
+        gameName: true,
+        coverUrl: true,
+        updatedAt: true
+      }
+    }),
+    getLocalReviewSummary(normalizedGameId)
+  ]);
+
+  if (!libraryEntry && localReviewSummary.reviewCount === 0) {
+    return null;
+  }
+
+  return {
+    id: Number.parseInt(normalizedGameId, 10),
+    name: libraryEntry?.gameName ?? `IGDB Game ${normalizedGameId}`,
+    summary: null,
+    storyline: null,
+    coverUrl: libraryEntry?.coverUrl ?? null,
+    artworkUrls: [],
+    screenshotUrls: [],
+    genres: [],
+    platforms: [],
+    developers: [],
+    publishers: [],
+    rating: null,
+    aggregatedRating: null,
+    totalRating: null,
+    releaseDate: null,
+    status: null,
+    category: null,
+    videoIds: [],
+    similarGames: [],
+    localReviewSummary
+  };
+}
+
 async function buildPartialDetailFallbackResponse({
   gameId,
   liveFetchAttempted = false,
@@ -392,22 +447,23 @@ async function buildPartialDetailFallbackResponse({
 }) {
   const normalizedGameId = normalizeGameId(gameId);
   const cachedBatchGame = getCachedBatchGame(normalizedGameId);
-
-  if (!cachedBatchGame) {
-    return null;
-  }
-
-  const partialGame = buildPartialGameDetailFromListItem(cachedBatchGame);
+  const dbFallbackGame = cachedBatchGame ? null : await getLocalStoredGameSummary(normalizedGameId);
+  const partialGame = cachedBatchGame
+    ? buildPartialGameDetailFromListItem(cachedBatchGame)
+    : dbFallbackGame;
+  const fallbackSource = cachedBatchGame ? 'batch_cache' : 'db';
 
   if (!partialGame) {
     return null;
   }
 
-  const localReviewSummary = await getLocalReviewSummary(normalizedGameId);
+  const localReviewSummary = partialGame.localReviewSummary ?? await getLocalReviewSummary(normalizedGameId);
+  delete partialGame.localReviewSummary;
 
-  logger.info('igdb-detail-served-partial-fallback', {
+  logger.info('[GameDetail] fallbackToCached', {
     gameId: normalizedGameId,
-    fallbackSource: 'batch_cache',
+    source: fallbackSource,
+    reason: liveFetchSkippedReason === 'rate_limited' ? 'igdb_rate_limited' : fallbackReason,
     liveFetchAttempted,
     liveFetchSkippedReason,
     fallbackReason,
@@ -423,7 +479,7 @@ async function buildPartialDetailFallbackResponse({
       liveFetchSkippedReason,
       isPartial: true,
       igdbDataAvailable: false,
-      fallbackSource: 'batch_cache',
+      fallbackSource,
       degradedSections: ['storyline', 'artworkUrls', 'screenshotUrls', 'developers', 'publishers', 'videoIds', 'similarGames'],
       localReviewSummary
     })
@@ -1410,8 +1466,9 @@ async function getGameDetail({ gameId }) {
   const cachedGameDetail = getCachedGameDetail(normalizedGameId);
 
   if (cachedGameDetail) {
-    logger.info('IGDB detail served from cache', {
-      gameId: normalizedGameId
+    logger.info('[GameDetailCache] hit', {
+      gameId: normalizedGameId,
+      source: 'detail_cache'
     });
 
     return {
@@ -1440,9 +1497,9 @@ async function getGameDetail({ gameId }) {
   }
 
   if (isIgdbRateLimitCooldownActive()) {
-    logger.warn('igdb-detail-cooldown-prevented-live-fetch', {
-      gameId: normalizedGameId,
-      cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+    logger.warn('[IGDBBackoff] suppress', {
+      key: `game:${normalizedGameId}`,
+      remainingMs: getRateLimitCooldownRemainingMs()
     });
 
     const fallbackResponse = await buildPartialDetailFallbackResponse({
@@ -1501,9 +1558,9 @@ async function getGameDetail({ gameId }) {
     };
   } catch (error) {
     if (error?.code === 'IGDB_RATE_LIMITED') {
-      logger.warn('igdb-detail-cooldown-prevented-live-fetch', {
-        gameId: normalizedGameId,
-        cooldownRemainingMs: getRateLimitCooldownRemainingMs()
+      logger.warn('[IGDBBackoff] suppress', {
+        key: `game:${normalizedGameId}`,
+        remainingMs: getRateLimitCooldownRemainingMs()
       });
 
       const fallbackResponse = await buildPartialDetailFallbackResponse({
@@ -1598,7 +1655,7 @@ async function getGamesByIds({ gameIds }) {
     };
   }
 
-  const requestKey = missingGameIds.join(',');
+  const requestKey = [...missingGameIds].sort((left, right) => Number(left) - Number(right) || left.localeCompare(right)).join(',');
   const existingPendingRequest = pendingGamesByIdsRequests.get(requestKey);
 
   if (existingPendingRequest) {

@@ -8,6 +8,10 @@ const {
   aiReviewSummaryParamsSchema,
   buildAiValidationError
 } = require('./ai.schema');
+const {
+  buildLibraryCuratorValidationError,
+  libraryCuratorRequestSchema
+} = require('./ai-library-curator.schema');
 
 const router = express.Router();
 
@@ -22,5 +26,10 @@ router.post('/api/v1/ai/game-recommendations', authenticateAccessToken, validate
   body: aiGameRecommendationRequestSchema,
   errorMapper: buildAiValidationError
 }), aiController.createGameRecommendations);
+
+router.post('/api/v1/ai/library-curator', authenticateAccessToken, validate({
+  body: libraryCuratorRequestSchema,
+  errorMapper: buildLibraryCuratorValidationError
+}), aiController.createLibraryCuratorRecommendation);
 
 module.exports = router;

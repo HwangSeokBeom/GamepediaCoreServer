@@ -149,11 +149,20 @@ const env = {
   llmTimeoutMs: parseNumber('LLM_TIMEOUT_MS', '8000'),
   aiRecommendationDailyLimit: parseNumber('AI_RECOMMENDATION_DAILY_LIMIT', '20'),
   aiRecommendationCacheTtlSeconds: parseNonNegativeNumber('AI_RECOMMENDATION_CACHE_TTL_SECONDS', '300'),
+  aiLibraryCuratorDailyLimit: parseNumber(
+    'AI_LIBRARY_CURATOR_DAILY_LIMIT',
+    readEnv('AI_RECOMMENDATION_DAILY_LIMIT') ?? '20'
+  ),
+  aiLibraryCuratorCacheTtlSeconds: parseNonNegativeNumber(
+    'AI_LIBRARY_CURATOR_CACHE_TTL_SECONDS',
+    readEnv('AI_RECOMMENDATION_CACHE_TTL_SECONDS') ?? '300'
+  ),
   aiSearchDailyLimit: parseNumber('AI_SEARCH_DAILY_LIMIT', readEnv('AI_RECOMMENDATION_DAILY_LIMIT') ?? '20'),
   aiSearchCacheTtlSeconds: parseNonNegativeNumber(
     'AI_SEARCH_CACHE_TTL_SECONDS',
     readEnv('AI_RECOMMENDATION_CACHE_TTL_SECONDS') ?? '300'
-  )
+  ),
+  prismaQueryLogging: parseBoolean('PRISMA_QUERY_LOGGING', 'false')
 };
 
 function validateEnv(config) {

@@ -163,7 +163,17 @@ flowchart LR
 - 검색 보조 요청과 결과는 `ai_search_logs`, 일일 사용량은 `ai_usage_limits.search_assist_count`에 저장됩니다.
 - 동일 요청은 `AI_SEARCH_CACHE_TTL_SECONDS` 동안 서버 메모리 캐시에 저장됩니다. 캐시는 userId/query/platforms/genres/limit 기준으로 분리되어 사용자 간 공유되지 않습니다.
 
-### 3.10 AI 리뷰 요약
+### 3.10 AI 라이브러리 큐레이터
+
+- `POST /api/v1/ai/library-curator`
+- Access Token 인증 필수
+- 서버가 보유 게임, 찜, 리뷰를 합쳐 후보를 만들고, LLM은 후보 목록 안의 `gameId`만 선택합니다.
+- 최종 `title`, `coverUrl`, `platforms`, `rating`은 LLM 값이 아니라 서버 후보/DB/캐시 데이터로 재조립합니다.
+- `locale=ko` 요청은 사용자 표시 문자열을 한국어로 보정하며, LLM 결과가 부족하면 서버 fallback ranker로 `limit`에 가깝게 보충합니다.
+- 일일 제한은 `ai_usage_limits.recommendation_count`를 사용하며 KST 일자 기준으로 계산합니다. 초과 응답은 `retryAfterSeconds`와 `resetAt`을 포함합니다.
+- `AI_LIBRARY_CURATOR_DAILY_LIMIT`을 설정하지 않으면 기존 `AI_RECOMMENDATION_DAILY_LIMIT` 값을 사용합니다.
+
+### 3.11 AI 리뷰 요약
 
 - `GET /api/v1/ai/games/:gameId/review-summary`
 - Access Token 인증 필수
@@ -400,8 +410,11 @@ Prisma는 PostgreSQL 스키마와 애플리케이션 모델 사이를 연결합�
 | `LLM_TIMEOUT_MS` | LLM 호출 timeout(ms) | 아니오 |
 | `AI_RECOMMENDATION_DAILY_LIMIT` | 사용자별 일일 AI 추천 요청 제한 | 아니오 |
 | `AI_RECOMMENDATION_CACHE_TTL_SECONDS` | 동일 추천 요청에 대한 서버 메모리 캐시 TTL. `0`이면 비활성화 | 아니오 |
+| `AI_LIBRARY_CURATOR_DAILY_LIMIT` | 사용자별 일일 AI 라이브러리 큐레이터 요청 제한. 미설정 시 `AI_RECOMMENDATION_DAILY_LIMIT` 값 사용 | 아니오 |
+| `AI_LIBRARY_CURATOR_CACHE_TTL_SECONDS` | 동일 라이브러리 큐레이터 요청에 대한 서버 메모리 캐시 TTL. `0`이면 비활성화. 미설정 시 `AI_RECOMMENDATION_CACHE_TTL_SECONDS` 값 사용 | 아니오 |
 | `AI_SEARCH_DAILY_LIMIT` | 사용자별 일일 AI 자연어 검색 보조 요청 제한. 미설정 시 `AI_RECOMMENDATION_DAILY_LIMIT` 값 사용 | 아니오 |
 | `AI_SEARCH_CACHE_TTL_SECONDS` | 동일 검색 보조 요청에 대한 서버 메모리 캐시 TTL. `0`이면 비활성화. 미설정 시 `AI_RECOMMENDATION_CACHE_TTL_SECONDS` 값 사용 | 아니오 |
+| `PRISMA_QUERY_LOGGING` | Prisma query 로그 출력 여부. 긴 개발 로그를 줄이려면 `false`로 설정 | 아니오 |
 
 주의:
 
