@@ -2,6 +2,8 @@ const express = require('express');
 const { authenticateAccessToken } = require('../../middlewares/auth.middleware');
 const { validate } = require('../../middlewares/validate.middleware');
 const userController = require('./user.controller');
+const pushTokenController = require('../push/push-token.controller');
+const { createInMemoryRateLimit } = require('../../middlewares/rate-limit.middleware');
 const {
   blockUserBodySchema,
   blockedUserParamsSchema,
@@ -14,6 +16,9 @@ const {
   markNotificationsReadSchema,
   notificationsQuerySchema,
   privacySettingsSchema,
+  pushTokenDeleteSchema,
+  pushTokenRegistrationSchema,
+  testPushSchema,
   updateMyTitlesSchema,
   userSearchQuerySchema,
   updateCurrentUserProfileSchema
@@ -24,6 +29,16 @@ const {
 } = require('./profile-image.storage');
 
 const router = express.Router();
+const pushTokenRateLimit = createInMemoryRateLimit({
+  keyPrefix: 'push-token',
+  windowMs: 10 * 60 * 1000,
+  max: 30
+});
+const testPushRateLimit = createInMemoryRateLimit({
+  keyPrefix: 'test-push',
+  windowMs: 60 * 60 * 1000,
+  max: 10
+});
 
 router.get('/users/search', authenticateAccessToken, validate({
   query: userSearchQuerySchema,
@@ -52,6 +67,21 @@ router.get('/users/me/notifications', authenticateAccessToken, validate({
   query: notificationsQuerySchema,
   errorMapper: buildUserValidationError
 }), userController.getMyNotifications);
+
+router.post('/users/me/notifications/test-push', authenticateAccessToken, testPushRateLimit, validate({
+  body: testPushSchema,
+  errorMapper: buildUserValidationError
+}), pushTokenController.sendMyTestPush);
+
+router.put('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, validate({
+  body: pushTokenRegistrationSchema,
+  errorMapper: buildUserValidationError
+}), pushTokenController.registerMyPushToken);
+
+router.post('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, validate({
+  body: pushTokenRegistrationSchema,
+  errorMapper: buildUserValidationError
+}), pushTokenController.registerMyPushToken);
 
 router.patch('/users/me', authenticateAccessToken, validate({
   body: updateCurrentUserProfileSchema,
@@ -99,6 +129,10 @@ router.patch(
 );
 
 router.delete('/users/me/profile-image', authenticateAccessToken, userController.removeCurrentUserProfileImage);
+router.delete('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, validate({
+  body: pushTokenDeleteSchema,
+  errorMapper: buildUserValidationError
+}), pushTokenController.deleteMyPushToken);
 router.delete('/users/me/friends/:friendUserId', authenticateAccessToken, validate({
   params: friendRemovalParamsSchema,
   errorMapper: buildUserValidationError

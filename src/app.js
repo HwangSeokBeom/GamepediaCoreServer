@@ -9,6 +9,7 @@ const libraryRoutes = require('./modules/library/library.routes');
 const moderationRoutes = require('./modules/moderation/moderation.routes');
 const reviewRoutes = require('./modules/review/review.routes');
 const userRoutes = require('./modules/user/user.routes');
+const { getFirebaseAdminState } = require('./config/firebase-admin');
 const {
   errorHandler,
   notFoundHandler,
@@ -36,10 +37,19 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (req, res) => {
+  const push = getFirebaseAdminState();
+
   res.status(200).json({
     success: true,
     data: {
       status: 'ok',
+      push: {
+        enabled: push.enabled,
+        initialized: push.initialized,
+        projectId: push.projectId,
+        source: push.source,
+        reason: push.reason
+      }
     },
   });
 });

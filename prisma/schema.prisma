@@ -88,6 +88,7 @@ model User {
   passwordResetTokens    PasswordResetToken[]
   presenceSnapshot       UserPresenceSnapshot?
   privacySettings        UserPrivacySettings?
+  pushTokens             UserPushToken[]
   refreshTokens          RefreshToken[]
   reportsSubmitted       Report[]                @relation("UserReports")
   reviews                Review[]
@@ -399,6 +400,29 @@ model UserNotification {
   @@index([userId, isRead, createdAt])
   @@index([userId, dedupeKey, createdAt])
   @@map("user_notifications")
+}
+
+model UserPushToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  token       String   @db.Text
+  platform    String   @db.VarChar(20)
+  deviceId    String?  @map("device_id") @db.VarChar(200)
+  appVersion  String?  @map("app_version") @db.VarChar(50)
+  buildNumber String?  @map("build_number") @db.VarChar(50)
+  environment String?  @db.VarChar(50)
+  isActive    Boolean  @default(true) @map("is_active")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId, platform, environment])
+  @@unique([userId, token])
+  @@index([userId])
+  @@index([token])
+  @@index([isActive])
+  @@map("user_push_tokens")
 }
 
 model UserActivityEvent {

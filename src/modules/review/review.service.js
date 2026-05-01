@@ -11,6 +11,7 @@ const {
   extractUsableIgdbCoverUrl
 } = require('../library/library-image.service');
 const userActivityService = require('../user/user-activity.service');
+const { publishNotificationPush } = require('../notifications/notification-push.publisher');
 const {
   mapAverageRating,
   mapReviewCommentPreviewToDto,
@@ -1201,6 +1202,8 @@ async function createCommentNotification({
     commentId: comment.id
   });
 
+  await publishNotificationPush(notification);
+
   return notification;
 }
 
@@ -1561,6 +1564,16 @@ async function likeReview({ currentUserId, reviewId }) {
 
   await assertCommentVisibilityAllowed(currentUserId, review.userId);
 
+  const existingLike = await prisma.reviewLike.findUnique({
+    where: {
+      reviewId_userId: {
+        reviewId,
+        userId: currentUserId
+      }
+    },
+    select: { id: true }
+  });
+
   await prisma.reviewLike.upsert({
     where: {
       reviewId_userId: {
@@ -1581,6 +1594,47 @@ async function likeReview({ currentUserId, reviewId }) {
     userId: currentUserId,
     reviewId
   });
+
+  if (!existingLike && review.userId !== currentUserId) {
+    try {
+      const actorUser = await prisma.user.findUnique({
+        where: { id: currentUserId },
+        select: reviewAuthorSelect
+      });
+
+      if (actorUser) {
+        const notification = await prisma.userNotification.create({
+          data: {
+            userId: review.userId,
+            type: 'review_liked',
+            title: `${actorUser.nickname}님이 리뷰를 좋아해요`,
+            message: '내 리뷰에 좋아요가 추가됐어요',
+            relatedGameId: review.gameId ?? null,
+            dedupeKey: `review-like:${reviewId}:${currentUserId}`,
+            payload: {
+              route: 'review_detail',
+              reviewId,
+              gameId: review.gameId ?? null,
+              actor: {
+                id: actorUser.id,
+                nickname: actorUser.nickname,
+                profileImageUrl: actorUser.profileImageUrl ?? null
+              }
+            }
+          }
+        });
+
+        await publishNotificationPush(notification);
+      }
+    } catch (error) {
+      logger.warn('review-like-notification-failed', {
+        userId: currentUserId,
+        reviewId,
+        recipientUserId: review.userId,
+        message: error?.message ?? 'Review like notification failed'
+      });
+    }
+  }
 
   return buildReviewLikeResponse({
     reviewId,

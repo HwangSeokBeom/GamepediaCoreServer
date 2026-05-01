@@ -68,6 +68,29 @@ const markNotificationsReadSchema = z.object({
   ids: z.array(notificationIdSchema).min(1).max(100)
 });
 
+const pushTokenRegistrationSchema = z.object({
+  token: z.string().trim().min(20).max(4096),
+  platform: z.string().trim().toLowerCase().pipe(z.enum(['ios'])),
+  deviceId: z.string().trim().min(1).max(200).optional(),
+  appVersion: z.string().trim().min(1).max(50).optional(),
+  buildNumber: z.string().trim().min(1).max(50).optional(),
+  environment: z.string().trim().min(1).max(50).optional()
+});
+
+const pushTokenDeleteSchema = z.object({
+  deviceId: z.string().trim().min(1).max(200).optional(),
+  token: z.string().trim().min(20).max(4096).optional()
+}).refine((value) => Boolean(value.deviceId || value.token), {
+  message: 'deviceId or token is required',
+  path: ['deviceId']
+});
+
+const testPushSchema = z.object({
+  title: z.string().trim().min(1).max(120).default('GamePedia 테스트 알림'),
+  body: z.string().trim().min(1).max(500).default('푸시 알림 연결 테스트입니다.'),
+  route: z.string().trim().min(1).max(80).default('notification_list')
+});
+
 const userSearchQuerySchema = z.object({
   keyword: friendSearchKeywordSchema.optional(),
   nickname: friendSearchKeywordSchema.optional()
@@ -166,6 +189,14 @@ function buildUserValidationError(error) {
     return new AppError(400, 'INVALID_NOTIFICATION_IDS', 'ids must contain one or more valid notification IDs', details);
   }
 
+  if (issueFields.has('token') || issueFields.has('platform') || issueFields.has('deviceId')) {
+    return new AppError(400, 'PUSH_TOKEN_INVALID', 'Push token payload is invalid', details);
+  }
+
+  if (issueFields.has('title') || issueFields.has('body') || issueFields.has('route')) {
+    return new AppError(400, 'VALIDATION_ERROR', 'Test push payload is invalid', details);
+  }
+
   if (issueFields.has('keyword') || issueFields.has('nickname')) {
     return new AppError(400, 'INVALID_USER_SEARCH_KEYWORD', 'keyword must be between 1 and 30 characters', details);
   }
@@ -223,6 +254,9 @@ module.exports = {
   markNotificationsReadSchema,
   notificationsQuerySchema,
   privacySettingsSchema,
+  pushTokenDeleteSchema,
+  pushTokenRegistrationSchema,
+  testPushSchema,
   updateMyTitlesSchema,
   userSearchQuerySchema,
   updateCurrentUserProfileSchema

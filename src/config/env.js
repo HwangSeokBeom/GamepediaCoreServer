@@ -86,6 +86,7 @@ function parseEnum(name, fallbackValue, allowedValues) {
 
 const nodeEnv = readEnv('NODE_ENV') ?? bootstrapNodeEnv;
 const isDevelopmentLike = nodeEnv === 'development' || nodeEnv === 'test';
+const appEnv = readEnv('APP_ENV') ?? nodeEnv;
 const mailModeFallback = readEnv('EMAIL_DELIVERY_MODE') ?? 'log';
 const port = parseNumber('PORT', '3000');
 const llmProvider = (readEnv('LLM_PROVIDER') ?? 'openai').toLowerCase();
@@ -115,6 +116,7 @@ const llmProviderDefaults = getLlmProviderDefaults(llmProvider);
 
 const env = {
   nodeEnv,
+  appEnv,
   host: readEnv('HOST') ?? '0.0.0.0',
   port,
   databaseUrl: requireEnv('DATABASE_URL'),
@@ -162,6 +164,11 @@ const env = {
     'AI_SEARCH_CACHE_TTL_SECONDS',
     readEnv('AI_RECOMMENDATION_CACHE_TTL_SECONDS') ?? '300'
   ),
+  firebaseAdminCredentialsPath: readEnv('FIREBASE_ADMIN_CREDENTIALS_PATH'),
+  firebaseAdminCredentialsBase64Configured: Boolean(readEnv('FIREBASE_ADMIN_CREDENTIALS_BASE64')),
+  firebaseAdminProjectId: readEnv('FIREBASE_ADMIN_PROJECT_ID'),
+  firebaseAdminClientEmailConfigured: Boolean(readEnv('FIREBASE_ADMIN_CLIENT_EMAIL')),
+  firebaseAdminPrivateKeyConfigured: Boolean(readEnv('FIREBASE_ADMIN_PRIVATE_KEY')),
   prismaQueryLogging: parseBoolean('PRISMA_QUERY_LOGGING', 'false')
 };
 
