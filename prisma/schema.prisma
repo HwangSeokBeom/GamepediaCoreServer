@@ -406,6 +406,7 @@ model UserPushToken {
   id          String   @id @default(uuid()) @db.Uuid
   userId      String   @map("user_id") @db.Uuid
   token       String   @db.Text
+  tokenHash   String   @unique @map("token_hash") @db.Char(64)
   platform    String   @db.VarChar(20)
   deviceId    String?  @map("device_id") @db.VarChar(200)
   appVersion  String?  @map("app_version") @db.VarChar(50)
@@ -418,9 +419,7 @@ model UserPushToken {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, deviceId, platform, environment])
-  @@unique([userId, token])
   @@index([userId])
-  @@index([token])
   @@index([isActive])
   @@map("user_push_tokens")
 }

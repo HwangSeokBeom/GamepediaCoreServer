@@ -9,6 +9,7 @@ const passwordResetEmailService = require('./password-reset-email.service');
 const tokenService = require('./token.service');
 const { buildAccountStatusError, buildTokenVerificationError } = require('../utils/auth-error');
 const { AppError } = require('../utils/error-response');
+const { logger } = require('../utils/logger');
 const { mapUserToDto } = require('../modules/user/user.mapper');
 
 const APPLE_AUTH_PROVIDER = 'APPLE';
@@ -16,8 +17,10 @@ const GOOGLE_AUTH_PROVIDER = 'GOOGLE';
 const FORGOT_PASSWORD_SUCCESS_MESSAGE = 'If an account exists for this email, password reset instructions have been sent.';
 
 function logAppleLoginFailure(message, details) {
-  const suffix = details ? ` ${JSON.stringify(details)}` : '';
-  console.warn(`[apple-login:service] ${message}${suffix}`);
+  logger.warn('apple-login-failed', {
+    reason: message,
+    ...(details ?? {})
+  });
 }
 
 function sanitizeUser(user) {
@@ -293,17 +296,17 @@ async function forgotPassword({ email }) {
   });
 
   if (!user) {
-    console.info(`[password-reset:forgot] email=${normalizedEmail} action=ignored reason=account_not_found`);
+    logger.info('password-reset-forgot', { action: 'ignored', reason: 'account_not_found' });
     return buildForgotPasswordResponse();
   }
 
   if (user.status !== UserStatus.ACTIVE) {
-    console.info(`[password-reset:forgot] userId=${user.id} action=ignored reason=status_${user.status.toLowerCase()}`);
+    logger.info('password-reset-forgot', { userId: user.id, action: 'ignored', reason: `status_${user.status.toLowerCase()}` });
     return buildForgotPasswordResponse();
   }
 
   if (!user.passwordAuthEnabled) {
-    console.info(`[password-reset:forgot] userId=${user.id} action=ignored reason=password_auth_disabled`);
+    logger.info('password-reset-forgot', { userId: user.id, action: 'ignored', reason: 'password_auth_disabled' });
     return buildForgotPasswordResponse();
   }
 
@@ -338,12 +341,14 @@ async function forgotPassword({ email }) {
       token: rawToken
     });
   } catch (error) {
-    console.error(
-      `[password-reset:forgot] userId=${user.id} action=email_failed message=${error?.message ?? 'unknown'}`
-    );
+    logger.error('password-reset-forgot', {
+      userId: user.id,
+      action: 'email_failed',
+      errorCategory: error?.code ?? error?.name ?? 'email_failed'
+    });
   }
 
-  console.info(`[password-reset:forgot] userId=${user.id} action=token_issued expiresAt=${expiresAt.toISOString()}`);
+  logger.info('password-reset-forgot', { userId: user.id, action: 'token_issued', expiresAt });
 
   return buildForgotPasswordResponse();
 }
@@ -422,7 +427,7 @@ async function resetPassword({ token, newPassword }) {
     });
   });
 
-  console.info(`[password-reset:reset] userId=${passwordResetToken.userId} action=completed`);
+  logger.info('password-reset-reset', { userId: passwordResetToken.userId, action: 'completed' });
 
   return {
     passwordReset: true
@@ -793,10 +798,24 @@ async function refresh({ refreshToken, deviceName }) {
   }
 
   const rotatedSession = await prisma.$transaction(async (tx) => {
-    await tx.refreshToken.update({
-      where: { id: existingToken.id },
-      data: { revokedAt: new Date() }
+    const rotatedAt = new Date();
+    const revocation = await tx.refreshToken.updateMany({
+      where: {
+        id: existingToken.id,
+        userId: existingToken.userId,
+        tokenHash,
+        revokedAt: null,
+        expiresAt: { gt: rotatedAt }
+      },
+      data: { revokedAt: rotatedAt }
     });
+
+    // PostgreSQL re-checks this predicate after a concurrent row update. The
+    // affected-row count is therefore the cross-instance rotation lock: only
+    // the transaction that changes revokedAt from null may issue a successor.
+    if (revocation.count !== 1) {
+      throw new AppError(401, 'TOKEN_REVOKED', 'Refresh token has already been revoked');
+    }
 
     const tokens = await createRefreshTokenRecord(tx, existingToken.user, deviceName ?? existingToken.deviceName);
 

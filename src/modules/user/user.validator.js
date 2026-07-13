@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const { AppError } = require('../../utils/error-response');
+const { logger } = require('../../utils/logger');
 
 const nicknameSchema = z.string().trim().min(2).max(30);
 const notificationsPageSchema = z.coerce.number().int().min(1).optional();
@@ -70,7 +71,7 @@ const markNotificationsReadSchema = z.object({
 
 const pushTokenRegistrationSchema = z.object({
   token: z.string().trim().min(20).max(4096),
-  platform: z.string().trim().toLowerCase().pipe(z.enum(['ios'])),
+  platform: z.string().trim().toLowerCase().pipe(z.enum(['ios', 'android'])),
   deviceId: z.string().trim().min(1).max(200).optional(),
   appVersion: z.string().trim().min(1).max(50).optional(),
   buildNumber: z.string().trim().min(1).max(50).optional(),
@@ -159,8 +160,36 @@ const privacySettingsSchema = z.object({
   showFriendsList: z.boolean().optional(),
   showRecentlyPlayed: z.boolean().optional(),
   showLikedGames: z.boolean().optional(),
-  showReviews: z.boolean().optional()
-}).refine((value) => Object.keys(value).length > 0, {
+  showReviews: z.boolean().optional(),
+  isFriendsListPublic: z.boolean().optional(),
+  isRecentPlayPublic: z.boolean().optional(),
+  isLikedGamesPublic: z.boolean().optional(),
+  isReviewsPublic: z.boolean().optional()
+}).superRefine((value, context) => {
+  const aliases = [
+    ['showFriendsList', 'isFriendsListPublic'],
+    ['showRecentlyPlayed', 'isRecentPlayPublic'],
+    ['showLikedGames', 'isLikedGamesPublic'],
+    ['showReviews', 'isReviewsPublic']
+  ];
+
+  for (const [canonicalKey, compatibilityKey] of aliases) {
+    if (value[canonicalKey] !== undefined && value[compatibilityKey] !== undefined && value[canonicalKey] !== value[compatibilityKey]) {
+      context.addIssue({
+        code: 'custom',
+        path: [compatibilityKey],
+        message: `${compatibilityKey} conflicts with ${canonicalKey}`
+      });
+    }
+  }
+}).transform((value) => ({
+  showFriendsList: value.showFriendsList ?? value.isFriendsListPublic,
+  showRecentlyPlayed: value.showRecentlyPlayed ?? value.isRecentPlayPublic,
+  showLikedGames: value.showLikedGames ?? value.isLikedGamesPublic,
+  showReviews: value.showReviews ?? value.isReviewsPublic
+})).transform((value) => Object.fromEntries(
+  Object.entries(value).filter(([, setting]) => setting !== undefined)
+)).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one privacy setting must be provided'
 });
 
@@ -171,7 +200,10 @@ function buildUserValidationError(error) {
   }));
   const issueFields = new Set(error.issues.map((issue) => issue.path[0]));
 
-  console.warn(`[profile:validation] issues=${JSON.stringify(details)}`);
+  logger.warn('profile-validation-failed', {
+    issueCount: details.length,
+    fields: [...issueFields]
+  });
 
   if (issueFields.has('page')) {
     return new AppError(400, 'INVALID_NOTIFICATIONS_PAGE', 'Page must be a positive integer', details);
@@ -231,6 +263,10 @@ function buildUserValidationError(error) {
     issueFields.has('showRecentlyPlayed') ||
     issueFields.has('showLikedGames') ||
     issueFields.has('showReviews')
+    || issueFields.has('isFriendsListPublic')
+    || issueFields.has('isRecentPlayPublic')
+    || issueFields.has('isLikedGamesPublic')
+    || issueFields.has('isReviewsPublic')
   ) {
     return new AppError(400, 'INVALID_PRIVACY_SETTINGS', 'Privacy settings must be boolean values', details);
   }

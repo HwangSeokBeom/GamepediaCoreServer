@@ -16,21 +16,23 @@ function maskPushToken(token) {
   if (typeof token !== 'string' || token.length === 0) {
     return {
       exists: false,
-      prefix: null,
-      suffix: null,
       length: 0
     };
   }
 
   return {
     exists: true,
-    prefix: token.slice(0, 4),
-    suffix: token.slice(-4),
     length: token.length
   };
 }
 
+function hashPushToken(token) {
+  return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
 module.exports = {
+  hashPushToken,
   maskPushToken,
   normalizeNullableString
 };
+const crypto = require('node:crypto');
