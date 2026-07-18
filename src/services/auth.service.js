@@ -793,10 +793,17 @@ async function refresh({ refreshToken, deviceName }) {
   }
 
   const rotatedSession = await prisma.$transaction(async (tx) => {
-    await tx.refreshToken.update({
-      where: { id: existingToken.id },
+    const claimedToken = await tx.refreshToken.updateMany({
+      where: {
+        id: existingToken.id,
+        revokedAt: null
+      },
       data: { revokedAt: new Date() }
     });
+
+    if (claimedToken.count !== 1) {
+      throw new AppError(401, 'TOKEN_REVOKED', 'Refresh token has already been revoked');
+    }
 
     const tokens = await createRefreshTokenRecord(tx, existingToken.user, deviceName ?? existingToken.deviceName);
 
