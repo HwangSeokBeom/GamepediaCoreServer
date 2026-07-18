@@ -8,6 +8,7 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "test": "node --test",
+    "test:postgres": "node --test test/auth-refresh-rotation.postgres.test.js",
     "deploy:production": "bash ./deploy.sh",
     "deploy:staging": "bash ./deploy-staging.sh",
     "deploy:validate:production": "NODE_ENV=production node ./scripts/server/validate-deploy-env.js production",
