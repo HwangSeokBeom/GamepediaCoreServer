@@ -4,6 +4,10 @@ const { env } = require('./config/env');
 const { connectDatabase, disconnectDatabase } = require('./config/prisma');
 const { initializeFirebaseAdmin } = require('./config/firebase-admin');
 const { probeRedisConnection } = require('./config/redis');
+const {
+  startProfileImageCleanupWorker,
+  stopProfileImageCleanupWorker
+} = require('./modules/user/profile-image-cleanup.service');
 const { logger } = require('./utils/logger');
 
 function getLanIpv4Address() {
@@ -40,6 +44,8 @@ async function startServer() {
     await probeRedisConnection();
     const firebaseState = initializeFirebaseAdmin();
 
+    startProfileImageCleanupWorker();
+
     server = app.listen(env.port, env.host, () => {
       const { lanUrl, localhostUrl } = buildServerUrls();
 
@@ -65,6 +71,8 @@ async function startServer() {
 
 async function shutdown(signal) {
   logger.info('Shutdown signal received', { signal });
+
+  stopProfileImageCleanupWorker();
 
   if (!server) {
     await disconnectDatabase();

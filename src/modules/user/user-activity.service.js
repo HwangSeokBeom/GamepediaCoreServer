@@ -206,6 +206,8 @@ function buildNotificationPayload({ activityEvent, actor, targetGame }) {
   };
 }
 
+const ALL_ACTIVITY_TYPES = Object.values(UserActivityType);
+
 function shouldExposeActivityByPrivacy(activityType, privacySettings) {
   const privacy = mapPrivacySettingsDto(privacySettings);
 
@@ -413,6 +415,48 @@ function buildGamePreviewFromActivityEvent(activityEvent, hydrationContext) {
   }
 
   return null;
+}
+
+// Groups friends by the set of activity types their privacy settings expose so
+// visibility can be enforced inside the database query. Friends whose settings
+// hide every activity type produce no clause at all.
+function buildFriendActivityVisibilityClauses(friendIds, privacySettingsMap) {
+  const groups = new Map();
+
+  for (const friendUserId of friendIds) {
+    const allowedTypes = ALL_ACTIVITY_TYPES.filter((activityType) => shouldExposeActivityByPrivacy(
+      activityType,
+      privacySettingsMap.get(friendUserId)
+    ));
+
+    if (allowedTypes.length === 0) {
+      continue;
+    }
+
+    const groupKey = allowedTypes.join('|');
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        allowedTypes,
+        actorUserIds: []
+      });
+    }
+
+    groups.get(groupKey).actorUserIds.push(friendUserId);
+  }
+
+  return [...groups.values()].map(({ allowedTypes, actorUserIds }) => ({
+    actorUserId: {
+      in: actorUserIds
+    },
+    ...(allowedTypes.length === ALL_ACTIVITY_TYPES.length
+      ? {}
+      : {
+        activityType: {
+          in: allowedTypes
+        }
+      })
+  }));
 }
 
 async function getVisibleFriendIds(currentUserId) {
@@ -821,13 +865,72 @@ async function getFriendActivityFeed({ currentUserId, cursor = null, limit = FRI
     };
   }
 
-  const queryArgs = {
-    where: {
-      actorUserId: {
-        in: friendIds
-      },
-      isVisible: true
-    },
+  // Privacy visibility is enforced inside the database query so pagination
+  // counts only rows the caller may see: hasMore and nextCursor are exact, a
+  // null nextCursor means no later visible records exist, and hidden chunks
+  // can never mask older visible activity.
+  const privacySettingsMap = await getPrivacySettingsMap(friendIds);
+  const visibilityClauses = buildFriendActivityVisibilityClauses(friendIds, privacySettingsMap);
+
+  if (visibilityClauses.length === 0) {
+    logger.info('friend-activity-feed-query', {
+      userId: currentUserId,
+      friendCount: friendIds.length,
+      resultCount: 0,
+      hasMore: false
+    });
+
+    return {
+      activities: [],
+      nextCursor: null
+    };
+  }
+
+  const where = {
+    isVisible: true,
+    OR: visibilityClauses
+  };
+
+  if (cursor) {
+    // Explicit keyset pagination on (createdAt, id) keeps ordering
+    // deterministic and stays correct even if the cursor row itself is no
+    // longer visible to the caller. The cursor stays an opaque activity id.
+    const cursorEvent = await prisma.userActivityEvent.findUnique({
+      where: { id: cursor },
+      select: {
+        id: true,
+        createdAt: true
+      }
+    });
+
+    if (!cursorEvent) {
+      logger.info('friend-activity-feed-query', {
+        userId: currentUserId,
+        friendCount: friendIds.length,
+        resultCount: 0,
+        hasMore: false,
+        reason: 'cursor_not_found'
+      });
+
+      return {
+        activities: [],
+        nextCursor: null
+      };
+    }
+
+    where.AND = [{
+      OR: [
+        { createdAt: { lt: cursorEvent.createdAt } },
+        {
+          createdAt: cursorEvent.createdAt,
+          id: { lt: cursorEvent.id }
+        }
+      ]
+    }];
+  }
+
+  const events = await prisma.userActivityEvent.findMany({
+    where,
     orderBy: [
       { createdAt: 'desc' },
       { id: 'desc' }
@@ -838,20 +941,13 @@ async function getFriendActivityFeed({ currentUserId, cursor = null, limit = FRI
         select: basicUserSelect
       }
     }
-  };
-
-  if (cursor) {
-    queryArgs.cursor = { id: cursor };
-    queryArgs.skip = 1;
-  }
-
-  const [events, privacySettingsMap] = await Promise.all([
-    prisma.userActivityEvent.findMany(queryArgs),
-    getPrivacySettingsMap(friendIds)
-  ]);
-  const visibleEvents = events.filter((event) => shouldExposeActivityByPrivacy(event.activityType, privacySettingsMap.get(event.actorUserId)));
-  const hasMore = visibleEvents.length > resolvedLimit;
-  const pageEvents = visibleEvents.slice(0, resolvedLimit);
+  });
+  const hasMore = events.length > resolvedLimit;
+  const scannedPageEvents = events.slice(0, resolvedLimit);
+  // Defense-in-depth: the database predicate above is derived from the same
+  // shouldExposeActivityByPrivacy rule, so this filter only matters if the
+  // two ever diverge — it must never widen exposure.
+  const pageEvents = scannedPageEvents.filter((event) => shouldExposeActivityByPrivacy(event.activityType, privacySettingsMap.get(event.actorUserId)));
   const [hydrationContext, presenceMap] = await Promise.all([
     buildActivityHydrationContext(pageEvents),
     derivePresenceMap(uniqueStringValues(pageEvents.map((event) => event.actorUserId)))
@@ -885,7 +981,9 @@ async function getFriendActivityFeed({ currentUserId, cursor = null, limit = FRI
 
   return {
     activities,
-    nextCursor: hasMore ? activities[activities.length - 1]?.id ?? null : null
+    // Advance the cursor from the last scanned database row (not merely the
+    // last emitted row) so later pages can never skip or repeat records.
+    nextCursor: hasMore ? scannedPageEvents[scannedPageEvents.length - 1]?.id ?? null : null
   };
 }
 
@@ -972,6 +1070,7 @@ async function getFriendActivitySummary({ currentUserId }) {
 
 module.exports = {
   buildActivityMessage,
+  buildFriendActivityVisibilityClauses,
   buildNotificationPayload,
   createActivityEvent,
   getFriendActivityFeed,

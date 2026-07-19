@@ -138,6 +138,7 @@ async function deleteStoredProfileImage(profileImageUrl) {
 module.exports = {
   buildStoredProfileImagePath,
   deleteStoredProfileImage,
+  extractStoredProfileImagePathname,
   requireProfileImageFile,
   uploadProfileImage,
   uploadsRootDirectory
