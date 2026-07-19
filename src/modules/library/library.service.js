@@ -1,4 +1,4 @@
-const { GameLibraryStatus, GameSource, SteamIgdbMatchStatus } = require('@prisma/client');
+const { GameLibraryStatus, GameSource, Prisma, SteamIgdbMatchStatus } = require('@prisma/client');
 const { prisma } = require('../../config/prisma');
 const favoriteService = require('../favorite/favorite.service');
 const igdbService = require('../igdb/igdb.service');
@@ -7083,6 +7083,46 @@ async function syncOwnedSteamGames({ userId }) {
   }
 }
 
+const LIBRARY_ENTRY_UNIQUE_COLUMNS = ['user_id', 'game_source', 'external_game_id'];
+const LIBRARY_ENTRY_UNIQUE_FIELDS = ['userId', 'gameSource', 'externalGameId'];
+const LIBRARY_STATUS_WRITE_MAX_ATTEMPTS = 3;
+
+// Only a violation of the userId+gameSource+externalGameId key means "another
+// request created this entry first" and may be retried as an update. Any other
+// unique-constraint failure must keep surfacing as an error.
+function isLibraryEntryKeyConflictError(error) {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+    return false;
+  }
+
+  const target = error.meta?.target;
+
+  if (Array.isArray(target)) {
+    const normalizedTarget = target.map((value) => String(value));
+
+    return LIBRARY_ENTRY_UNIQUE_FIELDS.every((field, index) => (
+      normalizedTarget.includes(field) || normalizedTarget.includes(LIBRARY_ENTRY_UNIQUE_COLUMNS[index])
+    ));
+  }
+
+  if (typeof target === 'string') {
+    return LIBRARY_ENTRY_UNIQUE_COLUMNS.every((column) => target.includes(column)) ||
+      LIBRARY_ENTRY_UNIQUE_FIELDS.every((field) => target.includes(field));
+  }
+
+  return false;
+}
+
+function isRecordNotFoundError(error) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025';
+}
+
+// Absolute-state write that converges under concurrency: when two first writes
+// race, the loser's create hits the compound unique key and is retried as an
+// update of the committed row, so both requests succeed. Concurrent writes with
+// different target states resolve by database commit order (last write wins);
+// every response reflects a state that was committed, and retries converge to
+// the requested absolute state.
 async function updateLibraryStatus({
   userId,
   source,
@@ -7096,40 +7136,63 @@ async function updateLibraryStatus({
   playtimeMinutes
 }) {
   const gameSource = resolveGameSource(source);
-  const existingEntry = await prisma.userGameLibrary.findUnique({
-    where: {
-      userId_gameSource_externalGameId: {
-        userId,
-        gameSource,
-        externalGameId
-      }
-    }
-  });
+  let existingEntry = null;
+  let libraryEntry = null;
 
-  const data = buildLibraryEntryWriteData({
-    existingEntry,
-    source,
-    externalGameId,
-    title,
-    coverUrl,
-    status,
-    startedAt,
-    completedAt,
-    lastPlayedAt,
-    playtimeMinutes
-  });
-
-  const libraryEntry = existingEntry
-    ? await prisma.userGameLibrary.update({
-      where: { id: existingEntry.id },
-      data
-    })
-    : await prisma.userGameLibrary.create({
-      data: {
-        userId,
-        ...data
+  for (let attempt = 1; attempt <= LIBRARY_STATUS_WRITE_MAX_ATTEMPTS; attempt += 1) {
+    existingEntry = await prisma.userGameLibrary.findUnique({
+      where: {
+        userId_gameSource_externalGameId: {
+          userId,
+          gameSource,
+          externalGameId
+        }
       }
     });
+
+    const data = buildLibraryEntryWriteData({
+      existingEntry,
+      source,
+      externalGameId,
+      title,
+      coverUrl,
+      status,
+      startedAt,
+      completedAt,
+      lastPlayedAt,
+      playtimeMinutes
+    });
+
+    try {
+      libraryEntry = existingEntry
+        ? await prisma.userGameLibrary.update({
+          where: { id: existingEntry.id },
+          data
+        })
+        : await prisma.userGameLibrary.create({
+          data: {
+            userId,
+            ...data
+          }
+        });
+      break;
+    } catch (error) {
+      const retryableConflict = (!existingEntry && isLibraryEntryKeyConflictError(error)) ||
+        (existingEntry && isRecordNotFoundError(error));
+
+      if (!retryableConflict || attempt === LIBRARY_STATUS_WRITE_MAX_ATTEMPTS) {
+        throw error;
+      }
+
+      logger.info('library-status-write-retry', {
+        userId,
+        source,
+        externalGameId,
+        attempt,
+        reason: existingEntry ? 'entry_removed_concurrently' : 'entry_created_concurrently'
+      });
+    }
+  }
 
   try {
     await userPresenceService.updatePresenceFromLibraryEntry({
@@ -7179,6 +7242,7 @@ module.exports = {
   getMyRecentlyPlayedLibrary,
   getMyReviewedLibrary,
   getMySteamFriendRecommendations,
+  isLibraryEntryKeyConflictError,
   resolveSteamMappingContextForGames,
   startSteamLink,
   syncOwnedSteamGames,

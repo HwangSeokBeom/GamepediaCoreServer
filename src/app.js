@@ -10,6 +10,7 @@ const moderationRoutes = require('./modules/moderation/moderation.routes');
 const reviewRoutes = require('./modules/review/review.routes');
 const userRoutes = require('./modules/user/user.routes');
 const { getFirebaseAdminState } = require('./config/firebase-admin');
+const { getMailReadinessState } = require('./services/email.service');
 const {
   errorHandler,
   notFoundHandler,
@@ -38,11 +39,19 @@ app.use((req, res, next) => {
 
 app.get('/health', (req, res) => {
   const push = getFirebaseAdminState();
+  // Mail readiness reflects the startup verification result only; in SMTP
+  // mode the server never listens before verification has succeeded.
+  const mail = getMailReadinessState();
 
   res.status(200).json({
     success: true,
     data: {
       status: 'ok',
+      mail: {
+        mode: mail.mode,
+        verified: mail.verified,
+        skipped: mail.skipped
+      },
       push: {
         enabled: push.enabled,
         initialized: push.initialized,

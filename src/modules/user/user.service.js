@@ -8,7 +8,7 @@ const igdbService = require('../igdb/igdb.service');
 const libraryService = require('../library/library.service');
 const { buildGameImageResolverUrl, extractUsableIgdbCoverUrl } = require('../library/library-image.service');
 const steamService = require('../../services/steam.service');
-const { deleteStoredProfileImage, buildStoredProfileImagePath } = require('./profile-image.storage');
+const { DELETE_STATUS, deleteOwnedProfileImage, buildStoredProfileImagePath } = require('./profile-image.storage');
 const userActivityService = require('./user-activity.service');
 const userPresenceService = require('./user-presence.service');
 const { publishNotificationPush } = require('../notifications/notification-push.publisher');
@@ -2430,11 +2430,21 @@ async function assertNicknameAvailable({ nickname, excludeUserId = null }) {
 
 async function safelyDeleteProfileImage(profileImageUrl, context) {
   try {
-    const deleted = await deleteStoredProfileImage(profileImageUrl);
+    // Ownership and containment are proven against the acting user's id; a
+    // foreign, other-user, or noncanonical reference is refused, not deleted.
+    const outcome = await deleteOwnedProfileImage({
+      storedPathname: profileImageUrl,
+      userId: context.userId
+    });
 
-    if (deleted) {
+    if (outcome.status === DELETE_STATUS.DELETED) {
       console.info(
         `[profile-image] cleanup userId=${context.userId} action=${context.action}`
+      );
+    } else if (outcome.status === DELETE_STATUS.REJECTED) {
+      // Sanitized: reason code only, never the URL or resolved path.
+      console.warn(
+        `[profile-image] cleanup_rejected userId=${context.userId} action=${context.action} reason=${outcome.reason}`
       );
     }
   } catch (error) {
@@ -2795,7 +2805,7 @@ async function updateCurrentUserProfileImage({ userId, fileName }) {
     });
   }
 
-  console.info(`[profile-image] uploaded userId=${userId} profileImageUrl=${profileImageUrl}`);
+  console.info(`[profile-image] uploaded userId=${userId}`);
 
   return {
     user: mapUserToDto(updatedUser)

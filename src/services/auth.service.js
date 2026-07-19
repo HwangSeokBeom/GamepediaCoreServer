@@ -10,6 +10,7 @@ const tokenService = require('./token.service');
 const { buildAccountStatusError, buildTokenVerificationError } = require('../utils/auth-error');
 const { AppError } = require('../utils/error-response');
 const { mapUserToDto } = require('../modules/user/user.mapper');
+const profileImageCleanupService = require('../modules/user/profile-image-cleanup.service');
 
 const APPLE_AUTH_PROVIDER = 'APPLE';
 const GOOGLE_AUTH_PROVIDER = 'GOOGLE';
@@ -293,7 +294,7 @@ async function forgotPassword({ email }) {
   });
 
   if (!user) {
-    console.info(`[password-reset:forgot] email=${normalizedEmail} action=ignored reason=account_not_found`);
+    console.info('[password-reset:forgot] action=ignored reason=account_not_found');
     return buildForgotPasswordResponse();
   }
 
@@ -339,7 +340,7 @@ async function forgotPassword({ email }) {
     });
   } catch (error) {
     console.error(
-      `[password-reset:forgot] userId=${user.id} action=email_failed message=${error?.message ?? 'unknown'}`
+      `[password-reset:forgot] userId=${user.id} action=email_failed reason=${error?.reasonCode ?? 'mail_delivery_failed'}`
     );
   }
 
@@ -853,7 +854,7 @@ async function getCurrentUser(userId) {
 async function deleteCurrentUser(userId) {
   const deletedAt = new Date();
 
-  return prisma.$transaction(async (tx) => {
+  const { result, cleanupTask } = await prisma.$transaction(async (tx) => {
     const user = await tx.user.findUnique({
       where: { id: userId }
     });
@@ -866,6 +867,15 @@ async function deleteCurrentUser(userId) {
       throw buildAccountStatusError(user.status);
     }
 
+    // Persist the owned local profile-image reference in the same transaction
+    // that deletes the user: if the transaction rolls back no cleanup task
+    // survives (and no file is touched), and if it commits the file reference
+    // cannot be lost even when the process crashes before the file is removed.
+    const capturedCleanupTask = await profileImageCleanupService.captureProfileImageCleanupTask(tx, {
+      userId: user.id,
+      profileImageUrl: user.profileImageUrl
+    });
+
     await tx.refreshToken.deleteMany({
       where: { userId: user.id }
     });
@@ -875,10 +885,20 @@ async function deleteCurrentUser(userId) {
     });
 
     return {
-      deleted: true,
-      deletedAt
+      result: {
+        deleted: true,
+        deletedAt
+      },
+      cleanupTask: capturedCleanupTask
     };
   });
+
+  // Best-effort immediate cleanup after commit. This never throws; on failure
+  // the persisted task is retried by the bounded cleanup sweep, so a
+  // filesystem error cannot fail (or roll back) the completed deletion.
+  await profileImageCleanupService.processProfileImageCleanupTask(cleanupTask);
+
+  return result;
 }
 
 module.exports = {

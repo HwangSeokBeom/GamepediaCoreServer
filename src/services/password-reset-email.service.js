@@ -31,19 +31,20 @@ async function sendPasswordResetInstructions({ email, token }) {
   const resetUrl = buildPasswordResetUrl(token);
   const message = buildPasswordResetMessage(resetUrl);
 
-  await emailService.sendMail({
+  // The reset URL is a bearer credential: it may only flow into the mail
+  // transport. Logging is restricted to sanitized delivery metadata.
+  const delivery = await emailService.sendMail({
     to: email,
     subject: message.subject,
     text: message.text,
     html: message.html
   });
 
-  if (env.mailMode === 'log') {
-    console.info(`[password-reset:email] mode=log to=${email} resetUrl=${resetUrl}`);
-    return;
-  }
+  console.info(
+    `[password-reset:email] event=dispatched mode=${env.mailMode} ttlMinutes=${env.passwordResetTokenTtlMinutes}`
+  );
 
-  console.info(`[password-reset:email] mode=${env.mailMode} to=${email}`);
+  return { mode: delivery.mode };
 }
 
 module.exports = {

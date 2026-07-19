@@ -60,6 +60,16 @@ function parseNonNegativeNumber(name, fallbackValue) {
   return parsedValue;
 }
 
+function parseBoundedNumber(name, fallbackValue, { min, max }) {
+  const parsedValue = parseNumber(name, fallbackValue);
+
+  if (parsedValue < min || parsedValue > max) {
+    throw new Error(`Environment variable ${name} must be between ${min} and ${max}`);
+  }
+
+  return parsedValue;
+}
+
 function parseBoolean(name, fallbackValue) {
   const rawValue = (readEnv(name) ?? fallbackValue).toLowerCase();
 
@@ -74,20 +84,29 @@ function parseBoolean(name, fallbackValue) {
   throw new Error(`Environment variable ${name} must be "true" or "false"`);
 }
 
-function parseEnum(name, fallbackValue, allowedValues) {
-  const rawValue = (readEnv(name) ?? fallbackValue).toLowerCase();
-
-  if (!allowedValues.includes(rawValue)) {
-    throw new Error(`Environment variable ${name} must be one of: ${allowedValues.join(', ')}`);
-  }
-
-  return rawValue;
-}
-
 const nodeEnv = readEnv('NODE_ENV') ?? bootstrapNodeEnv;
 const isDevelopmentLike = nodeEnv === 'development' || nodeEnv === 'test';
 const appEnv = readEnv('APP_ENV') ?? nodeEnv;
-const mailModeFallback = readEnv('EMAIL_DELIVERY_MODE') ?? 'log';
+
+function resolveMailMode() {
+  // The non-sending "log" mode may only be defaulted in development/test.
+  // Production-like environments must opt into a delivery mode explicitly and
+  // fail closed at startup instead of silently falling back.
+  const rawMailMode = readEnv('MAIL_MODE') ?? readEnv('EMAIL_DELIVERY_MODE') ?? (isDevelopmentLike ? 'log' : null);
+
+  if (!rawMailMode) {
+    throw new Error(`MAIL_MODE must be set explicitly when NODE_ENV=${nodeEnv} (expected: smtp)`);
+  }
+
+  const mailMode = rawMailMode.toLowerCase();
+
+  if (!['log', 'smtp'].includes(mailMode)) {
+    throw new Error('Environment variable MAIL_MODE must be one of: log, smtp');
+  }
+
+  return mailMode;
+}
+
 const port = parseNumber('PORT', '3000');
 const llmProvider = (readEnv('LLM_PROVIDER') ?? 'openai').toLowerCase();
 
@@ -117,6 +136,7 @@ const llmProviderDefaults = getLlmProviderDefaults(llmProvider);
 const env = {
   nodeEnv,
   appEnv,
+  isDevelopmentLike,
   host: readEnv('HOST') ?? '0.0.0.0',
   port,
   databaseUrl: requireEnv('DATABASE_URL'),
@@ -128,13 +148,18 @@ const env = {
   appWebBaseUrl: readEnv('APP_WEB_BASE_URL') ?? (isDevelopmentLike ? `http://localhost:${port}` : requireEnv('APP_WEB_BASE_URL')),
   apiPublicBaseUrl: readEnv('API_PUBLIC_BASE_URL') ?? (isDevelopmentLike ? `http://localhost:${port}` : null),
   mobileAppSteamCallbackUrl: parseUrl('MOBILE_APP_STEAM_CALLBACK_URL', 'gamepedia://steam/callback'),
-  mailMode: parseEnum('MAIL_MODE', mailModeFallback, ['log', 'smtp']),
+  mailMode: resolveMailMode(),
   mailHost: readEnv('MAIL_HOST'),
   mailPort: parseNumber('MAIL_PORT', '587'),
   mailSecure: parseBoolean('MAIL_SECURE', 'false'),
   mailUser: readEnv('MAIL_USER'),
   mailPassword: readEnv('MAIL_PASSWORD'),
   mailFrom: readEnv('MAIL_FROM') ?? readEnv('EMAIL_FROM_ADDRESS') ?? (isDevelopmentLike ? 'no-reply@gamepedia.local' : null),
+  // Pre-listen SMTP verification: mandatory outside development/test, opt-in
+  // inside them so unit tests never contact a mail server by accident. The
+  // timeout is bounded so startup can never hang on an unreachable host.
+  smtpVerifyOnStartup: parseBoolean('SMTP_VERIFY_ON_STARTUP', isDevelopmentLike ? 'false' : 'true'),
+  smtpVerifyTimeoutMs: parseBoundedNumber('SMTP_VERIFY_TIMEOUT_MS', '10000', { min: 1000, max: 60000 }),
   passwordResetTokenTtlMinutes: parseNumber('PASSWORD_RESET_TOKEN_TTL_MINUTES', '60'),
   profileImageMaxSizeBytes: parseNumber('PROFILE_IMAGE_MAX_SIZE_BYTES', '5242880'),
   appleClientId: readEnv('APPLE_CLIENT_ID'),
@@ -173,6 +198,12 @@ const env = {
 };
 
 function validateEnv(config) {
+  if (!isDevelopmentLike && config.mailMode !== 'smtp') {
+    // The log mode is a non-sending development aid; allowing it outside
+    // development/test would leave password-reset delivery silently disabled.
+    throw new Error(`MAIL_MODE=${config.mailMode} is not allowed when NODE_ENV=${config.nodeEnv} (expected: smtp)`);
+  }
+
   if (config.mailMode === 'smtp') {
     const missingSmtpVars = [];
 
@@ -195,6 +226,14 @@ function validateEnv(config) {
     if (missingSmtpVars.length > 0) {
       throw new Error(`Missing required SMTP environment variables: ${missingSmtpVars.join(', ')}`);
     }
+  }
+
+  if (!isDevelopmentLike && config.mailMode === 'smtp' && !config.smtpVerifyOnStartup) {
+    // The release policy makes readiness depend on a working SMTP transport;
+    // allowing an opt-out here would silently downgrade it to a warning.
+    throw new Error(
+      `SMTP_VERIFY_ON_STARTUP=false is not allowed when NODE_ENV=${config.nodeEnv}; SMTP verification is mandatory`
+    );
   }
 
   if (!isDevelopmentLike && !readEnv('APP_WEB_BASE_URL')) {
