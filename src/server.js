@@ -8,6 +8,10 @@ const {
   startProfileImageCleanupWorker,
   stopProfileImageCleanupWorker
 } = require('./modules/user/profile-image-cleanup.service');
+const {
+  closeMailTransport,
+  verifyMailStartupReadiness
+} = require('./services/email.service');
 const { logger } = require('./utils/logger');
 
 function getLanIpv4Address() {
@@ -38,18 +42,40 @@ function buildServerUrls() {
 
 let server = null;
 
-async function startServer() {
+// Startup sequence with injectable dependencies so bootstrap ordering (SMTP
+// verification strictly before listen) is unit-testable without binding a
+// port or contacting real infrastructure.
+async function startServer(overrides = {}) {
+  const deps = {
+    connectDatabase,
+    disconnectDatabase,
+    probeRedisConnection,
+    initializeFirebaseAdmin,
+    startProfileImageCleanupWorker,
+    verifyMailStartupReadiness,
+    closeMailTransport,
+    listen: (onListening) => app.listen(env.port, env.host, onListening),
+    exit: (code) => process.exit(code),
+    logger,
+    ...overrides
+  };
+
   try {
-    await connectDatabase();
-    await probeRedisConnection();
-    const firebaseState = initializeFirebaseAdmin();
+    await deps.connectDatabase();
+    await deps.probeRedisConnection();
+    const firebaseState = deps.initializeFirebaseAdmin();
 
-    startProfileImageCleanupWorker();
+    // Release policy: a production-like server must not report itself ready
+    // for password-reset service while its SMTP transport is unusable, so a
+    // failed verification aborts startup before the port is ever bound.
+    const mailReadiness = await deps.verifyMailStartupReadiness();
 
-    server = app.listen(env.port, env.host, () => {
+    deps.startProfileImageCleanupWorker();
+
+    server = deps.listen(() => {
       const { lanUrl, localhostUrl } = buildServerUrls();
 
-      logger.info('GamePedia auth server started', {
+      deps.logger.info('GamePedia auth server started', {
         host: env.host,
         port: env.port,
         localhostUrl,
@@ -59,13 +85,19 @@ async function startServer() {
         llmBaseUrl: env.llmBaseUrl,
         llmApiKeyConfigured: Boolean(env.llmApiKey),
         pushEnabled: firebaseState.enabled,
-        pushDisabledReason: firebaseState.reason
+        pushDisabledReason: firebaseState.reason,
+        mailMode: mailReadiness.mode,
+        mailVerified: mailReadiness.verified
       });
     });
+
+    return server;
   } catch (error) {
-    logger.error('GamePedia auth server failed to start', { error });
-    await disconnectDatabase();
-    process.exit(1);
+    deps.logger.error('GamePedia auth server failed to start', { error });
+    deps.closeMailTransport();
+    await deps.disconnectDatabase();
+    deps.exit(1);
+    return null;
   }
 }
 
@@ -73,6 +105,7 @@ async function shutdown(signal) {
   logger.info('Shutdown signal received', { signal });
 
   stopProfileImageCleanupWorker();
+  closeMailTransport();
 
   if (!server) {
     await disconnectDatabase();
@@ -86,7 +119,11 @@ async function shutdown(signal) {
   });
 }
 
-void startServer();
+if (require.main === module) {
+  void startServer();
 
-process.on('SIGINT', () => void shutdown('SIGINT'));
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}
+
+module.exports = { startServer, shutdown };

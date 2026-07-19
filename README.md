@@ -387,6 +387,10 @@ Prisma는 PostgreSQL 스키마와 애플리케이션 모델 사이를 연결합�
 | `MAIL_PASSWORD` | SMTP 비밀번호 | `smtp`일 때 |
 | `MAIL_FROM` | 발신 주소 | `smtp`일 때 |
 | `EMAIL_FROM_ADDRESS` | `MAIL_FROM` 대체용 호환 변수 | 아니오 |
+| `SMTP_VERIFY_ON_STARTUP` | 시작 시 SMTP 연결/인증 사전 검증 여부. production/staging에서는 `true` 고정(`false` 설정 시 기동 실패), development/test 기본값은 `false` | 아니오 |
+| `SMTP_VERIFY_TIMEOUT_MS` | 시작 시 SMTP 검증 타임아웃(ms). 1000–60000, 기본값 10000 | 아니오 |
+
+production/staging은 서버가 listen하기 전에 SMTP 연결·인증을 검증하며, 실패 시 프로세스가 비정상 종료합니다. 자세한 정책은 `docs/smtp-startup-readiness.md` 참고.
 
 ### 6.5 소셜 로그인 / 외부 API
 

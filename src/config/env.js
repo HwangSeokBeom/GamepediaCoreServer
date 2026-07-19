@@ -60,6 +60,16 @@ function parseNonNegativeNumber(name, fallbackValue) {
   return parsedValue;
 }
 
+function parseBoundedNumber(name, fallbackValue, { min, max }) {
+  const parsedValue = parseNumber(name, fallbackValue);
+
+  if (parsedValue < min || parsedValue > max) {
+    throw new Error(`Environment variable ${name} must be between ${min} and ${max}`);
+  }
+
+  return parsedValue;
+}
+
 function parseBoolean(name, fallbackValue) {
   const rawValue = (readEnv(name) ?? fallbackValue).toLowerCase();
 
@@ -126,6 +136,7 @@ const llmProviderDefaults = getLlmProviderDefaults(llmProvider);
 const env = {
   nodeEnv,
   appEnv,
+  isDevelopmentLike,
   host: readEnv('HOST') ?? '0.0.0.0',
   port,
   databaseUrl: requireEnv('DATABASE_URL'),
@@ -144,6 +155,11 @@ const env = {
   mailUser: readEnv('MAIL_USER'),
   mailPassword: readEnv('MAIL_PASSWORD'),
   mailFrom: readEnv('MAIL_FROM') ?? readEnv('EMAIL_FROM_ADDRESS') ?? (isDevelopmentLike ? 'no-reply@gamepedia.local' : null),
+  // Pre-listen SMTP verification: mandatory outside development/test, opt-in
+  // inside them so unit tests never contact a mail server by accident. The
+  // timeout is bounded so startup can never hang on an unreachable host.
+  smtpVerifyOnStartup: parseBoolean('SMTP_VERIFY_ON_STARTUP', isDevelopmentLike ? 'false' : 'true'),
+  smtpVerifyTimeoutMs: parseBoundedNumber('SMTP_VERIFY_TIMEOUT_MS', '10000', { min: 1000, max: 60000 }),
   passwordResetTokenTtlMinutes: parseNumber('PASSWORD_RESET_TOKEN_TTL_MINUTES', '60'),
   profileImageMaxSizeBytes: parseNumber('PROFILE_IMAGE_MAX_SIZE_BYTES', '5242880'),
   appleClientId: readEnv('APPLE_CLIENT_ID'),
@@ -210,6 +226,14 @@ function validateEnv(config) {
     if (missingSmtpVars.length > 0) {
       throw new Error(`Missing required SMTP environment variables: ${missingSmtpVars.join(', ')}`);
     }
+  }
+
+  if (!isDevelopmentLike && config.mailMode === 'smtp' && !config.smtpVerifyOnStartup) {
+    // The release policy makes readiness depend on a working SMTP transport;
+    // allowing an opt-out here would silently downgrade it to a warning.
+    throw new Error(
+      `SMTP_VERIFY_ON_STARTUP=false is not allowed when NODE_ENV=${config.nodeEnv}; SMTP verification is mandatory`
+    );
   }
 
   if (!isDevelopmentLike && !readEnv('APP_WEB_BASE_URL')) {

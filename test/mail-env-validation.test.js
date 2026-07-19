@@ -34,7 +34,11 @@ function loadEnvInChildProcess(extraEnv) {
       [
         '-e',
         `const { env } = require(${JSON.stringify(ENV_MODULE_PATH)});` +
-          'process.stdout.write(JSON.stringify({ mailMode: env.mailMode }));'
+          'process.stdout.write(JSON.stringify({' +
+          '  mailMode: env.mailMode,' +
+          '  smtpVerifyOnStartup: env.smtpVerifyOnStartup,' +
+          '  smtpVerifyTimeoutMs: env.smtpVerifyTimeoutMs' +
+          '}));'
       ],
       {
         cwd: emptyCwd,
@@ -106,7 +110,11 @@ test('production starts with a complete SMTP configuration', () => {
   });
 
   assert.equal(result.status, 0, `startup must succeed, stderr: ${result.stderr}`);
-  assert.deepEqual(JSON.parse(result.stdout), { mailMode: 'smtp' });
+  assert.deepEqual(JSON.parse(result.stdout), {
+    mailMode: 'smtp',
+    smtpVerifyOnStartup: true,
+    smtpVerifyTimeoutMs: 10000
+  });
 });
 
 test('staging is treated as production-like for MAIL_MODE', () => {
@@ -126,7 +134,11 @@ test('development keeps a usable non-sending default without MAIL_MODE', () => {
   });
 
   assert.equal(result.status, 0, `startup must succeed, stderr: ${result.stderr}`);
-  assert.deepEqual(JSON.parse(result.stdout), { mailMode: 'log' });
+  assert.deepEqual(JSON.parse(result.stdout), {
+    mailMode: 'log',
+    smtpVerifyOnStartup: false,
+    smtpVerifyTimeoutMs: 10000
+  });
 });
 
 test('test environment keeps a usable non-sending default without MAIL_MODE', () => {
@@ -135,5 +147,63 @@ test('test environment keeps a usable non-sending default without MAIL_MODE', ()
   });
 
   assert.equal(result.status, 0, `startup must succeed, stderr: ${result.stderr}`);
-  assert.deepEqual(JSON.parse(result.stdout), { mailMode: 'log' });
+  assert.deepEqual(JSON.parse(result.stdout), {
+    mailMode: 'log',
+    smtpVerifyOnStartup: false,
+    smtpVerifyTimeoutMs: 10000
+  });
+});
+
+test('production rejects SMTP_VERIFY_ON_STARTUP=false: verification cannot be disabled', () => {
+  const result = loadEnvInChildProcess({
+    NODE_ENV: 'production',
+    APP_WEB_BASE_URL: 'https://app.example.test',
+    MAIL_MODE: 'smtp',
+    SMTP_VERIFY_ON_STARTUP: 'false',
+    ...SMTP_ENV
+  });
+
+  assert.notEqual(result.status, 0, 'startup must fail');
+  assert.match(result.stderr, /SMTP_VERIFY_ON_STARTUP=false is not allowed when NODE_ENV=production/);
+});
+
+test('staging rejects SMTP_VERIFY_ON_STARTUP=false: staging is production-like', () => {
+  const result = loadEnvInChildProcess({
+    NODE_ENV: 'staging',
+    APP_WEB_BASE_URL: 'https://staging.example.test',
+    MAIL_MODE: 'smtp',
+    SMTP_VERIFY_ON_STARTUP: 'false',
+    ...SMTP_ENV
+  });
+
+  assert.notEqual(result.status, 0, 'startup must fail');
+  assert.match(result.stderr, /SMTP_VERIFY_ON_STARTUP=false is not allowed when NODE_ENV=staging/);
+});
+
+test('SMTP_VERIFY_TIMEOUT_MS outside the validated range fails configuration', () => {
+  for (const invalidValue of ['0', '999', '60001', 'abc', '-5']) {
+    const result = loadEnvInChildProcess({
+      NODE_ENV: 'production',
+      APP_WEB_BASE_URL: 'https://app.example.test',
+      MAIL_MODE: 'smtp',
+      SMTP_VERIFY_TIMEOUT_MS: invalidValue,
+      ...SMTP_ENV
+    });
+
+    assert.notEqual(result.status, 0, `startup must fail for SMTP_VERIFY_TIMEOUT_MS=${invalidValue}`);
+    assert.match(result.stderr, /SMTP_VERIFY_TIMEOUT_MS/);
+  }
+});
+
+test('SMTP_VERIFY_TIMEOUT_MS inside the validated range is accepted', () => {
+  const result = loadEnvInChildProcess({
+    NODE_ENV: 'production',
+    APP_WEB_BASE_URL: 'https://app.example.test',
+    MAIL_MODE: 'smtp',
+    SMTP_VERIFY_TIMEOUT_MS: '5000',
+    ...SMTP_ENV
+  });
+
+  assert.equal(result.status, 0, `startup must succeed, stderr: ${result.stderr}`);
+  assert.equal(JSON.parse(result.stdout).smtpVerifyTimeoutMs, 5000);
 });
