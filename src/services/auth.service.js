@@ -294,7 +294,7 @@ async function forgotPassword({ email }) {
   });
 
   if (!user) {
-    console.info(`[password-reset:forgot] email=${normalizedEmail} action=ignored reason=account_not_found`);
+    console.info('[password-reset:forgot] action=ignored reason=account_not_found');
     return buildForgotPasswordResponse();
   }
 
@@ -340,7 +340,7 @@ async function forgotPassword({ email }) {
     });
   } catch (error) {
     console.error(
-      `[password-reset:forgot] userId=${user.id} action=email_failed message=${error?.message ?? 'unknown'}`
+      `[password-reset:forgot] userId=${user.id} action=email_failed reason=${error?.reasonCode ?? 'mail_delivery_failed'}`
     );
   }
 

@@ -2805,7 +2805,7 @@ async function updateCurrentUserProfileImage({ userId, fileName }) {
     });
   }
 
-  console.info(`[profile-image] uploaded userId=${userId} profileImageUrl=${profileImageUrl}`);
+  console.info(`[profile-image] uploaded userId=${userId}`);
 
   return {
     user: mapUserToDto(updatedUser)

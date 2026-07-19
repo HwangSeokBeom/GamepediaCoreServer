@@ -74,20 +74,29 @@ function parseBoolean(name, fallbackValue) {
   throw new Error(`Environment variable ${name} must be "true" or "false"`);
 }
 
-function parseEnum(name, fallbackValue, allowedValues) {
-  const rawValue = (readEnv(name) ?? fallbackValue).toLowerCase();
-
-  if (!allowedValues.includes(rawValue)) {
-    throw new Error(`Environment variable ${name} must be one of: ${allowedValues.join(', ')}`);
-  }
-
-  return rawValue;
-}
-
 const nodeEnv = readEnv('NODE_ENV') ?? bootstrapNodeEnv;
 const isDevelopmentLike = nodeEnv === 'development' || nodeEnv === 'test';
 const appEnv = readEnv('APP_ENV') ?? nodeEnv;
-const mailModeFallback = readEnv('EMAIL_DELIVERY_MODE') ?? 'log';
+
+function resolveMailMode() {
+  // The non-sending "log" mode may only be defaulted in development/test.
+  // Production-like environments must opt into a delivery mode explicitly and
+  // fail closed at startup instead of silently falling back.
+  const rawMailMode = readEnv('MAIL_MODE') ?? readEnv('EMAIL_DELIVERY_MODE') ?? (isDevelopmentLike ? 'log' : null);
+
+  if (!rawMailMode) {
+    throw new Error(`MAIL_MODE must be set explicitly when NODE_ENV=${nodeEnv} (expected: smtp)`);
+  }
+
+  const mailMode = rawMailMode.toLowerCase();
+
+  if (!['log', 'smtp'].includes(mailMode)) {
+    throw new Error('Environment variable MAIL_MODE must be one of: log, smtp');
+  }
+
+  return mailMode;
+}
+
 const port = parseNumber('PORT', '3000');
 const llmProvider = (readEnv('LLM_PROVIDER') ?? 'openai').toLowerCase();
 
@@ -128,7 +137,7 @@ const env = {
   appWebBaseUrl: readEnv('APP_WEB_BASE_URL') ?? (isDevelopmentLike ? `http://localhost:${port}` : requireEnv('APP_WEB_BASE_URL')),
   apiPublicBaseUrl: readEnv('API_PUBLIC_BASE_URL') ?? (isDevelopmentLike ? `http://localhost:${port}` : null),
   mobileAppSteamCallbackUrl: parseUrl('MOBILE_APP_STEAM_CALLBACK_URL', 'gamepedia://steam/callback'),
-  mailMode: parseEnum('MAIL_MODE', mailModeFallback, ['log', 'smtp']),
+  mailMode: resolveMailMode(),
   mailHost: readEnv('MAIL_HOST'),
   mailPort: parseNumber('MAIL_PORT', '587'),
   mailSecure: parseBoolean('MAIL_SECURE', 'false'),
@@ -173,6 +182,12 @@ const env = {
 };
 
 function validateEnv(config) {
+  if (!isDevelopmentLike && config.mailMode !== 'smtp') {
+    // The log mode is a non-sending development aid; allowing it outside
+    // development/test would leave password-reset delivery silently disabled.
+    throw new Error(`MAIL_MODE=${config.mailMode} is not allowed when NODE_ENV=${config.nodeEnv} (expected: smtp)`);
+  }
+
   if (config.mailMode === 'smtp') {
     const missingSmtpVars = [];
 

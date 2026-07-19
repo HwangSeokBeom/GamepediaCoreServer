@@ -2,10 +2,40 @@ const nodemailer = require('nodemailer');
 const { env } = require('../config/env');
 
 let transporter;
+let testMailSink = null;
+
+// Reason codes that are safe to log and to surface on thrown errors. Raw
+// transport errors may embed the recipient address or the full message, so
+// everything else collapses to a generic code.
+const SAFE_TRANSPORT_ERROR_CODES = new Set([
+  'EAUTH',
+  'ECONNECTION',
+  'ECONNREFUSED',
+  'EDNS',
+  'EENVELOPE',
+  'EMESSAGE',
+  'ESOCKET',
+  'ETIMEDOUT'
+]);
+
+class MailDeliveryError extends Error {
+  constructor(reasonCode) {
+    super(`Mail delivery failed: ${reasonCode}`);
+    this.name = 'MailDeliveryError';
+    this.code = 'MAIL_DELIVERY_FAILED';
+    this.reasonCode = reasonCode;
+  }
+}
+
+function toSafeReasonCode(error) {
+  const rawCode = typeof error?.code === 'string' ? error.code.toUpperCase() : null;
+
+  return rawCode && SAFE_TRANSPORT_ERROR_CODES.has(rawCode) ? rawCode.toLowerCase() : 'transport_error';
+}
 
 function createSmtpTransporter() {
   if (!env.mailHost || !env.mailUser || !env.mailPassword) {
-    throw new Error('SMTP mail configuration is incomplete');
+    throw new MailDeliveryError('smtp_config_incomplete');
   }
 
   return nodemailer.createTransport({
@@ -29,31 +59,61 @@ function getTransporter() {
 
 async function sendMail({ to, subject, text, html }) {
   if (env.mailMode === 'log') {
-    console.info(`[email] mode=log to=${to} from=${env.mailFrom} subject=${subject}`);
-    console.info(`[email] text=${text}`);
+    // Non-sending mode: the message (which may carry credentials such as a
+    // password-reset URL) is handed only to the optional test sink, never to
+    // console output.
+    if (testMailSink) {
+      testMailSink({ to, subject, text, html });
+    }
+
+    console.info('[email] event=mail_generated mode=log delivery=skipped');
     return { mode: 'log' };
   }
 
   if (env.mailMode !== 'smtp') {
-    throw new Error(`MAIL_MODE ${env.mailMode} is not supported`);
+    throw new MailDeliveryError('unsupported_mail_mode');
   }
 
-  const smtpTransporter = getTransporter();
-  const info = await smtpTransporter.sendMail({
-    from: env.mailFrom,
-    to,
-    subject,
-    text,
-    html
-  });
+  try {
+    const info = await getTransporter().sendMail({
+      from: env.mailFrom,
+      to,
+      subject,
+      text,
+      html
+    });
 
-  console.info(
-    `[email] mode=smtp to=${to} from=${env.mailFrom} subject=${subject} messageId=${info.messageId}`
-  );
+    console.info('[email] event=mail_sent mode=smtp');
 
-  return info;
+    return { mode: 'smtp', messageId: info?.messageId ?? null };
+  } catch (error) {
+    const reasonCode = error instanceof MailDeliveryError ? error.reasonCode : toSafeReasonCode(error);
+
+    console.error(`[email] event=mail_send_failed mode=smtp reason=${reasonCode}`);
+
+    throw new MailDeliveryError(reasonCode);
+  }
+}
+
+function setTransporterForTesting(value) {
+  if (env.nodeEnv !== 'test' && env.nodeEnv !== 'development') {
+    throw new Error('setTransporterForTesting is only available in development or test');
+  }
+
+  transporter = value ?? undefined;
+}
+
+function setMailSinkForTesting(sink) {
+  if (env.nodeEnv !== 'test' && env.nodeEnv !== 'development') {
+    throw new Error('setMailSinkForTesting is only available in development or test');
+  }
+
+  testMailSink = typeof sink === 'function' ? sink : null;
 }
 
 module.exports = {
-  sendMail
+  MailDeliveryError,
+  sendMail,
+  setMailSinkForTesting,
+  setTransporterForTesting
 };
