@@ -1,7 +1,16 @@
 const assert = require('node:assert');
 const { test } = require('node:test');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+
+// Builds a canonical server-generated filename owned by `userId`, matching the
+// generator in profile-image.storage.js (`<uuid>-<epochMillis>-<16 hex><ext>`).
+// Ownership is proven from this embedded user id, so cleanup only ever touches
+// files whose name carries the deleting user's id.
+function ownedFileName(userId) {
+  return `${userId}-${Date.now()}-${crypto.randomBytes(8).toString('hex')}.jpg`;
+}
 
 // PostgreSQL integration tests for profile-image cleanup on account deletion.
 // Requires a disposable database whose name contains "test" or "audit"; skips
@@ -71,7 +80,7 @@ function createOwnedImage(uploadsRootDirectory, fileName) {
 test('account deletion removes the owned local profile image and settles cleanup state', { skip: skipReason }, async () => {
   const { prisma, authService, uploadsRootDirectory } = requireHarness();
   const user = await signUpUser(authService, 'owned');
-  const fileName = `pg-owned-${Date.now()}.jpg`;
+  const fileName = ownedFileName(user.id);
   const filePath = createOwnedImage(uploadsRootDirectory, fileName);
   const storedPathname = `/uploads/profile-images/${fileName}`;
 
@@ -131,7 +140,7 @@ test('externally hosted profile images are never deleted and create no cleanup s
 test('an already-missing owned image is treated as successfully cleaned up', { skip: skipReason }, async () => {
   const { prisma, authService } = requireHarness();
   const user = await signUpUser(authService, 'missing');
-  const storedPathname = `/uploads/profile-images/pg-missing-${Date.now()}.jpg`;
+  const storedPathname = `/uploads/profile-images/${ownedFileName(user.id)}`;
 
   try {
     await prisma.user.update({
@@ -156,7 +165,7 @@ test('an already-missing owned image is treated as successfully cleaned up', { s
 test('filesystem failure retains a durable cleanup task and the sweep retries it to completion', { skip: skipReason }, async () => {
   const { prisma, authService, uploadsRootDirectory, runProfileImageCleanupSweep } = requireHarness();
   const user = await signUpUser(authService, 'retry');
-  const fileName = `pg-retry-${Date.now()}.jpg`;
+  const fileName = ownedFileName(user.id);
   const blockedPath = ownedImagePath(uploadsRootDirectory, fileName);
   const storedPathname = `/uploads/profile-images/${fileName}`;
 
@@ -198,7 +207,7 @@ test('filesystem failure retains a durable cleanup task and the sweep retries it
 test('a rolled-back deletion touches neither the image nor cleanup state', { skip: skipReason }, async () => {
   const { UserStatus, prisma, authService, uploadsRootDirectory } = requireHarness();
   const user = await signUpUser(authService, 'rollback');
-  const fileName = `pg-rollback-${Date.now()}.jpg`;
+  const fileName = ownedFileName(user.id);
   const filePath = createOwnedImage(uploadsRootDirectory, fileName);
   const storedPathname = `/uploads/profile-images/${fileName}`;
 
@@ -227,5 +236,37 @@ test('a rolled-back deletion touches neither the image nor cleanup state', { ski
     fs.rmSync(filePath, { force: true });
     await prisma.profileImageCleanupTask.deleteMany({ where: { storedPathname } });
     await prisma.user.deleteMany({ where: { id: user.id } });
+  }
+});
+
+test('deleting an account that copied another user\'s image path never removes the victim file', { skip: skipReason }, async () => {
+  const { prisma, authService, uploadsRootDirectory } = requireHarness();
+  const victim = await signUpUser(authService, 'victim');
+  const attacker = await signUpUser(authService, 'attacker');
+
+  // A real, canonical image owned by the victim.
+  const victimFileName = ownedFileName(victim.id);
+  const victimFilePath = createOwnedImage(uploadsRootDirectory, victimFileName);
+  const victimStoredPathname = `/uploads/profile-images/${victimFileName}`;
+
+  try {
+    await prisma.user.update({ where: { id: victim.id }, data: { profileImageUrl: victimStoredPathname } });
+    // The attacker points their own profile at the victim's stored path.
+    await prisma.user.update({ where: { id: attacker.id }, data: { profileImageUrl: victimStoredPathname } });
+
+    const result = await authService.deleteCurrentUser(attacker.id);
+
+    assert.strictEqual(result.deleted, true);
+    assert.ok(fs.existsSync(victimFilePath), "victim's file must never be deleted by the attacker's account deletion");
+    assert.strictEqual(
+      await prisma.profileImageCleanupTask.count({ where: { userId: attacker.id } }),
+      0,
+      'a foreign-owned path must never become a cleanup task'
+    );
+    assert.ok(await prisma.user.findUnique({ where: { id: victim.id } }), 'victim account is untouched');
+  } finally {
+    fs.rmSync(victimFilePath, { force: true });
+    await prisma.profileImageCleanupTask.deleteMany({ where: { storedPathname: victimStoredPathname } });
+    await prisma.user.deleteMany({ where: { id: { in: [victim.id, attacker.id] } } });
   }
 });

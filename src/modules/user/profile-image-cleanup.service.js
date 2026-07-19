@@ -2,8 +2,9 @@ const { Prisma } = require('@prisma/client');
 const { prisma } = require('../../config/prisma');
 const { logger } = require('../../utils/logger');
 const {
-  deleteStoredProfileImage,
-  extractStoredProfileImagePathname
+  DELETE_STATUS,
+  deleteOwnedProfileImage,
+  resolveOwnedProfileImageReference
 } = require('./profile-image.storage');
 
 // Tasks that exceed PROFILE_IMAGE_CLEANUP_MAX_ATTEMPTS stay in the table so a
@@ -20,11 +21,17 @@ let sweepTimer = null;
 // the same transaction that deletes the user so the reference survives the
 // user row. Externally hosted URLs resolve to null and create no task.
 async function captureProfileImageCleanupTask(dbClient, { userId, profileImageUrl }) {
-  const storedPathname = extractStoredProfileImagePathname(profileImageUrl);
+  // Only a provably app-owned image belonging to this exact user becomes a
+  // task. Foreign hosts, other users' files, traversal, and noncanonical names
+  // all resolve to a rejection and create nothing. The stored reference is the
+  // normalized canonical pathname, never the raw user-controlled URL.
+  const resolved = resolveOwnedProfileImageReference({ profileImageUrl, userId });
 
-  if (!storedPathname) {
+  if (!resolved.ok) {
     return null;
   }
+
+  const { storedPathname } = resolved;
 
   try {
     return await dbClient.profileImageCleanupTask.create({
@@ -44,6 +51,14 @@ async function captureProfileImageCleanupTask(dbClient, { userId, profileImageUr
   }
 }
 
+async function settleCleanupTask(task) {
+  await prisma.profileImageCleanupTask.deleteMany({
+    where: { id: task.id }
+  });
+
+  return { completed: true };
+}
+
 // Attempts one cleanup and settles the task row. Never throws: a filesystem or
 // database failure leaves the task in place for the bounded sweep to retry.
 async function processProfileImageCleanupTask(task) {
@@ -52,15 +67,32 @@ async function processProfileImageCleanupTask(task) {
   }
 
   try {
-    // deleteStoredProfileImage treats missing files and non-owned paths as
-    // no-ops and re-validates that the path stays inside the uploads root, so
-    // reaching the next line always means the owned file is gone.
-    await deleteStoredProfileImage(task.storedPathname);
-    await prisma.profileImageCleanupTask.deleteMany({
-      where: { id: task.id }
+    // Revalidate ownership and containment against the task's own userId every
+    // time the worker runs — the validation done when the task was created is
+    // never trusted, so a forged or tampered row cannot delete a foreign file.
+    const outcome = await deleteOwnedProfileImage({
+      storedPathname: task.storedPathname,
+      userId: task.userId
     });
 
-    return { completed: true };
+    if (outcome.status === DELETE_STATUS.REJECTED) {
+      // Permanently unsafe: settle the row so it is not retried forever, and
+      // record a sanitized security event (reason code + task/user ids only).
+      logger.error('profile-image-cleanup-rejected', {
+        taskId: task.id,
+        userId: task.userId,
+        reason: outcome.reason
+      });
+
+      return settleCleanupTask(task);
+    }
+
+    if (outcome.status === DELETE_STATUS.RETRY) {
+      throw new Error('profile-image-cleanup-transient-failure');
+    }
+
+    // DELETED or MISSING: the owned file is gone, settle the task.
+    return await settleCleanupTask(task);
   } catch (error) {
     const attemptCount = (task.attemptCount ?? 0) + 1;
 
