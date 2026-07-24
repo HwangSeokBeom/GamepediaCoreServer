@@ -491,14 +491,16 @@ cd ~/GamePediaCoreServer-staging
 
 ## 8. 배포 방법
 
-CI/CD 와 운영 절차는 [`docs/cicd.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/cicd.md)를 기준으로 유지합니다.
+현재 실제 운영 배포 기준은 [`docs/manual-deploy.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/manual-deploy.md)입니다.
 
 현재 기준 요약:
 
-- `main` push -> GitHub-hosted validate -> EC2 self-hosted deploy -> `~/GamePediaCoreServer-prod` -> `./deploy.sh` -> PM2 `core-server`
-- `staging` push -> GitHub-hosted validate -> EC2 self-hosted deploy -> `~/GamePediaCoreServer-staging` -> `./deploy-staging.sh` -> PM2 `core-server-staging`
+- 운영자는 로컬에서 `dev -> staging -> main` 순서로 머지합니다.
+- EC2 에 SSH 접속해 `git fetch` + `git reset --hard origin/<branch>` + `pm2 restart` 방식으로 수동 배포합니다.
+- `staging` 검증 성공 후에만 `production` 을 반영합니다.
 - nginx 는 `gamepedia-api.duckdns.org -> 127.0.0.1:3001`, `staging-gamepedia-api.duckdns.org -> 127.0.0.1:3101`
-- runner 설치/서비스화 절차는 [`docs/runner-setup.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/runner-setup.md)를 기준으로 유지합니다.
+- self-hosted runner 자동배포는 현재 비활성화 상태이며, 참고용 문서는 [`docs/cicd.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/cicd.md)입니다.
+- runner 설치/서비스화 참고는 [`docs/runner-setup.md`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/docs/runner-setup.md)에서 확인합니다.
 
 ## 9. API 구조 개요
 

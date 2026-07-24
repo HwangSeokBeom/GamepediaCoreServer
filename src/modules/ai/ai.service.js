@@ -336,9 +336,18 @@ async function createGameRecommendations({
 
   const fallbackIntent = inferIntent({ query, platforms });
   const profileStartedAt = Date.now();
-  const initialPersonalizationProfile = personalizationRequested
-    ? await buildUserPreferenceProfile({ userId })
-    : createEmptyPreferenceProfile(userId);
+  let initialPersonalizationProfile = createEmptyPreferenceProfile(userId);
+
+  if (personalizationRequested) {
+    try {
+      initialPersonalizationProfile = await buildUserPreferenceProfile({ userId });
+    } catch (error) {
+      logger.warn('AI personalization profile unavailable; using generic ranking', {
+        userId,
+        code: error?.code ?? null
+      });
+    }
+  }
   const candidateStartedAt = Date.now();
   const rawCandidates = await getGameCandidates({
     query,

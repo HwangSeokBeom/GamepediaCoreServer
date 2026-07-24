@@ -48,9 +48,12 @@ router.get('/users/search', authenticateAccessToken, validate({
 router.get('/users/me', authenticateAccessToken, userController.getCurrentUserProfile);
 router.get('/users/me/profile', authenticateAccessToken, userController.getCurrentUserProfile);
 router.get('/users/me/recently-played', authenticateAccessToken, userController.getMyRecentlyPlayedProfileGames);
+router.get('/users/me/recent-plays', authenticateAccessToken, userController.getMyRecentlyPlayedProfileGames);
 router.get('/users/me/friends/count', authenticateAccessToken, userController.getMyFriendsCount);
 router.get('/users/me/titles', authenticateAccessToken, userController.getMyTitles);
 router.get('/users/me/privacy', authenticateAccessToken, userController.getMyPrivacySettings);
+router.get('/users/me/privacy-settings', authenticateAccessToken, userController.getMyPrivacySettings);
+router.get('/users/me/steam', authenticateAccessToken, userController.getMySteamLinkStatus);
 router.get('/users/me/blocks', authenticateAccessToken, userController.getMyBlocks);
 router.get('/users/me/friends', authenticateAccessToken, userController.getMyFriends);
 router.get('/users/me/friends/activity', authenticateAccessToken, validate({
@@ -60,6 +63,7 @@ router.get('/users/me/friends/activity', authenticateAccessToken, validate({
 router.get('/users/me/widgets/friends/activity-summary', authenticateAccessToken, userController.getMyFriendActivityWidgetSummary);
 router.get('/users/me/widgets/recommendations/summary', authenticateAccessToken, userController.getMyRecommendationWidgetSummary);
 router.get('/users/me/steam-friends', authenticateAccessToken, userController.getMySteamFriends);
+router.post('/users/me/friends/steam/import', authenticateAccessToken, userController.getMySteamFriends);
 router.get('/users/me/friend-requests/received', authenticateAccessToken, userController.getReceivedFriendRequests);
 router.get('/users/me/friend-requests/sent', authenticateAccessToken, userController.getSentFriendRequests);
 router.get('/users/me/recommendations/friends', authenticateAccessToken, userController.getMyFriendRecommendations);
@@ -92,6 +96,10 @@ router.patch('/users/me/titles', authenticateAccessToken, validate({
   errorMapper: buildUserValidationError
 }), userController.updateMyTitles);
 router.patch('/users/me/privacy', authenticateAccessToken, validate({
+  body: privacySettingsSchema,
+  errorMapper: buildUserValidationError
+}), userController.updateMyPrivacySettings);
+router.patch('/users/me/privacy-settings', authenticateAccessToken, validate({
   body: privacySettingsSchema,
   errorMapper: buildUserValidationError
 }), userController.updateMyPrivacySettings);
@@ -192,5 +200,9 @@ router.get('/users/:userId/shared-games', authenticateAccessToken, validate({
   params: friendProfileParamsSchema,
   errorMapper: buildUserValidationError
 }), userController.getSharedGames);
+router.get('/users/:userId/friend-recommendations', authenticateAccessToken, validate({
+  params: friendProfileParamsSchema,
+  errorMapper: buildUserValidationError
+}), userController.getFriendRecommendations);
 
 module.exports = router;

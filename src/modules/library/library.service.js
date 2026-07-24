@@ -1023,6 +1023,18 @@ async function getSteamSocialAccount(userId) {
   }));
 }
 
+async function getMySteamLinkStatus({ userId }) {
+  const steamAccount = await getSteamSocialAccount(userId);
+  const steamLinkStatus = mapSteamLinkStatus(steamAccount);
+
+  logger.info('steam-link-status-query', {
+    userId,
+    steamLinked: steamLinkStatus.isLinked
+  });
+
+  return steamLinkStatus;
+}
+
 async function getMyFavoritesMemoized({ userId, sort = 'latest', limit = null }) {
   const resolutionKey = [userId, sort, Number.isInteger(limit) && limit > 0 ? String(limit) : 'all'].join('|');
 
@@ -7241,6 +7253,7 @@ module.exports = {
   getMyPlaytimeBasedRecommendations,
   getMyRecentlyPlayedLibrary,
   getMyReviewedLibrary,
+  getMySteamLinkStatus,
   getMySteamFriendRecommendations,
   isLibraryEntryKeyConflictError,
   resolveSteamMappingContextForGames,

@@ -2,9 +2,34 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { prisma } = require('../src/config/prisma');
 const pushTokenService = require('../src/modules/push/push-token.service');
+const { hashPushToken } = require('../src/modules/push/push-token.utils');
 
 function createPushTokenTableStub(rows) {
   return {
+    async deleteMany({ where }) {
+      let count = 0;
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        const matches = row.userId === where.userId && row.deviceId === where.deviceId &&
+          row.platform === where.platform && row.environment === where.environment &&
+          row.tokenHash !== where.tokenHash.not;
+        if (matches) {
+          rows.splice(index, 1);
+          count += 1;
+        }
+      }
+      return { count };
+    },
+    async upsert({ where, update, create }) {
+      const row = rows.find((item) => item.tokenHash === where.tokenHash);
+      if (row) {
+        Object.assign(row, update);
+        return row;
+      }
+      const created = { id: `row-${rows.length + 1}`, ...create };
+      rows.push(created);
+      return created;
+    },
     async updateMany({ where, data }) {
       let count = 0;
 
@@ -53,6 +78,8 @@ function createPushTokenTableStub(rows) {
 async function withPushTokenServiceStubs(rows, callback) {
   const originalTransaction = prisma.$transaction;
   const originalTable = {
+    deleteMany: prisma.userPushToken.deleteMany,
+    upsert: prisma.userPushToken.upsert,
     updateMany: prisma.userPushToken.updateMany,
     findFirst: prisma.userPushToken.findFirst,
     update: prisma.userPushToken.update,
@@ -63,6 +90,8 @@ async function withPushTokenServiceStubs(rows, callback) {
   prisma.$transaction = async (handler) => handler({
     userPushToken: tableStub
   });
+  prisma.userPushToken.deleteMany = tableStub.deleteMany;
+  prisma.userPushToken.upsert = tableStub.upsert;
   prisma.userPushToken.updateMany = tableStub.updateMany;
   prisma.userPushToken.findFirst = tableStub.findFirst;
   prisma.userPushToken.update = tableStub.update;
@@ -72,6 +101,8 @@ async function withPushTokenServiceStubs(rows, callback) {
     return await callback();
   } finally {
     prisma.$transaction = originalTransaction;
+    prisma.userPushToken.deleteMany = originalTable.deleteMany;
+    prisma.userPushToken.upsert = originalTable.upsert;
     prisma.userPushToken.updateMany = originalTable.updateMany;
     prisma.userPushToken.findFirst = originalTable.findFirst;
     prisma.userPushToken.update = originalTable.update;
@@ -100,11 +131,12 @@ test('push token registration creates a new active device token', async () => {
   });
 });
 
-test('push token registration deactivates the same active token on another user', async () => {
+test('push token registration atomically transfers the same token to another user', async () => {
   const rows = [{
     id: 'old-row',
     userId: 'user-1',
     token: '12345678901234567890',
+    tokenHash: hashPushToken('12345678901234567890'),
     platform: 'ios',
     deviceId: 'device-old',
     environment: 'dev',
@@ -120,9 +152,37 @@ test('push token registration deactivates the same active token on another user'
       environment: 'dev'
     });
 
-    assert.equal(rows[0].isActive, false);
-    assert.equal(rows[1].userId, 'user-2');
-    assert.equal(rows[1].isActive, true);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].userId, 'user-2');
+    assert.equal(rows[0].isActive, true);
+  });
+});
+
+test('push token registration preserves and hashes the 4096-character boundary token', async () => {
+  const rows = [];
+  const token = 'x'.repeat(4096);
+
+  await withPushTokenServiceStubs(rows, async () => {
+    await pushTokenService.registerPushToken({
+      userId: 'user-1',
+      token,
+      platform: 'android'
+    });
+
+    assert.equal(rows[0].token, token);
+    assert.equal(rows[0].tokenHash, hashPushToken(token));
+    assert.equal(rows[0].tokenHash.length, 64);
+  });
+});
+
+test('push token hashing preserves a 4096-character multibyte token', async () => {
+  const rows = [];
+  const token = '한'.repeat(4096);
+
+  await withPushTokenServiceStubs(rows, async () => {
+    await pushTokenService.registerPushToken({ userId: 'user-1', token, platform: 'ios' });
+    assert.equal(rows[0].token, token);
+    assert.equal(rows[0].tokenHash, hashPushToken(token));
   });
 });
 

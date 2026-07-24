@@ -3,13 +3,15 @@ const { prisma } = require('../../config/prisma');
 const { AppError } = require('../../utils/error-response');
 const { logger } = require('../../utils/logger');
 const {
+  hashPushToken,
   maskPushToken,
   normalizeNullableString
 } = require('./push-token.utils');
 
-function buildTokenUpdateData({ token, platform, deviceId, appVersion, buildNumber, environment }) {
+function buildTokenUpdateData({ token, tokenHash, platform, deviceId, appVersion, buildNumber, environment }) {
   return {
     token,
+    tokenHash,
     platform,
     deviceId,
     appVersion,
@@ -18,30 +20,6 @@ function buildTokenUpdateData({ token, platform, deviceId, appVersion, buildNumb
     isActive: true,
     lastSeenAt: new Date()
   };
-}
-
-async function findExistingTokenRecord(tx, { userId, token, platform, deviceId, environment }) {
-  if (deviceId) {
-    const byDevice = await tx.userPushToken.findFirst({
-      where: {
-        userId,
-        deviceId,
-        platform,
-        environment
-      }
-    });
-
-    if (byDevice) {
-      return byDevice;
-    }
-  }
-
-  return tx.userPushToken.findFirst({
-    where: {
-      userId,
-      token
-    }
-  });
 }
 
 async function registerPushToken({
@@ -54,6 +32,7 @@ async function registerPushToken({
   environment = null
 }) {
   const normalizedToken = token.trim();
+  const tokenHash = hashPushToken(normalizedToken);
   const normalizedPlatform = platform.toLowerCase();
   const normalizedDeviceId = normalizeNullableString(deviceId);
   const normalizedAppVersion = normalizeNullableString(appVersion, 50);
@@ -63,28 +42,9 @@ async function registerPushToken({
 
   try {
     const tokenRecord = await prisma.$transaction(async (tx) => {
-      await tx.userPushToken.updateMany({
-        where: {
-          token: normalizedToken,
-          userId: {
-            not: userId
-          },
-          isActive: true
-        },
-        data: {
-          isActive: false
-        }
-      });
-
-      const existingTokenRecord = await findExistingTokenRecord(tx, {
-        userId,
-        token: normalizedToken,
-        platform: normalizedPlatform,
-        deviceId: normalizedDeviceId,
-        environment: normalizedEnvironment
-      });
       const data = buildTokenUpdateData({
         token: normalizedToken,
+        tokenHash,
         platform: normalizedPlatform,
         deviceId: normalizedDeviceId,
         appVersion: normalizedAppVersion,
@@ -92,15 +52,25 @@ async function registerPushToken({
         environment: normalizedEnvironment
       });
 
-      if (existingTokenRecord) {
-        return tx.userPushToken.update({
-          where: { id: existingTokenRecord.id },
-          data
+      if (normalizedDeviceId) {
+        await tx.userPushToken.deleteMany({
+          where: {
+            userId,
+            deviceId: normalizedDeviceId,
+            platform: normalizedPlatform,
+            environment: normalizedEnvironment,
+            tokenHash: { not: tokenHash }
+          }
         });
       }
 
-      return tx.userPushToken.create({
-        data: {
+      return tx.userPushToken.upsert({
+        where: { tokenHash },
+        update: {
+          userId,
+          ...data
+        },
+        create: {
           userId,
           ...data
         }
@@ -140,6 +110,7 @@ async function registerPushToken({
 async function deletePushToken({ userId, deviceId = null, token = null }) {
   const normalizedDeviceId = normalizeNullableString(deviceId);
   const normalizedToken = normalizeNullableString(token, 4096);
+  const tokenHash = normalizedToken ? hashPushToken(normalizedToken) : null;
 
   if (!normalizedDeviceId && !normalizedToken) {
     throw new AppError(400, 'PUSH_TOKEN_INVALID', 'deviceId or token is required');
@@ -152,7 +123,7 @@ async function deletePushToken({ userId, deviceId = null, token = null }) {
   }
 
   if (normalizedToken) {
-    filters.push({ token: normalizedToken });
+    filters.push({ tokenHash });
   }
 
   const result = await prisma.userPushToken.updateMany({

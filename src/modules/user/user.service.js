@@ -2619,9 +2619,14 @@ async function getCurrentUserProfile({ userId }) {
 
 async function getMyRecentlyPlayedProfileGames({ userId }) {
   await getEditableCurrentUser(userId);
+  const games = await buildCurrentUserRecentlyPlayedGames(userId);
 
   return {
-    games: await buildCurrentUserRecentlyPlayedGames(userId)
+    games,
+    recentGames: games,
+    recentlyPlayed: games,
+    recentPlayedPreview: games,
+    hasMoreRecentPlayed: false
   };
 }
 
@@ -3684,6 +3689,27 @@ async function getMyFriendRecommendations({ currentUserId }) {
   };
 }
 
+async function getFriendRecommendations({ currentUserId, targetUserId }) {
+  await assertFriendAccess({
+    currentUserId,
+    targetUserId
+  });
+
+  const recommendations = await buildFriendRecommendations({
+    currentUserId,
+    friendIds: [targetUserId],
+    limit: FRIEND_RECOMMENDATION_LIMIT
+  });
+
+  logger.info('friend-recommendation-target-query', {
+    userId: currentUserId,
+    targetUserId,
+    recommendationCount: recommendations.length
+  });
+
+  return { recommendations };
+}
+
 async function getMyFriendActivityWidgetSummary({ currentUserId }) {
   await getEditableCurrentUser(currentUserId);
 
@@ -3865,6 +3891,7 @@ module.exports = {
   getMyFriendsActivity,
   getMyRecentlyPlayedProfileGames,
   getMySteamFriends,
+  getFriendRecommendations,
   getMyFriendRecommendations,
   getMyRecommendationWidgetSummary,
   getMyNotifications,

@@ -1,5 +1,8 @@
 # GamePedia Core Server CI/CD
 
+> 현재 실제 운영 배포는 [`docs/manual-deploy.md`](./manual-deploy.md) 기준으로 수동 진행합니다.
+> 이 문서는 self-hosted runner 자동배포 구조를 보존한 참고 문서이며, 현재 runner service 는 `inactive/dead` 상태로 두는 운영 기준입니다.
+
 ## 1. 운영 기준
 
 | 구분 | 브랜치 | 서버 clone | PM2 app | 포트 | PostgreSQL DB | 도메인 |

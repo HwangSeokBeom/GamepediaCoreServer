@@ -41,6 +41,7 @@ function loadEnvironment(options = {}) {
   const cwd = options.cwd ?? process.cwd();
   const nodeEnv = resolveNodeEnv(options.nodeEnv) ?? getNodeEnv();
   const envFilePaths = getEnvFilePaths(nodeEnv, cwd);
+  const inheritedEnvironment = { ...process.env };
 
   process.env.NODE_ENV = nodeEnv;
 
@@ -48,6 +49,7 @@ function loadEnvironment(options = {}) {
     loadEnvFile(filePath, index > 0);
   });
 
+  Object.assign(process.env, inheritedEnvironment);
   process.env.NODE_ENV = nodeEnv;
 
   return {

@@ -2,6 +2,7 @@ const { successResponse } = require('../../utils/api-response');
 const { asyncHandler } = require('../../utils/async-handler');
 const { logger } = require('../../utils/logger');
 const { runWithLibraryRequestContext } = require('../library/library-request-context');
+const libraryService = require('../library/library.service');
 const userService = require('./user.service');
 
 const getCurrentUserProfile = asyncHandler(async (req, res) => {
@@ -16,8 +17,16 @@ const getMyRecentlyPlayedProfileGames = asyncHandler(async (req, res) => {
   const result = await runWithLibraryRequestContext(() => userService.getMyRecentlyPlayedProfileGames({
     userId: req.auth.userId
   }));
+  const games = Array.isArray(result?.games) ? result.games : [];
 
-  res.status(200).json(successResponse(result));
+  res.status(200).json(successResponse({
+    ...result,
+    games,
+    recentGames: Array.isArray(result?.recentGames) ? result.recentGames : games,
+    recentlyPlayed: Array.isArray(result?.recentlyPlayed) ? result.recentlyPlayed : games,
+    recentPlayedPreview: Array.isArray(result?.recentPlayedPreview) ? result.recentPlayedPreview : games,
+    hasMoreRecentPlayed: Boolean(result?.hasMoreRecentPlayed)
+  }));
 });
 
 const getMyFriendsCount = asyncHandler(async (req, res) => {
@@ -229,6 +238,14 @@ const getMySteamFriends = asyncHandler(async (req, res) => {
   res.status(200).json(successResponse(result));
 });
 
+const getMySteamLinkStatus = asyncHandler(async (req, res) => {
+  const result = await runWithLibraryRequestContext(() => libraryService.getMySteamLinkStatus({
+    userId: req.auth.userId
+  }));
+
+  res.status(200).json(successResponse(result));
+});
+
 const getTasteSimilarity = asyncHandler(async (req, res) => {
   const result = await userService.getTasteSimilarity({
     currentUserId: req.auth.userId,
@@ -268,6 +285,15 @@ const getSharedGames = asyncHandler(async (req, res) => {
 const getMyFriendRecommendations = asyncHandler(async (req, res) => {
   const result = await runWithLibraryRequestContext(() => userService.getMyFriendRecommendations({
     currentUserId: req.auth.userId
+  }));
+
+  res.status(200).json(successResponse(result));
+});
+
+const getFriendRecommendations = asyncHandler(async (req, res) => {
+  const result = await runWithLibraryRequestContext(() => userService.getFriendRecommendations({
+    currentUserId: req.auth.userId,
+    targetUserId: req.params.userId
   }));
 
   res.status(200).json(successResponse(result));
@@ -365,6 +391,8 @@ module.exports = {
   getMyFriends,
   getMyFriendsActivity,
   getMySteamFriends,
+  getMySteamLinkStatus,
+  getFriendRecommendations,
   getMyFriendRecommendations,
   getMyRecommendationWidgetSummary,
   getMyNotifications,

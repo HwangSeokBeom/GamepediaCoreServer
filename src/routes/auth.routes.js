@@ -16,24 +16,22 @@ const {
 } = require('../validators/auth.validator');
 
 const router = express.Router();
+const { logger } = require('../utils/logger');
 
 function logAppleLoginRequest(req, res, next) {
   const requestBody = req.body && typeof req.body === 'object' ? req.body : {};
-  const bodyKeys = Object.keys(requestBody);
   const hasIdentityToken = typeof requestBody.identityToken === 'string' && requestBody.identityToken.trim().length > 0;
   const hasAuthCode = typeof requestBody.authorizationCode === 'string' && requestBody.authorizationCode.trim().length > 0;
   const hasUserIdentifier = typeof requestBody.userIdentifier === 'string' && requestBody.userIdentifier.trim().length > 0;
 
-  // Presence flags only — key names deliberately avoid the exact credential
-  // field names so the sensitive-log scanner keeps a strict rule set.
-  console.log(
-    `[apple-login:request] keys=${bodyKeys.length > 0 ? bodyKeys.join(',') : '(none)'} identityTokenPresent=${hasIdentityToken} authCodePresent=${hasAuthCode} userIdentifierPresent=${hasUserIdentifier}`
-  );
+  logger.info('apple-login-request', {
+    credentialPresent: hasIdentityToken,
+    exchangeCredentialPresent: hasAuthCode,
+    accountHintPresent: hasUserIdentifier
+  });
 
   if (!hasIdentityToken) {
-    console.warn(
-      `[apple-login:request] Missing required body.identityToken. Server expects key "identityToken". Received keys: ${bodyKeys.length > 0 ? bodyKeys.join(',') : '(none)'}`
-    );
+    logger.warn('apple-login-request-missing-credential');
   }
 
   next();

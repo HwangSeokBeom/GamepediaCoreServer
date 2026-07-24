@@ -7,8 +7,8 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "test": "node --test",
-    "test:postgres": "node --test test/auth-refresh-rotation.postgres.test.js",
+    "test": "node scripts/test/run-canonical-tests.js",
+    "test:postgres": "RUN_POSTGRES_INTEGRATION=1 node --test test/auth-refresh-postgres.integration.test.js test/push-token-postgres.integration.test.js",
     "deploy:production": "bash ./deploy.sh",
     "deploy:staging": "bash ./deploy-staging.sh",
     "deploy:validate:production": "NODE_ENV=production node ./scripts/server/validate-deploy-env.js production",

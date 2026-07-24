@@ -23,13 +23,6 @@ const UNSAFE_MESSAGE_PATTERNS = [
   /\/Users\/|\/var\/|\/app\/|[A-Z]:\\/i,
   /access token|refresh token|authorization/i
 ];
-const SENSITIVE_QUERY_KEYS = new Set([
-  'access_token',
-  'refresh_token',
-  'token',
-  'authorization'
-]);
-
 function sanitizeRequestPath(originalUrl) {
   if (typeof originalUrl !== 'string') {
     return '';
@@ -37,16 +30,9 @@ function sanitizeRequestPath(originalUrl) {
 
   try {
     const url = new URL(originalUrl, 'http://gamepedia.local');
-
-    for (const key of [...url.searchParams.keys()]) {
-      if (SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) {
-        url.searchParams.set(key, '[REDACTED]');
-      }
-    }
-
-    return `${url.pathname}${url.search}`;
+    return url.pathname;
   } catch (error) {
-    return originalUrl.replace(/(access_token|refresh_token|token|authorization)=([^&]+)/gi, '$1=[REDACTED]');
+    return originalUrl.split('?')[0].split('#')[0];
   }
 }
 
@@ -114,12 +100,13 @@ function errorHandler(error, req, res, next) {
   }
 
   if (error instanceof AppError) {
+    const appleLoginRequest = isAppleLoginRequest(req);
     logger[error.statusCode >= 500 ? 'error' : 'warn']('Request failed', {
       ...buildRequestMeta(req),
       statusCode: error.statusCode,
       code: error.code,
-      details: error.details,
-      context: isAppleLoginRequest(req) ? 'apple-login' : undefined
+      details: appleLoginRequest ? undefined : error.details,
+      context: appleLoginRequest ? 'apple-login' : undefined
     });
 
     const sanitizedDetails = sanitizeErrorDetails(error.details);
@@ -191,5 +178,6 @@ function errorHandler(error, req, res, next) {
 
 module.exports = {
   errorHandler,
-  notFoundHandler
+  notFoundHandler,
+  sanitizeRequestPath
 };
