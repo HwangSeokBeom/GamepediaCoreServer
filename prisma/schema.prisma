@@ -445,6 +445,24 @@ model UserActivityEvent {
   @@map("user_activity_events")
 }
 
+// Durable record of an application-owned profile-image file that must be
+// removed from local storage after its owning account was deleted. Written in
+// the same transaction as the user deletion; intentionally has no relation to
+// User because the row must outlive the user record. userId is audit-only.
+model ProfileImageCleanupTask {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  storedPathname String    @unique @map("stored_pathname") @db.Text
+  attemptCount   Int       @default(0) @map("attempt_count")
+  lastAttemptAt  DateTime? @map("last_attempt_at")
+  lastError      String?   @map("last_error") @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([attemptCount, createdAt])
+  @@map("profile_image_cleanup_tasks")
+}
+
 model UserPresenceSnapshot {
   userId         String            @id @map("user_id") @db.Uuid
   state          UserPresenceState @default(UNKNOWN)

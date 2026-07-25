@@ -4,9 +4,11 @@ const { validate } = require('../../middlewares/validate.middleware');
 const userController = require('./user.controller');
 const pushTokenController = require('../push/push-token.controller');
 const { createInMemoryRateLimit } = require('../../middlewares/rate-limit.middleware');
+const { AppError } = require('../../utils/error-response');
 const {
   blockUserBodySchema,
   blockedUserParamsSchema,
+  buildRecentlyPlayedValidationError,
   buildUserValidationError,
   friendActivityFeedQuerySchema,
   friendProfileParamsSchema,
@@ -18,6 +20,7 @@ const {
   privacySettingsSchema,
   pushTokenDeleteSchema,
   pushTokenRegistrationSchema,
+  recentlyPlayedQuerySchema,
   testPushSchema,
   updateMyTitlesSchema,
   userSearchQuerySchema,
@@ -47,10 +50,19 @@ router.get('/users/search', authenticateAccessToken, validate({
 
 router.get('/users/me', authenticateAccessToken, userController.getCurrentUserProfile);
 router.get('/users/me/profile', authenticateAccessToken, userController.getCurrentUserProfile);
-router.get('/users/me/recently-played', authenticateAccessToken, userController.getMyRecentlyPlayedProfileGames);
+router.get('/users/me/recently-played', authenticateAccessToken, validate({
+  query: recentlyPlayedQuerySchema,
+  errorMapper: buildRecentlyPlayedValidationError
+}), userController.getMyRecentlyPlayedProfileGames);
+router.get('/users/me/recent-plays', authenticateAccessToken, validate({
+  query: recentlyPlayedQuerySchema,
+  errorMapper: buildRecentlyPlayedValidationError
+}), userController.getMyRecentlyPlayedProfileGames);
 router.get('/users/me/friends/count', authenticateAccessToken, userController.getMyFriendsCount);
 router.get('/users/me/titles', authenticateAccessToken, userController.getMyTitles);
 router.get('/users/me/privacy', authenticateAccessToken, userController.getMyPrivacySettings);
+router.get('/users/me/privacy-settings', authenticateAccessToken, userController.getMyPrivacySettings);
+router.get('/users/me/steam', authenticateAccessToken, userController.getMySteamLinkStatus);
 router.get('/users/me/blocks', authenticateAccessToken, userController.getMyBlocks);
 router.get('/users/me/friends', authenticateAccessToken, userController.getMyFriends);
 router.get('/users/me/friends/activity', authenticateAccessToken, validate({
@@ -60,6 +72,7 @@ router.get('/users/me/friends/activity', authenticateAccessToken, validate({
 router.get('/users/me/widgets/friends/activity-summary', authenticateAccessToken, userController.getMyFriendActivityWidgetSummary);
 router.get('/users/me/widgets/recommendations/summary', authenticateAccessToken, userController.getMyRecommendationWidgetSummary);
 router.get('/users/me/steam-friends', authenticateAccessToken, userController.getMySteamFriends);
+router.post('/users/me/friends/steam/import', authenticateAccessToken, userController.getMySteamFriends);
 router.get('/users/me/friend-requests/received', authenticateAccessToken, userController.getReceivedFriendRequests);
 router.get('/users/me/friend-requests/sent', authenticateAccessToken, userController.getSentFriendRequests);
 router.get('/users/me/recommendations/friends', authenticateAccessToken, userController.getMyFriendRecommendations);
@@ -92,6 +105,10 @@ router.patch('/users/me/titles', authenticateAccessToken, validate({
   errorMapper: buildUserValidationError
 }), userController.updateMyTitles);
 router.patch('/users/me/privacy', authenticateAccessToken, validate({
+  body: privacySettingsSchema,
+  errorMapper: buildUserValidationError
+}), userController.updateMyPrivacySettings);
+router.patch('/users/me/privacy-settings', authenticateAccessToken, validate({
   body: privacySettingsSchema,
   errorMapper: buildUserValidationError
 }), userController.updateMyPrivacySettings);
@@ -129,7 +146,18 @@ router.patch(
 );
 
 router.delete('/users/me/profile-image', authenticateAccessToken, userController.removeCurrentUserProfileImage);
-router.delete('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, validate({
+router.delete('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, (req, res, next) => {
+  const body = req.body ?? {};
+  for (const key of ['deviceId', 'token']) {
+    if (body[key] !== undefined && req.query[key] !== undefined && body[key] !== req.query[key]) {
+      next(new AppError(400, 'PUSH_TOKEN_INVALID', `${key} conflicts between the request body and query`));
+      return;
+    }
+  }
+
+  req.body = { ...body, ...req.query };
+  next();
+}, validate({
   body: pushTokenDeleteSchema,
   errorMapper: buildUserValidationError
 }), pushTokenController.deleteMyPushToken);
@@ -192,5 +220,9 @@ router.get('/users/:userId/shared-games', authenticateAccessToken, validate({
   params: friendProfileParamsSchema,
   errorMapper: buildUserValidationError
 }), userController.getSharedGames);
+router.get('/users/:userId/friend-recommendations', authenticateAccessToken, validate({
+  params: friendProfileParamsSchema,
+  errorMapper: buildUserValidationError
+}), userController.getFriendRecommendations);
 
 module.exports = router;

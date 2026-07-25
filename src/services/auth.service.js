@@ -11,6 +11,7 @@ const { buildAccountStatusError, buildTokenVerificationError } = require('../uti
 const { AppError } = require('../utils/error-response');
 const { logger } = require('../utils/logger');
 const { mapUserToDto } = require('../modules/user/user.mapper');
+const profileImageCleanupService = require('../modules/user/profile-image-cleanup.service');
 
 const APPLE_AUTH_PROVIDER = 'APPLE';
 const GOOGLE_AUTH_PROVIDER = 'GOOGLE';
@@ -104,7 +105,7 @@ function buildNicknameWithSuffix(baseNickname, suffix) {
   return `${effectiveBaseNickname.slice(0, maxBaseLength)}_${normalizedSuffix}`;
 }
 
-function isNicknameUniqueConstraintError(error) {
+function isUniqueConstraintErrorFor(error, fieldName) {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
     return false;
   }
@@ -112,8 +113,22 @@ function isNicknameUniqueConstraintError(error) {
   const duplicateTarget = Array.isArray(error?.meta?.target)
     ? error.meta.target
     : [error?.meta?.target].filter(Boolean);
+  const normalizedFieldName = String(fieldName).toLowerCase();
 
-  return duplicateTarget.some((target) => String(target).toLowerCase().includes('nickname'));
+  return duplicateTarget.some((target) => {
+    const normalizedTarget = String(target).toLowerCase();
+    const targetParts = normalizedTarget.split(/[^a-z0-9]+/).filter(Boolean);
+
+    return normalizedTarget === normalizedFieldName || targetParts.includes(normalizedFieldName);
+  });
+}
+
+function isNicknameUniqueConstraintError(error) {
+  return isUniqueConstraintErrorFor(error, 'nickname');
+}
+
+function isEmailUniqueConstraintError(error) {
+  return isUniqueConstraintErrorFor(error, 'email');
 }
 
 async function resolveAvailableSocialNickname(tx, preferredNickname, fallbackPrefix) {
@@ -273,6 +288,14 @@ async function signUp({ email, password, nickname, profileImageUrl, deviceName }
       };
     });
   } catch (error) {
+    if (isEmailUniqueConstraintError(error)) {
+      throw new AppError(
+        409,
+        'EMAIL_ALREADY_IN_USE',
+        'An account with this email already exists'
+      );
+    }
+
     if (isNicknameUniqueConstraintError(error)) {
       throw new AppError(409, 'NICKNAME_ALREADY_EXISTS', 'Nickname already exists');
     }
@@ -865,7 +888,7 @@ async function getCurrentUser(userId) {
 async function deleteCurrentUser(userId) {
   const deletedAt = new Date();
 
-  return prisma.$transaction(async (tx) => {
+  const { result, cleanupTask } = await prisma.$transaction(async (tx) => {
     const user = await tx.user.findUnique({
       where: { id: userId }
     });
@@ -878,6 +901,15 @@ async function deleteCurrentUser(userId) {
       throw buildAccountStatusError(user.status);
     }
 
+    // Persist the owned local profile-image reference in the same transaction
+    // that deletes the user: if the transaction rolls back no cleanup task
+    // survives (and no file is touched), and if it commits the file reference
+    // cannot be lost even when the process crashes before the file is removed.
+    const capturedCleanupTask = await profileImageCleanupService.captureProfileImageCleanupTask(tx, {
+      userId: user.id,
+      profileImageUrl: user.profileImageUrl
+    });
+
     await tx.refreshToken.deleteMany({
       where: { userId: user.id }
     });
@@ -887,10 +919,20 @@ async function deleteCurrentUser(userId) {
     });
 
     return {
-      deleted: true,
-      deletedAt
+      result: {
+        deleted: true,
+        deletedAt
+      },
+      cleanupTask: capturedCleanupTask
     };
   });
+
+  // Best-effort immediate cleanup after commit. This never throws; on failure
+  // the persisted task is retried by the bounded cleanup sweep, so a
+  // filesystem error cannot fail (or roll back) the completed deletion.
+  await profileImageCleanupService.processProfileImageCleanupTask(cleanupTask);
+
+  return result;
 }
 
 module.exports = {

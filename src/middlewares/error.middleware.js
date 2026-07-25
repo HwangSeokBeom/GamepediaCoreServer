@@ -1,7 +1,7 @@
 const { Prisma } = require('@prisma/client');
 const multer = require('multer');
 const { env } = require('../config/env');
-const { logger } = require('../utils/logger');
+const { logSafely } = require('../utils/logger');
 const { errorResponse } = require('../utils/api-response');
 const { AppError } = require('../utils/error-response');
 
@@ -71,7 +71,7 @@ function sanitizeErrorDetails(details) {
 }
 
 function notFoundHandler(req, res) {
-  logger.warn('Request route not found', {
+  logSafely('warn', 'Request route not found', {
     ...buildRequestMeta(req),
     statusCode: 404,
     code: 'NOT_FOUND'
@@ -81,13 +81,13 @@ function notFoundHandler(req, res) {
 }
 
 function isAppleLoginRequest(req) {
-  return req.method === 'POST' && (req.originalUrl === '/auth/apple' || req.path === '/auth/apple' || req.path === '/apple');
+  return req.method === 'POST' && (req.path === '/auth/apple' || req.path === '/apple');
 }
 
 function buildRequestMeta(req) {
   return {
     method: req.method,
-    path: sanitizeRequestPath(req.originalUrl),
+    path: req.path,
     ip: req.ip,
     remoteAddress: req.socket?.remoteAddress ?? null
   };
@@ -101,7 +101,7 @@ function errorHandler(error, req, res, next) {
 
   if (error instanceof AppError) {
     const appleLoginRequest = isAppleLoginRequest(req);
-    logger[error.statusCode >= 500 ? 'error' : 'warn']('Request failed', {
+    logSafely(error.statusCode >= 500 ? 'error' : 'warn', 'Request failed', {
       ...buildRequestMeta(req),
       statusCode: error.statusCode,
       code: error.code,
@@ -127,14 +127,14 @@ function errorHandler(error, req, res, next) {
   }
 
   if (error instanceof SyntaxError && error.type === 'entity.parse.failed') {
-    logger.warn('Request failed due to malformed JSON body', buildRequestMeta(req));
+    logSafely('warn', 'Request failed due to malformed JSON body', buildRequestMeta(req));
     res.status(400).json(errorResponse('VALIDATION_FAILED', DEFAULT_ERROR_MESSAGES.VALIDATION_FAILED));
     return;
   }
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === 'P2002') {
-      logger.warn('Request failed due to Prisma unique constraint', {
+      logSafely('warn', 'Request failed due to Prisma unique constraint', {
         ...buildRequestMeta(req),
         code: error.code,
         context: isAppleLoginRequest(req) ? 'apple-login' : undefined
@@ -146,7 +146,7 @@ function errorHandler(error, req, res, next) {
   }
 
   if (error instanceof multer.MulterError) {
-    logger.warn('Request failed due to upload error', {
+    logSafely('warn', 'Request failed due to upload error', {
       ...buildRequestMeta(req),
       code: error.code
     });
@@ -166,7 +166,7 @@ function errorHandler(error, req, res, next) {
   }
 
   if (env.nodeEnv !== 'test') {
-    logger.error('Unhandled request error', {
+    logSafely('error', 'Unhandled request error', {
       ...buildRequestMeta(req),
       context: isAppleLoginRequest(req) ? 'apple-login' : undefined,
       error

@@ -20,7 +20,17 @@ function validate({ body, params, query, errorMapper }) {
       }
 
       if (query) {
-        req.query = query.parse(req.query);
+        const parsedQuery = query.parse(req.query);
+
+        // Express exposes req.query through a getter in current releases.
+        // Define the validated value on this request so transforms cannot be
+        // silently discarded by an assignment to the getter-only property.
+        Object.defineProperty(req, 'query', {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: parsedQuery
+        });
       }
 
       next();

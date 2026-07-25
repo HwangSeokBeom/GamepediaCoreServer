@@ -251,8 +251,8 @@ async function writeRecommendationLog({
     await prisma.aiRecommendationLog.create({
       data: {
         userId,
-        query,
-        normalizedQuery,
+        query: `sha256:${crypto.createHash('sha256').update(String(query)).digest('hex')}`,
+        normalizedQuery: `sha256:${crypto.createHash('sha256').update(String(normalizedQuery)).digest('hex')}`,
         intent,
         resultGameIds: items.map((item) => String(item.gameId)),
         model,
@@ -336,9 +336,18 @@ async function createGameRecommendations({
 
   const fallbackIntent = inferIntent({ query, platforms });
   const profileStartedAt = Date.now();
-  const initialPersonalizationProfile = personalizationRequested
-    ? await buildUserPreferenceProfile({ userId })
-    : createEmptyPreferenceProfile(userId);
+  let initialPersonalizationProfile = createEmptyPreferenceProfile(userId);
+
+  if (personalizationRequested) {
+    try {
+      initialPersonalizationProfile = await buildUserPreferenceProfile({ userId });
+    } catch (error) {
+      logger.warn('AI personalization profile unavailable; using generic ranking', {
+        userId,
+        code: error?.code ?? null
+      });
+    }
+  }
   const candidateStartedAt = Date.now();
   const rawCandidates = await getGameCandidates({
     query,

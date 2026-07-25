@@ -84,21 +84,31 @@ function mapSteamLinkStatus(steamAccount) {
   if (!steamAccount) {
     return {
       isLinked: false,
+      steamId: null,
       steamId64: null,
+      displayName: null,
       personaName: null,
       avatarUrl: null,
       profileUrl: null,
-      linkedAt: null
+      linkedAt: null,
+      lastSteamSyncAt: null,
+      canSync: false,
+      canDisconnect: false
     };
   }
 
   return {
     isLinked: true,
+    steamId: steamAccount.providerSubject,
     steamId64: steamAccount.providerSubject,
+    displayName: steamAccount.personaName ?? null,
     personaName: steamAccount.personaName ?? null,
     avatarUrl: steamAccount.avatarUrl ?? null,
     profileUrl: steamAccount.profileUrl ?? null,
-    linkedAt: steamAccount.linkedAt
+    linkedAt: steamAccount.linkedAt ?? null,
+    lastSteamSyncAt: steamAccount.lastSteamSyncAt ?? null,
+    canSync: true,
+    canDisconnect: true
   };
 }
 

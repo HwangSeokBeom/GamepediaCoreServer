@@ -1,10 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { PassThrough } = require('node:stream');
+const winston = require('winston');
 const tokenService = require('../../src/services/token.service');
 const { app } = require('../../src/app');
 const { AppError } = require('../../src/utils/error-response');
 const { env } = require('../../src/config/env');
 const { prisma } = require('../../src/config/prisma');
+const { buildLogFormatter, logger } = require('../../src/utils/logger');
 const { aiGameRecommendationRequestSchema } = require('../../src/modules/ai/ai.schema');
 const aiClient = require('../../src/modules/ai/ai.client');
 const aiService = require('../../src/modules/ai/ai.service');
@@ -376,7 +379,8 @@ test('recommendation logging stores expected fields', async () => {
       latencyMs: 12
     });
 
-    assert.equal(storedPayload.data.query, '힐링 게임');
+    assert.match(storedPayload.data.query, /^sha256:[a-f0-9]{64}$/);
+    assert.doesNotMatch(JSON.stringify(storedPayload.data), /힐링 게임/);
     assert.deepEqual(storedPayload.data.resultGameIds, ['100', '300']);
     assert.equal(storedPayload.data.latencyMs, 12);
   } finally {
@@ -560,10 +564,16 @@ test('LLM client falls back on provider HTTP failures', async () => {
   const originalApiKey = env.llmApiKey;
   const originalBaseUrl = env.llmBaseUrl;
   const originalModel = env.llmModel;
+  const stream = new PassThrough();
+  let logOutput = '';
   let requestedUrl = null;
+  const sentinel = 'SENTINEL_LLM_PRIVATE_7F93';
+  stream.on('data', (chunk) => { logOutput += chunk.toString('utf8'); });
+  const transport = new winston.transports.Stream({ stream, format: buildLogFormatter() });
+  logger.add(transport);
 
   env.llmProvider = 'gemini';
-  env.llmApiKey = 'test-key';
+  env.llmApiKey = `${sentinel}-api-key`;
   env.llmBaseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
   env.llmModel = 'gemini-2.5-flash-lite';
   global.fetch = async (url) => {
@@ -571,21 +581,29 @@ test('LLM client falls back on provider HTTP failures', async () => {
     return {
       ok: false,
       status: 429,
-      text: async () => 'quota exceeded'
+      text: async () => `quota exceeded authorization=Bearer ${sentinel}`
     };
   };
 
   try {
     const response = await aiClient.createChatCompletion({
-      systemPrompt: 'system',
-      userPrompt: '{}',
+      systemPrompt: `system ${sentinel}`,
+      userPrompt: `{"prompt":"${sentinel}"}`,
       retryCount: 0
     });
 
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(requestedUrl, 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
     assert.equal(response.skipped, true);
     assert.equal(response.model, 'mock-rule-based');
+    assert.match(logOutput, /LLM request failed/);
+    assert.match(logOutput, /"errorCategory":"Error"/);
+    assert.doesNotMatch(logOutput, new RegExp(sentinel));
+    assert.doesNotMatch(logOutput, /authorization|api-key|system .*SENTINEL|quota exceeded/i);
   } finally {
+    logger.remove(transport);
+    transport.destroy();
+    stream.destroy();
     global.fetch = originalFetch;
     env.llmProvider = originalProvider;
     env.llmApiKey = originalApiKey;

@@ -8,7 +8,7 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "test": "node scripts/test/run-canonical-tests.js",
-    "test:postgres": "RUN_POSTGRES_INTEGRATION=1 node --test test/auth-refresh-postgres.integration.test.js test/push-token-postgres.integration.test.js",
+    "test:postgres": "bash scripts/test/run-auth-postgres-gate.sh",
     "deploy:production": "bash ./deploy.sh",
     "deploy:staging": "bash ./deploy-staging.sh",
     "deploy:validate:production": "NODE_ENV=production node ./scripts/server/validate-deploy-env.js production",
@@ -26,15 +26,22 @@
     "bcrypt": "^6.0.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
-    "firebase-admin": "^13.8.0",
+    "firebase-admin": "^13.10.0",
     "jsonwebtoken": "^9.0.3",
-    "multer": "^2.1.1",
-    "nodemailer": "^8.0.4",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.3",
     "prisma": "^6.19.2",
     "winston": "^3.19.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
+  },
+  "overrides": {
+    "body-parser": "2.3.0",
+    "effect": "3.22.0",
+    "path-to-regexp": "8.4.2",
+    "qs": "6.15.3",
+    "websocket-driver": "0.7.5"
   }
 }

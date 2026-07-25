@@ -8,7 +8,7 @@ const igdbService = require('../igdb/igdb.service');
 const libraryService = require('../library/library.service');
 const { buildGameImageResolverUrl, extractUsableIgdbCoverUrl } = require('../library/library-image.service');
 const steamService = require('../../services/steam.service');
-const { deleteStoredProfileImage, buildStoredProfileImagePath } = require('./profile-image.storage');
+const { DELETE_STATUS, deleteOwnedProfileImage, buildStoredProfileImagePath } = require('./profile-image.storage');
 const userActivityService = require('./user-activity.service');
 const userPresenceService = require('./user-presence.service');
 const { publishNotificationPush } = require('../notifications/notification-push.publisher');
@@ -165,10 +165,18 @@ function mapPrivacySettingsDto(settings) {
 
 function buildPrivacySettingsResponse(settings) {
   const privacy = mapPrivacySettingsDto(settings);
+  const compatibility = {
+    isFriendsListPublic: privacy.showFriendsList,
+    isRecentPlayPublic: privacy.showRecentlyPlayed,
+    isLikedGamesPublic: privacy.showLikedGames,
+    isReviewsPublic: privacy.showReviews,
+    steamFriendsFeatureAvailable: steamService.isSteamSyncConfigured()
+  };
 
   return {
     privacy,
-    ...privacy
+    ...privacy,
+    ...compatibility
   };
 }
 
@@ -2430,11 +2438,21 @@ async function assertNicknameAvailable({ nickname, excludeUserId = null }) {
 
 async function safelyDeleteProfileImage(profileImageUrl, context) {
   try {
-    const deleted = await deleteStoredProfileImage(profileImageUrl);
+    // Ownership and containment are proven against the acting user's id; a
+    // foreign, other-user, or noncanonical reference is refused, not deleted.
+    const outcome = await deleteOwnedProfileImage({
+      storedPathname: profileImageUrl,
+      userId: context.userId
+    });
 
-    if (deleted) {
+    if (outcome.status === DELETE_STATUS.DELETED) {
       console.info(
         `[profile-image] cleanup userId=${context.userId} action=${context.action}`
+      );
+    } else if (outcome.status === DELETE_STATUS.REJECTED) {
+      // Sanitized: reason code only, never the URL or resolved path.
+      console.warn(
+        `[profile-image] cleanup_rejected userId=${context.userId} action=${context.action} reason=${outcome.reason}`
       );
     }
   } catch (error) {
@@ -2607,11 +2625,22 @@ async function getCurrentUserProfile({ userId }) {
   };
 }
 
-async function getMyRecentlyPlayedProfileGames({ userId }) {
+async function getMyRecentlyPlayedProfileGames({ userId, limit = PROFILE_RECENTLY_PLAYED_LIMIT }) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new AppError(400, 'INVALID_RECENT_PLAY_LIMIT', 'limit must be an integer between 1 and 50');
+  }
+
   await getEditableCurrentUser(userId);
+  const requestedLimit = limit;
+  const games = await buildCurrentUserRecentlyPlayedGames(userId, requestedLimit + 1);
+  const visibleGames = games.slice(0, requestedLimit);
 
   return {
-    games: await buildCurrentUserRecentlyPlayedGames(userId)
+    games: visibleGames,
+    recentGames: visibleGames,
+    recentlyPlayed: visibleGames,
+    recentPlayedPreview: visibleGames,
+    hasMoreRecentPlayed: games.length > requestedLimit
   };
 }
 
@@ -2795,7 +2824,7 @@ async function updateCurrentUserProfileImage({ userId, fileName }) {
     });
   }
 
-  console.info(`[profile-image] uploaded userId=${userId} profileImageUrl=${profileImageUrl}`);
+  console.info(`[profile-image] uploaded userId=${userId}`);
 
   return {
     user: mapUserToDto(updatedUser)
@@ -3674,6 +3703,31 @@ async function getMyFriendRecommendations({ currentUserId }) {
   };
 }
 
+async function getFriendRecommendations({ currentUserId, targetUserId }) {
+  if (currentUserId === targetUserId) {
+    return getMyFriendRecommendations({ currentUserId });
+  }
+
+  await assertFriendAccess({
+    currentUserId,
+    targetUserId
+  });
+
+  const recommendations = await buildFriendRecommendations({
+    currentUserId,
+    friendIds: [targetUserId],
+    limit: FRIEND_RECOMMENDATION_LIMIT
+  });
+
+  logger.info('friend-recommendation-target-query', {
+    userId: currentUserId,
+    targetUserId,
+    recommendationCount: recommendations.length
+  });
+
+  return { recommendations };
+}
+
 async function getMyFriendActivityWidgetSummary({ currentUserId }) {
   await getEditableCurrentUser(currentUserId);
 
@@ -3855,6 +3909,7 @@ module.exports = {
   getMyFriendsActivity,
   getMyRecentlyPlayedProfileGames,
   getMySteamFriends,
+  getFriendRecommendations,
   getMyFriendRecommendations,
   getMyRecommendationWidgetSummary,
   getMyNotifications,

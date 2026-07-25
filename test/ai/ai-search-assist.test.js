@@ -246,8 +246,9 @@ test('AI search assist logging stores expected fields', async () => {
       fallbackUsed: true
     });
 
-    assert.equal(storedPayload.data.query, '힐링 게임');
-    assert.equal(storedPayload.data.normalizedQuery, '짧게 즐길 수 있는 힐링 게임');
+    assert.match(storedPayload.data.query, /^sha256:[a-f0-9]{64}$/);
+    assert.match(storedPayload.data.normalizedQuery, /^sha256:[a-f0-9]{64}$/);
+    assert.doesNotMatch(JSON.stringify(storedPayload.data), /힐링 게임|짧게 즐길/);
     assert.deepEqual(storedPayload.data.resultGameIds, [100, 300]);
     assert.equal(storedPayload.data.model, 'mock-rule-based');
     assert.equal(storedPayload.data.fallbackUsed, true);

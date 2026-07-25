@@ -2,7 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { privacySettingsSchema, pushTokenRegistrationSchema } = require('../src/modules/user/user.validator');
 const { mapSteamLinkStatus } = require('../src/modules/library/library.mapper');
-const { refreshSchema } = require('../src/validators/auth.validator');
+const {
+  appleLoginSchema,
+  googleLoginSchema,
+  loginSchema,
+  refreshSchema,
+  signUpSchema
+} = require('../src/validators/auth.validator');
 
 test('privacy validator translates deployed iOS fields to canonical fields', () => {
   assert.deepEqual(privacySettingsSchema.parse({
@@ -96,4 +102,26 @@ test('push token validator accepts 4096 characters and rejects 4097', () => {
 test('refresh deviceName follows the string-or-omitted iOS contract', () => {
   assert.equal(refreshSchema.parse({ refreshToken: 'fixture' }).refreshToken, 'fixture');
   assert.throws(() => refreshSchema.parse({ refreshToken: 'fixture', deviceName: null }));
+});
+
+test('every session-issuing auth validator rejects null deviceName', () => {
+  const cases = [
+    [signUpSchema, {
+      email: 'device-contract@example.invalid',
+      password: 'contract-password-1',
+      nickname: 'device-contract'
+    }],
+    [loginSchema, {
+      email: 'device-contract@example.invalid',
+      password: 'contract-password-1'
+    }],
+    [appleLoginSchema, { identityToken: 'fixture-identity-token' }],
+    [googleLoginSchema, { idToken: 'fixture-google-token' }],
+    [refreshSchema, { refreshToken: 'fixture-refresh-token' }]
+  ];
+
+  for (const [schema, payload] of cases) {
+    assert.doesNotThrow(() => schema.parse(payload));
+    assert.throws(() => schema.parse({ ...payload, deviceName: null }));
+  }
 });

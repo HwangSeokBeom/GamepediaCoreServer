@@ -40,6 +40,8 @@ const recent = {
   recentPlayedPreview: [],
   hasMoreRecentPlayed: false
 };
+let capturedRecentLimit = null;
+let capturedPushTokenDelete = null;
 
 authMiddleware.authenticateAccessToken = (req, res, next) => {
   req.auth = { userId: USER_ID, email: user.email, status: user.status };
@@ -50,22 +52,31 @@ authService.appleLogin = async () => ({ user, tokens: { accessToken: 'fixture-ac
 userService.getCurrentUserProfile = async () => ({ user, friendCount: 0, likeCount: 0, reviewCount: 0, recentlyPlayed: [], hasMoreRecentPlayed: false });
 userService.getMyPrivacySettings = async () => privacy;
 userService.updateMyPrivacySettings = async () => privacy;
-userService.getMyRecentlyPlayedProfileGames = async () => ({ games: recent.games, hasMoreRecentPlayed: false });
+userService.getMyRecentlyPlayedProfileGames = async ({ limit }) => {
+  capturedRecentLimit = limit ?? null;
+  return { games: recent.games, hasMoreRecentPlayed: false };
+};
 userService.getMySteamFriends = async () => ({ friends: [], steamFriendsAvailable: false, steamFriendsLimitedByPrivacy: false, syncWarningCode: 'STEAM_NOT_CONNECTED' });
 userService.getMyFriendRecommendations = async () => ({ recommendations: [] });
 userService.getFriendRecommendations = async () => ({ recommendations: [] });
 libraryService.getMySteamLinkStatus = async () => ({
   isLinked: false,
   steamId: null,
+  steamId64: null,
   displayName: null,
   personaName: null,
+  avatarUrl: null,
   profileUrl: null,
+  linkedAt: null,
   canSync: false,
   canDisconnect: false,
   lastSteamSyncAt: null
 });
 pushTokenService.registerPushToken = async () => ({ registered: true, tokenId: 'fixture-token-id' });
-pushTokenService.deletePushToken = async () => ({ deactivated: true, updatedCount: 1 });
+pushTokenService.deletePushToken = async (input) => {
+  capturedPushTokenDelete = input;
+  return { deactivated: true, updatedCount: 1 };
+};
 
 const { app } = require('../src/app');
 
@@ -127,6 +138,11 @@ function assertSchema(value, inputSchema, location = 'response') {
   }
   if (schema.required) schema.required.forEach((key) => assert.ok(Object.hasOwn(value, key), `${location}.${key} required`));
   if (schema.properties && value && typeof value === 'object' && !Array.isArray(value)) {
+    if (schema.additionalProperties === false) {
+      const unexpectedKeys = Object.keys(value).filter((key) => !Object.hasOwn(schema.properties, key));
+      assert.deepEqual(unexpectedKeys, [], `${location} contains undeclared properties`);
+    }
+
     for (const [key, propertySchema] of Object.entries(schema.properties)) {
       if (Object.hasOwn(value, key)) assertSchema(value[key], propertySchema, `${location}.${key}`);
     }
@@ -148,6 +164,14 @@ test('OpenAPI response checker rejects format, range and length violations', () 
   assert.throws(() => assertSchema(-1, { type: 'integer', minimum: 0 }));
   assert.throws(() => assertSchema('x', { type: 'string', minLength: 2 }));
   assert.throws(() => assertSchema({}, { type: 'object', minProperties: 1 }));
+  assert.throws(() => assertSchema(
+    { declared: true, unexpected: true },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: { declared: { type: 'boolean' } }
+    }
+  ));
   assert.throws(() => assertSchema('other', { anyOf: [{ const: 'one' }, { const: 'two' }] }));
   assert.match('{"bodyKeys":["identityToken"]}', FORBIDDEN_APPLE_LOG_KEY);
   assert.doesNotMatch('{"credentialPresent":true}', FORBIDDEN_APPLE_LOG_KEY);
@@ -197,13 +221,17 @@ test('actual HTTP responses satisfy the cross-platform OpenAPI schemas', async (
     ['get', '/users/me'],
     ['get', '/users/me/privacy'],
     ['patch', '/users/me/privacy', { isFriendsListPublic: true }],
+    ['get', '/users/me/privacy-settings'],
+    ['patch', '/users/me/privacy-settings', { isRecentPlayPublic: false }],
     ['get', '/users/me/recently-played'],
+    ['get', '/users/me/recent-plays?limit=7', undefined, '/users/me/recent-plays'],
     ['get', '/users/me/steam'],
     ['post', '/users/me/friends/steam/import'],
     ['get', '/users/me/recommendations/friends'],
     ['get', `/users/${USER_ID}/friend-recommendations`, undefined, '/users/{userId}/friend-recommendations'],
     ['put', '/users/me/push-token', { token: 'x'.repeat(4096), platform: 'ios', deviceId: 'fixture-device' }],
-    ['delete', '/users/me/push-token', { deviceId: 'fixture-device' }]
+    ['delete', '/users/me/push-token', { deviceId: 'fixture-device' }],
+    ['delete', '/users/me/push-token?deviceId=query-device', undefined, '/users/me/push-token']
   ];
 
   for (const [method, path, body, contractPath = path] of cases) {
@@ -212,9 +240,33 @@ test('actual HTTP responses satisfy the cross-platform OpenAPI schemas', async (
     assertSchema(result.payload, responseSchema(method, contractPath, result.status), `${method.toUpperCase()} ${path}`);
   }
 
+  assert.equal(capturedRecentLimit, 7);
+  assert.equal(capturedPushTokenDelete.deviceId, 'query-device');
+  assert.equal(capturedPushTokenDelete.token, undefined);
+
+  const conflictingDelete = await request(
+    baseUrl,
+    'delete',
+    '/users/me/push-token?deviceId=query-device',
+    { deviceId: 'body-device' }
+  );
+  assert.equal(conflictingDelete.status, 400);
+  assert.equal(conflictingDelete.payload.error.code, 'PUSH_TOKEN_INVALID');
+
   const oversized = await request(baseUrl, 'put', '/users/me/push-token', { token: 'x'.repeat(4097), platform: 'ios' });
   assert.equal(oversized.status, 400);
   assertSchema(oversized.payload, responseSchema('put', '/users/me/push-token', oversized.status), 'PUT /users/me/push-token 4097');
+
+  for (const invalidLimit of ['0', '51', '1.5', '7junk', '', '1&limit=2']) {
+    const invalidRecent = await request(baseUrl, 'get', `/users/me/recent-plays?limit=${invalidLimit}`);
+    assert.equal(invalidRecent.status, 400, `limit=${invalidLimit}`);
+    assert.equal(invalidRecent.payload.error.code, 'INVALID_RECENT_PLAY_LIMIT');
+    assertSchema(
+      invalidRecent.payload,
+      responseSchema('get', '/users/me/recent-plays', invalidRecent.status),
+      `GET /users/me/recent-plays?limit=${invalidLimit}`
+    );
+  }
 });
 
 test('actual 404, error and Apple requests redact sensitive values and raw body keys at the formatted sink', async (context) => {
