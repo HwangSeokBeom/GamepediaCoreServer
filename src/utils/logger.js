@@ -82,8 +82,26 @@ const logger = winston.createLogger({
   ]
 });
 
+function logSafely(level, message, meta) {
+  const logMethod = logger[level];
+
+  if (typeof logMethod !== 'function') {
+    return false;
+  }
+
+  try {
+    logMethod.call(logger, message, meta);
+    return true;
+  } catch (error) {
+    // Logging is best-effort. Never fall back to a raw console sink here:
+    // doing so could expose the metadata this boundary is designed to protect.
+    return false;
+  }
+}
+
 module.exports = {
   buildLogFormatter,
+  logSafely,
   logger,
   sanitizeLogMeta
 };

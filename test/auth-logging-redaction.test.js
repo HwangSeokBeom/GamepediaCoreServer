@@ -74,8 +74,9 @@ test('request paths with token material stay redacted in error logs', () => {
   assert.equal(sanitized, '/auth/refresh');
 });
 
-test('auth request and validation paths log through the sanitizing logger, never through console', () => {
+test('auth request and validation paths never use raw console or request URL logging', () => {
   const authSurface = [
+    'src/app.js',
     'src/services/auth.service.js',
     'src/services/token.service.js',
     'src/services/apple-auth.service.js',
@@ -84,6 +85,7 @@ test('auth request and validation paths log through the sanitizing logger, never
     'src/routes/auth.routes.js',
     'src/controllers/auth.controller.js',
     'src/middlewares/auth.middleware.js',
+    'src/middlewares/error.middleware.js',
     'src/validators/auth.validator.js'
   ];
 
@@ -92,6 +94,10 @@ test('auth request and validation paths log through the sanitizing logger, never
     assert.ok(
       !/console\.(log|info|warn|error|debug)/.test(source),
       `${relativePath} must not log via console (bypasses redaction)`
+    );
+    assert.ok(
+      !/(?:(?:logger|console)\.(?:log|info|warn|error)|logSafely)\s*\([\s\S]{0,300}?(?:originalUrl|req\.url)/.test(source),
+      `${relativePath} must not send a raw request URL to a logging sink`
     );
   }
 });
