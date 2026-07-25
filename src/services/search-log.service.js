@@ -1,5 +1,6 @@
 const fs = require('fs/promises');
 const path = require('path');
+const crypto = require('crypto');
 const { logger } = require('../utils/logger');
 
 const SEARCH_LOG_DIRECTORY = path.join(process.cwd(), 'logs', 'search');
@@ -47,21 +48,20 @@ function buildSearchLogRecord({
   return {
     timestamp: new Date().toISOString(),
     endpoint,
-    originalQuery,
-    normalizedQuery,
-    compactQuery,
+    queryHash: crypto.createHash('sha256').update(String(normalizedQuery ?? originalQuery ?? '')).digest('hex'),
+    queryLength: typeof originalQuery === 'string' ? originalQuery.length : 0,
     sourceLanguage,
-    aliasHits,
-    generatedCandidates,
-    candidateQueriesActuallyUsed,
+    aliasHitCount: aliasHits.length,
+    generatedCandidateCount: generatedCandidates.length,
+    usedCandidateCount: candidateQueriesActuallyUsed.length,
     igdbRawCount,
     finalResultCount,
-    topResultTitles,
+    topResultCount: topResultTitles.length,
     noResult,
     lowConfidence,
     cached,
     elapsedMs,
-    rerankTopReasons: topReasons
+    rerankReasonCategories: [...topConfidenceReasons]
   };
 }
 

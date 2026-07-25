@@ -221,8 +221,7 @@ async function createChatCompletion({
   logger.warn(`LLM request failed; ${contextLabel} will use fallback`, {
     ...requestLogMeta,
     status: lastError?.status ?? null,
-    sanitizedErrorBody: sanitizeLLMErrorBody(lastError?.body),
-    errorMessage: lastError?.message ?? 'unknown'
+    errorCategory: lastError?.name ?? 'request_failed'
   });
 
   return buildMockResponse({

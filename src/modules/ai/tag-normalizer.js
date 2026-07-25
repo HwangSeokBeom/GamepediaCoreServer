@@ -2,7 +2,6 @@ const { logger } = require('../../utils/logger');
 
 const DEFAULT_MAX_TAGS = 5;
 const MAX_CANONICAL_LENGTH = 40;
-const MAX_RAW_LOG_LENGTH = 80;
 const INVALID_TAGS = new Set([
   '',
   'na',
@@ -112,10 +111,6 @@ const DISPLAY_LABELS = new Map(Object.entries({
   singleplayer: 'Singleplayer'
 }));
 
-function safeRawTagForLog(tag) {
-  return String(tag).replace(/\s+/g, ' ').trim().slice(0, MAX_RAW_LOG_LENGTH);
-}
-
 function splitCamelCase(value) {
   return value
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -164,7 +159,8 @@ function toCanonicalTag(value) {
 
   if (!/^[\p{Script=Latin}0-9\s]+$/u.test(aliasKey) || isProbablySentence(value, aliasKey)) {
     logger.info('[AITagNormalizer] dropped invalid tag', {
-      tag: safeRawTagForLog(value)
+      tagLength: typeof value === 'string' ? value.length : 0,
+      reason: 'invalid_format'
     });
     return null;
   }

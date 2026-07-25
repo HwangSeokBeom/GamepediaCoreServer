@@ -1376,8 +1376,8 @@ async function writeLibraryCuratorLog({
     await prisma.aiRecommendationLog.create({
       data: {
         userId,
-        query: query ?? '',
-        normalizedQuery: normalizeText(query ?? mode, 300),
+        query: `sha256:${crypto.createHash('sha256').update(String(query ?? '')).digest('hex')}`,
+        normalizedQuery: `sha256:${crypto.createHash('sha256').update(String(normalizeText(query ?? mode, 300))).digest('hex')}`,
         intent: {
           feature: 'library_curator',
           mode,

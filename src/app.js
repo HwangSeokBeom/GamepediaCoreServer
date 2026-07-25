@@ -15,6 +15,7 @@ const {
   errorHandler,
   notFoundHandler,
 } = require('./middlewares/error.middleware');
+const { logger } = require('./utils/logger');
 
 const app = express();
 
@@ -29,9 +30,11 @@ app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads'), {
 
 app.use((req, res, next) => {
   if (req.method === 'POST' && (req.path === '/auth/apple' || req.path === '/auth/google')) {
-    console.log(
-      `[social-auth] ${new Date().toISOString()} ${req.method} ${req.originalUrl} ip=${req.ip} remote=${req.socket.remoteAddress ?? 'unknown'}`
-    );
+    logger.info('social-auth-request', {
+      method: req.method,
+      path: req.path,
+      networkMetadataAvailable: Boolean(req.ip || req.socket.remoteAddress)
+    });
   }
 
   next();
