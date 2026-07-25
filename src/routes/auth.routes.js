@@ -16,7 +16,7 @@ const {
 } = require('../validators/auth.validator');
 
 const router = express.Router();
-const { logger } = require('../utils/logger');
+const { logSafely } = require('../utils/logger');
 
 function logAppleLoginRequest(req, res, next) {
   const requestBody = req.body && typeof req.body === 'object' ? req.body : {};
@@ -24,14 +24,14 @@ function logAppleLoginRequest(req, res, next) {
   const hasAuthCode = typeof requestBody.authorizationCode === 'string' && requestBody.authorizationCode.trim().length > 0;
   const hasUserIdentifier = typeof requestBody.userIdentifier === 'string' && requestBody.userIdentifier.trim().length > 0;
 
-  logger.info('apple-login-request', {
+  logSafely('info', 'apple-login-request', {
     credentialPresent: hasIdentityToken,
     exchangeCredentialPresent: hasAuthCode,
     accountHintPresent: hasUserIdentifier
   });
 
   if (!hasIdentityToken) {
-    logger.warn('apple-login-request-missing-credential');
+    logSafely('warn', 'apple-login-request-missing-credential');
   }
 
   next();

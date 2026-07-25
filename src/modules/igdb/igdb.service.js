@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { env } = require('../../config/env');
 const { prisma } = require('../../config/prisma');
 const { logger } = require('../../utils/logger');
@@ -221,7 +222,7 @@ function getRateLimitCooldownRemainingMs() {
   return Math.max(igdbRateLimitedUntil - Date.now(), 0);
 }
 
-function enterIgdbRateLimitCooldown({ path, status, body = null }) {
+function enterIgdbRateLimitCooldown({ path, status }) {
   igdbRateLimitedUntil = Date.now() + IGDB_RATE_LIMIT_COOLDOWN_MS;
   igdbRateLimitWindowId += 1;
   igdbCooldownLoggedPaths.clear();
@@ -235,7 +236,6 @@ function enterIgdbRateLimitCooldown({ path, status, body = null }) {
   logger.warn('IGDB upstream rate limited request', {
     path,
     status,
-    body: typeof body === 'string' ? body.slice(0, 300) : null,
     cooldownMs: IGDB_RATE_LIMIT_COOLDOWN_MS
   });
 }
@@ -875,15 +875,14 @@ async function requestTwitchAppAccessToken() {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
   } catch (error) {
-    logger.error('Twitch token request failed', { error });
+    logger.error('Twitch token request failed', { errorCategory: error?.name ?? 'network_error' });
     throw new AppError(502, 'TWITCH_AUTH_UNAVAILABLE', 'Twitch authentication is temporarily unavailable');
   }
 
   if (!response.ok) {
-    const upstreamBody = await response.text();
+    await response.text();
     logger.error('Twitch token endpoint returned a non-OK response', {
-      status: response.status,
-      body: upstreamBody.slice(0, 300)
+      status: response.status
     });
     throw new AppError(502, 'TWITCH_AUTH_UNAVAILABLE', 'Twitch authentication is temporarily unavailable');
   }
@@ -893,7 +892,7 @@ async function requestTwitchAppAccessToken() {
   try {
     payload = await response.json();
   } catch (error) {
-    logger.error('Twitch token endpoint returned invalid JSON', { error });
+    logger.error('Twitch token endpoint returned invalid JSON', { errorCategory: error?.name ?? 'invalid_json' });
     throw new AppError(502, 'TWITCH_AUTH_UNAVAILABLE', 'Twitch authentication is temporarily unavailable');
   }
 
@@ -953,7 +952,7 @@ async function executeIgdbRequest({ path, body, retryOnUnauthorized = true }) {
   } catch (error) {
     logger.error('IGDB request failed', {
       path,
-      error
+      errorCategory: error?.name ?? 'network_error'
     });
     throw new AppError(502, 'IGDB_UPSTREAM_ERROR', 'IGDB is temporarily unavailable');
   }
@@ -972,21 +971,19 @@ async function executeIgdbRequest({ path, body, retryOnUnauthorized = true }) {
   }
 
   if (response.status === 429) {
-    const upstreamBody = await response.text();
+    await response.text();
     enterIgdbRateLimitCooldown({
       path,
-      status: response.status,
-      body: upstreamBody
+      status: response.status
     });
     throw createIgdbRateLimitedError();
   }
 
   if (!response.ok) {
-    const upstreamBody = await response.text();
+    await response.text();
     logger.error('IGDB upstream returned a non-OK response', {
       path,
-      status: response.status,
-      body: upstreamBody.slice(0, 300)
+      status: response.status
     });
     throw new AppError(502, 'IGDB_UPSTREAM_ERROR', 'IGDB is temporarily unavailable');
   }
@@ -996,7 +993,7 @@ async function executeIgdbRequest({ path, body, retryOnUnauthorized = true }) {
   } catch (error) {
     logger.error('IGDB upstream returned invalid JSON', {
       path,
-      error
+      errorCategory: error?.name ?? 'invalid_json'
     });
     throw new AppError(502, 'IGDB_UPSTREAM_ERROR', 'IGDB is temporarily unavailable');
   }
@@ -1233,8 +1230,8 @@ function trackSearchQuery({ query, normalizedQuery, resultCount }) {
 
   void prisma.searchQuery.create({
     data: {
-      query,
-      normalizedQuery,
+      query: `sha256:${crypto.createHash('sha256').update(String(query)).digest('hex')}`,
+      normalizedQuery: `sha256:${crypto.createHash('sha256').update(String(normalizedQuery)).digest('hex')}`,
       resultCount
     }
   }).catch((error) => {
@@ -1242,7 +1239,9 @@ function trackSearchQuery({ query, normalizedQuery, resultCount }) {
       searchAnalyticsDisabled = true;
     }
 
-    console.warn(`[search-analytics] write_failed query=${JSON.stringify(normalizedQuery)} message=${error?.message ?? 'unknown'}`);
+    logger.warn('search-analytics-write-failed', {
+      errorCategory: error?.code ?? error?.name ?? 'write_failed'
+    });
   });
 }
 
@@ -1300,12 +1299,14 @@ async function searchGames({ query, limit }) {
   const searchCacheKey = buildCanonicalCandidateCacheKey(candidatePlan.candidateQueries, normalizedOriginalQuery);
   const cachedResponse = getCachedSearch(searchCacheKey);
 
-  console.info(
-    `[igdb:search] originalQuery=${JSON.stringify(searchResolution.originalQuery)} normalizedQuery=${JSON.stringify(searchResolution.normalizedQuery)} compactQuery=${JSON.stringify(searchResolution.compactQuery)} aliasHits=${JSON.stringify(candidatePlan.aliasHits)} effectiveQuery=${JSON.stringify(searchResolution.effectiveQuery)} generatedCandidates=${JSON.stringify(candidatePlan.candidateQueries)}`
-  );
+  logger.info('igdb-search-request', {
+    queryLength: searchResolution.originalQuery.length,
+    aliasHitCount: candidatePlan.aliasHits.length,
+    generatedCandidateCount: candidatePlan.candidateQueries.length
+  });
 
   if (cachedResponse && cachedResponse.games.length >= requestedLimit) {
-    console.info(`[igdb:search] cache_hit key=search:${searchCacheKey}`);
+    logger.info('igdb-search-cache-hit', { resultCount: cachedResponse.games.length });
     trackSearchQuery({
       query: searchResolution.originalQuery,
       normalizedQuery: searchResolution.normalizedQuery,
@@ -1344,7 +1345,11 @@ async function searchGames({ query, limit }) {
   const rerankTopReasons = buildRerankTopReasons(queryInfo, rankedGames, aliasBoost);
 
   logIgdbCounts('search', mergedGames, mappedGames);
-  console.info(`[igdb:search] usedCandidateQueries=${JSON.stringify(usedCandidateQueries)} topRankedResultNames=${JSON.stringify(topRankedResultNames)} igdbResultCount=${mergedGames.length} finalResultCount=${mappedGames.length} rerankTopReasons=${JSON.stringify(rerankTopReasons)}`);
+  logger.info('igdb-search-completed', {
+    usedCandidateCount: usedCandidateQueries.length,
+    upstreamResultCount: mergedGames.length,
+    finalResultCount: mappedGames.length
+  });
 
   const response = buildSearchResponse({
     searchResolution,
@@ -1390,12 +1395,14 @@ async function getGameSuggestions({ query, limit }) {
   const suggestionCacheKey = buildCanonicalCandidateCacheKey(candidatePlan.candidateQueries, normalizedOriginalQuery);
   const cachedResponse = getCachedSuggestions(suggestionCacheKey);
 
-  console.info(
-    `[igdb:suggestions] originalQuery=${JSON.stringify(searchResolution.originalQuery)} normalizedQuery=${JSON.stringify(searchResolution.normalizedQuery)} compactQuery=${JSON.stringify(searchResolution.compactQuery)} aliasHits=${JSON.stringify(candidatePlan.aliasHits)} effectiveQuery=${JSON.stringify(searchResolution.effectiveQuery)} generatedCandidates=${JSON.stringify(candidatePlan.candidateQueries)}`
-  );
+  logger.info('igdb-suggestions-request', {
+    queryLength: searchResolution.originalQuery.length,
+    aliasHitCount: candidatePlan.aliasHits.length,
+    generatedCandidateCount: candidatePlan.candidateQueries.length
+  });
 
   if (cachedResponse && cachedResponse.suggestions.length >= requestedLimit) {
-    console.info(`[igdb:suggestions] cache_hit key=suggestion:${suggestionCacheKey}`);
+    logger.info('igdb-suggestions-cache-hit', { resultCount: cachedResponse.suggestions.length });
     void appendSearchLog(buildSearchLogRecord({
       endpoint: 'suggestions',
       originalQuery: searchResolution.originalQuery,
@@ -1428,7 +1435,11 @@ async function getGameSuggestions({ query, limit }) {
   const topRankedResultNames = getTopRankedResultNames(rankedGames);
   const rerankTopReasons = buildRerankTopReasons(queryInfo, rankedGames, aliasBoost);
 
-  console.info(`[igdb:suggestions] usedCandidateQueries=${JSON.stringify(usedCandidateQueries)} topRankedResultNames=${JSON.stringify(topRankedResultNames)} igdbResultCount=${mergedGames.length} finalResultCount=${suggestions.length} rerankTopReasons=${JSON.stringify(rerankTopReasons)}`);
+  logger.info('igdb-suggestions-completed', {
+    usedCandidateCount: usedCandidateQueries.length,
+    upstreamResultCount: mergedGames.length,
+    finalResultCount: suggestions.length
+  });
 
   const response = buildSuggestionResponse({
     searchResolution,

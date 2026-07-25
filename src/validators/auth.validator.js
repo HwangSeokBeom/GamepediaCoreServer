@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const { AppError } = require('../utils/error-response');
+const { logger } = require('../utils/logger');
 
 const emailSchema = z.string().trim().email().max(320);
 const passwordSchema = z.string().min(8).max(72);
@@ -57,10 +58,12 @@ function buildAppleLoginValidationError(error) {
     message: issue.message
   }));
 
-  console.warn(`[apple-login:validation] issues=${JSON.stringify(details)}`);
+  logger.warn('apple-login-validation-failed', {
+    issueCount: error.issues.length,
+    credentialMissing: error.issues.some((issue) => issue.path[0] === 'identityToken')
+  });
 
   if (error.issues.some((issue) => issue.path[0] === 'identityToken')) {
-    console.warn('[apple-login:validation] Validation failed because body.identityToken is missing or empty. Server expects key "identityToken".');
     return new AppError(400, 'APPLE_IDENTITY_TOKEN_REQUIRED', 'Apple identity token is required', details);
   }
 
