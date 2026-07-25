@@ -25,12 +25,15 @@ contract runner. It:
 3. Publishes PostgreSQL only on a Docker-selected `127.0.0.1` port.
 4. Ignores any inherited `DATABASE_URL` and supplies the generated URL only to
    child Prisma and test commands.
-5. Waits at most 60 seconds for readiness.
-6. verifies `current_database()` before running any migration or test.
-7. runs `prisma migrate deploy` and verifies that every repository migration was
+5. Waits at most 60 seconds until the generated database itself accepts
+   `SELECT current_database()`; server-level readiness alone is insufficient.
+6. Verifies the returned database name before running any migration or test.
+7. Generates the Prisma client so a clean install does not depend on lifecycle
+   scripts having run.
+8. Runs `prisma migrate deploy` and verifies that every repository migration was
    applied successfully.
-8. runs only the PostgreSQL test files listed below.
-9. removes the exact disposable container through a trap on success, failure,
+9. Runs only the PostgreSQL test files listed below.
+10. Removes the exact disposable container through a trap on success, failure,
    or interruption.
 
 The runner never accepts a user-provided database and must not be adapted to
