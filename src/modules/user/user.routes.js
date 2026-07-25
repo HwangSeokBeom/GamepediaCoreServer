@@ -8,6 +8,7 @@ const { AppError } = require('../../utils/error-response');
 const {
   blockUserBodySchema,
   blockedUserParamsSchema,
+  buildRecentlyPlayedValidationError,
   buildUserValidationError,
   friendActivityFeedQuerySchema,
   friendProfileParamsSchema,
@@ -19,6 +20,7 @@ const {
   privacySettingsSchema,
   pushTokenDeleteSchema,
   pushTokenRegistrationSchema,
+  recentlyPlayedQuerySchema,
   testPushSchema,
   updateMyTitlesSchema,
   userSearchQuerySchema,
@@ -48,8 +50,14 @@ router.get('/users/search', authenticateAccessToken, validate({
 
 router.get('/users/me', authenticateAccessToken, userController.getCurrentUserProfile);
 router.get('/users/me/profile', authenticateAccessToken, userController.getCurrentUserProfile);
-router.get('/users/me/recently-played', authenticateAccessToken, userController.getMyRecentlyPlayedProfileGames);
-router.get('/users/me/recent-plays', authenticateAccessToken, userController.getMyRecentlyPlayedProfileGames);
+router.get('/users/me/recently-played', authenticateAccessToken, validate({
+  query: recentlyPlayedQuerySchema,
+  errorMapper: buildRecentlyPlayedValidationError
+}), userController.getMyRecentlyPlayedProfileGames);
+router.get('/users/me/recent-plays', authenticateAccessToken, validate({
+  query: recentlyPlayedQuerySchema,
+  errorMapper: buildRecentlyPlayedValidationError
+}), userController.getMyRecentlyPlayedProfileGames);
 router.get('/users/me/friends/count', authenticateAccessToken, userController.getMyFriendsCount);
 router.get('/users/me/titles', authenticateAccessToken, userController.getMyTitles);
 router.get('/users/me/privacy', authenticateAccessToken, userController.getMyPrivacySettings);

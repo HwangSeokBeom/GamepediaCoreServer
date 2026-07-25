@@ -38,6 +38,11 @@ function assertSchema(value, inputSchema, location = 'fixture') {
     for (const key of schema.required) assert.ok(Object.hasOwn(value, key), `${location}.${key} required`);
   }
   if (schema.properties && value && typeof value === 'object' && !Array.isArray(value)) {
+    if (schema.additionalProperties === false) {
+      const unexpectedKeys = Object.keys(value).filter((key) => !Object.hasOwn(schema.properties, key));
+      assert.deepEqual(unexpectedKeys, [], `${location} contains undeclared properties`);
+    }
+
     for (const [key, propertySchema] of Object.entries(schema.properties)) {
       if (Object.hasOwn(value, key)) assertSchema(value[key], propertySchema, `${location}.${key}`);
     }
@@ -76,6 +81,13 @@ test('cross-platform OpenAPI subset declares every gate operation', () => {
     assert.ok(contract.paths[route]?.[method], `${method.toUpperCase()} ${route} missing from contract`);
   }
   assert.match(contract.info.description, /not the complete backend API/i);
+});
+
+test('authenticated cross-platform operations declare 401 responses', () => {
+  for (const [method, route] of requiredOperations) {
+    if (route === '/health' || route === '/auth/refresh') continue;
+    assert.ok(contract.paths[route][method].responses['401'], `${method.toUpperCase()} ${route} must declare 401`);
+  }
 });
 
 test('contract gate operations are registered by canonical Express routers', () => {
@@ -134,13 +146,19 @@ test('push-token ownership migration blocks legacy writes through constraint ins
   assert.match(migration, /COMMIT;/);
 });
 
-test('PostgreSQL verification command runs refresh and push concurrency tests together', () => {
+test('PostgreSQL verification command delegates to the isolated executable gate', () => {
   const packageJson = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8'));
   const command = packageJson.scripts['test:postgres'];
+  const gate = fs.readFileSync(path.resolve(process.cwd(), 'scripts/test/run-auth-postgres-gate.sh'), 'utf8');
 
-  assert.match(command, /RUN_POSTGRES_INTEGRATION=1/);
-  assert.match(command, /test\/auth-refresh-postgres\.integration\.test\.js/);
-  assert.match(command, /test\/push-token-postgres\.integration\.test\.js/);
+  assert.equal(command, 'bash scripts/test/run-auth-postgres-gate.sh');
+  assert.match(gate, /--publish "127\.0\.0\.1::5432"/);
+  assert.match(gate, /prisma migrate deploy/);
+  assert.match(gate, /SELECT current_database\(\)/);
+  assert.match(gate, /trap cleanup EXIT INT TERM/);
+  assert.match(gate, /test\/auth-refresh-postgres\.integration\.test\.js/);
+  assert.match(gate, /test\/auth-signup-postgres\.integration\.test\.js/);
+  assert.match(gate, /test\/push-token-postgres\.integration\.test\.js/);
 });
 
 test('push request nullability matches the non-optional iOS DTO fields', () => {
@@ -149,4 +167,25 @@ test('push request nullability matches the non-optional iOS DTO fields', () => {
     assert.equal(properties[field].type, 'string');
   }
   assert.equal(contract.components.schemas.RefreshRequest.properties.deviceName.type, 'string');
+  assert.match(
+    contract.paths['/auth/refresh'].post.requestBody.content['application/json'].schema.properties.deviceName.description,
+    /null is rejected/
+  );
+  assert.equal(contract.components.schemas.SteamStatus.additionalProperties, false);
+  assert.deepEqual(
+    contract.components.schemas.SteamStatus.required,
+    [
+      'isLinked',
+      'steamId',
+      'steamId64',
+      'displayName',
+      'personaName',
+      'avatarUrl',
+      'profileUrl',
+      'linkedAt',
+      'canSync',
+      'canDisconnect',
+      'lastSteamSyncAt'
+    ]
+  );
 });

@@ -62,9 +62,12 @@ userService.getFriendRecommendations = async () => ({ recommendations: [] });
 libraryService.getMySteamLinkStatus = async () => ({
   isLinked: false,
   steamId: null,
+  steamId64: null,
   displayName: null,
   personaName: null,
+  avatarUrl: null,
   profileUrl: null,
+  linkedAt: null,
   canSync: false,
   canDisconnect: false,
   lastSteamSyncAt: null
@@ -135,6 +138,11 @@ function assertSchema(value, inputSchema, location = 'response') {
   }
   if (schema.required) schema.required.forEach((key) => assert.ok(Object.hasOwn(value, key), `${location}.${key} required`));
   if (schema.properties && value && typeof value === 'object' && !Array.isArray(value)) {
+    if (schema.additionalProperties === false) {
+      const unexpectedKeys = Object.keys(value).filter((key) => !Object.hasOwn(schema.properties, key));
+      assert.deepEqual(unexpectedKeys, [], `${location} contains undeclared properties`);
+    }
+
     for (const [key, propertySchema] of Object.entries(schema.properties)) {
       if (Object.hasOwn(value, key)) assertSchema(value[key], propertySchema, `${location}.${key}`);
     }
@@ -156,6 +164,14 @@ test('OpenAPI response checker rejects format, range and length violations', () 
   assert.throws(() => assertSchema(-1, { type: 'integer', minimum: 0 }));
   assert.throws(() => assertSchema('x', { type: 'string', minLength: 2 }));
   assert.throws(() => assertSchema({}, { type: 'object', minProperties: 1 }));
+  assert.throws(() => assertSchema(
+    { declared: true, unexpected: true },
+    {
+      type: 'object',
+      additionalProperties: false,
+      properties: { declared: { type: 'boolean' } }
+    }
+  ));
   assert.throws(() => assertSchema('other', { anyOf: [{ const: 'one' }, { const: 'two' }] }));
   assert.match('{"bodyKeys":["identityToken"]}', FORBIDDEN_APPLE_LOG_KEY);
   assert.doesNotMatch('{"credentialPresent":true}', FORBIDDEN_APPLE_LOG_KEY);
@@ -224,7 +240,7 @@ test('actual HTTP responses satisfy the cross-platform OpenAPI schemas', async (
     assertSchema(result.payload, responseSchema(method, contractPath, result.status), `${method.toUpperCase()} ${path}`);
   }
 
-  assert.equal(capturedRecentLimit, '7');
+  assert.equal(capturedRecentLimit, 7);
   assert.equal(capturedPushTokenDelete.deviceId, 'query-device');
   assert.equal(capturedPushTokenDelete.token, undefined);
 
@@ -240,6 +256,17 @@ test('actual HTTP responses satisfy the cross-platform OpenAPI schemas', async (
   const oversized = await request(baseUrl, 'put', '/users/me/push-token', { token: 'x'.repeat(4097), platform: 'ios' });
   assert.equal(oversized.status, 400);
   assertSchema(oversized.payload, responseSchema('put', '/users/me/push-token', oversized.status), 'PUT /users/me/push-token 4097');
+
+  for (const invalidLimit of ['0', '51', '1.5', '7junk', '', '1&limit=2']) {
+    const invalidRecent = await request(baseUrl, 'get', `/users/me/recent-plays?limit=${invalidLimit}`);
+    assert.equal(invalidRecent.status, 400, `limit=${invalidLimit}`);
+    assert.equal(invalidRecent.payload.error.code, 'INVALID_RECENT_PLAY_LIMIT');
+    assertSchema(
+      invalidRecent.payload,
+      responseSchema('get', '/users/me/recent-plays', invalidRecent.status),
+      `GET /users/me/recent-plays?limit=${invalidLimit}`
+    );
+  }
 });
 
 test('actual 404, error and Apple requests redact sensitive values and raw body keys at the formatted sink', async (context) => {

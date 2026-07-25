@@ -59,7 +59,7 @@ The server guarantees that a client which loses one of these local races still f
 - **Logout is idempotent**: repeated, unknown, or already-revoked tokens all return `200 {loggedOut: true}`. Logout revokes ONLY the presented session (single-device logout); other devices stay signed in. This is the documented multi-device policy: each login/signup/social login issues an independent session and does not revoke earlier ones.
 - **Account deletion** (`DELETE /auth/me`) removes all refresh sessions in the same transaction as the user row; afterwards refresh returns `ACCOUNT_NOT_FOUND` and access tokens fail middleware lookup.
 - **Password reset** deletes all refresh sessions atomically with the password change.
-- **`deviceName`** is optional on session-issuing endpoints, trimmed, 1–100 characters. On refresh, omitting it preserves the rotated session's previous label.
+- **`deviceName`** is optional on session-issuing endpoints, trimmed, 1–100 characters, and rejects `null`. On refresh, omitting the field preserves the rotated session's previous label.
 - **Dates** serialize as ISO-8601 UTC (`...Z`). `profileImageUrl` is `string | null`.
 
 ## Error-code stability

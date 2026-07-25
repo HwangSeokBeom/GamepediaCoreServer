@@ -224,7 +224,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100,
-                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omit the field to keep the session unlabeled; null is rejected. On refresh, omitting it preserves the rotated session’s previous label."
                   }
                 }
               }
@@ -295,7 +295,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100,
-                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omit the field to keep the session unlabeled; null is rejected. On refresh, omitting it preserves the rotated session’s previous label."
                   }
                 }
               }
@@ -370,7 +370,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100,
-                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omit the field to keep the session unlabeled; null is rejected. On refresh, omitting it preserves the rotated session’s previous label."
                   }
                 }
               }
@@ -465,7 +465,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100,
-                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omit the field to keep the session unlabeled; null is rejected. On refresh, omitting it preserves the rotated session’s previous label."
                   }
                 }
               }
@@ -560,7 +560,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100,
-                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omit the field to keep the session unlabeled; null is rejected. On refresh, omitting it preserves the rotated session’s previous label."
                   }
                 },
                 "$ref": "#/components/schemas/RefreshRequest"
@@ -894,6 +894,7 @@
     },
     "/health": {
       "get": {
+        "operationId": "getHealth",
         "security": [],
         "summary": "Check server health",
         "responses": {
@@ -905,6 +906,7 @@
     },
     "/users/me": {
       "get": {
+        "operationId": "getCurrentUserProfile",
         "summary": "Get current user profile",
         "responses": {
           "200": {
@@ -916,6 +918,7 @@
         }
       },
       "patch": {
+        "operationId": "updateCurrentUserProfile",
         "summary": "Update current user profile",
         "responses": {
           "200": {
@@ -932,14 +935,19 @@
     },
     "/users/me/privacy": {
       "get": {
+        "operationId": "getMyPrivacySettings",
         "summary": "Get privacy settings",
         "responses": {
           "200": {
             "$ref": "#/components/responses/PrivacySuccess"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
         }
       },
       "patch": {
+        "operationId": "updateMyPrivacySettings",
         "summary": "Update privacy settings",
         "requestBody": {
           "$ref": "#/components/requestBodies/PrivacyUpdate"
@@ -950,21 +958,29 @@
           },
           "400": {
             "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
     },
     "/users/me/privacy-settings": {
       "get": {
+        "operationId": "getMyPrivacySettingsCompatibility",
         "deprecated": true,
         "summary": "iOS compatibility alias for /users/me/privacy",
         "responses": {
           "200": {
             "$ref": "#/components/responses/PrivacySuccess"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
         }
       },
       "patch": {
+        "operationId": "updateMyPrivacySettingsCompatibility",
         "deprecated": true,
         "summary": "iOS compatibility alias for /users/me/privacy",
         "requestBody": {
@@ -976,12 +992,16 @@
           },
           "400": {
             "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
     },
     "/users/me/recently-played": {
       "get": {
+        "operationId": "getMyRecentlyPlayed",
         "summary": "Get current user's recently played games",
         "parameters": [
           {
@@ -991,12 +1011,19 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/RecentPlaySuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
     },
     "/users/me/recent-plays": {
       "get": {
+        "operationId": "getMyRecentPlaysCompatibility",
         "deprecated": true,
         "summary": "iOS compatibility alias for /users/me/recently-played",
         "parameters": [
@@ -1007,12 +1034,19 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/RecentPlaySuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
     },
     "/users/me/steam": {
       "get": {
+        "operationId": "getMySteamStatus",
         "summary": "Get DB-backed Steam connection status",
         "responses": {
           "200": {
@@ -1035,12 +1069,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
     },
     "/users/me/friends/steam/import": {
       "post": {
+        "operationId": "importMySteamFriends",
         "summary": "Refresh Steam friend discovery without creating friendships",
         "description": "Idempotent discovery operation. It never auto-creates GamePedia friendship rows.",
         "responses": {
@@ -1058,16 +1096,21 @@
     },
     "/users/me/recommendations/friends": {
       "get": {
+        "operationId": "getMyFriendRecommendations",
         "summary": "Recommend games from all accepted friends",
         "responses": {
           "200": {
             "$ref": "#/components/responses/RecommendationSuccess"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
     },
     "/users/{userId}/friend-recommendations": {
       "get": {
+        "operationId": "getFriendRecommendations",
         "summary": "Recommend games using one accepted friend's visible signals",
         "parameters": [
           {
@@ -1077,6 +1120,9 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/RecommendationSuccess"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           },
           "403": {
             "$ref": "#/components/responses/Error"
@@ -1089,6 +1135,7 @@
     },
     "/users/me/push-token": {
       "put": {
+        "operationId": "putMyPushToken",
         "summary": "Register or transfer a push token",
         "requestBody": {
           "$ref": "#/components/requestBodies/PushToken"
@@ -1106,6 +1153,7 @@
         }
       },
       "post": {
+        "operationId": "postMyPushTokenCompatibility",
         "summary": "Compatibility registration method",
         "requestBody": {
           "$ref": "#/components/requestBodies/PushToken"
@@ -1123,6 +1171,7 @@
         }
       },
       "delete": {
+        "operationId": "deleteMyPushToken",
         "summary": "Deactivate a push token",
         "description": "Accepts deviceId/token in query for deployed iOS compatibility or in a JSON body; conflicting duplicate inputs are rejected.",
         "parameters": [
@@ -1426,7 +1475,7 @@
             "properties": {
               "code": {
                 "type": "string",
-                "description": "Stable machine-readable error code. Search-related codes: INVALID_SEARCH_QUERY, INVALID_GAMES_LIMIT, VALIDATION_ERROR, IGDB_RATE_LIMITED, IGDB_UPSTREAM_ERROR, TWITCH_AUTH_UNAVAILABLE, IGDB_NOT_CONFIGURED, INTERNAL_SERVER_ERROR, NOT_FOUND. Auth-related codes: UNAUTHORIZED, TOKEN_EXPIRED, TOKEN_REVOKED, INVALID_CREDENTIALS, ACCOUNT_NOT_FOUND, ACCOUNT_INACTIVE, ACCOUNT_SUSPENDED, EMAIL_ALREADY_IN_USE, NICKNAME_ALREADY_EXISTS, PASSWORD_RESET_TOKEN_INVALID, PASSWORD_RESET_TOKEN_USED, PASSWORD_RESET_TOKEN_EXPIRED, APPLE_IDENTITY_TOKEN_REQUIRED, APPLE_EMAIL_REQUIRED, APPLE_EMAIL_NOT_VERIFIED, APPLE_AUTH_INVALID_TOKEN, APPLE_IDENTITY_TOKEN_EXPIRED, APPLE_AUTH_UNAVAILABLE, APPLE_AUTH_NOT_CONFIGURED, GOOGLE_ID_TOKEN_REQUIRED, GOOGLE_EMAIL_REQUIRED, GOOGLE_EMAIL_NOT_VERIFIED, GOOGLE_AUTH_INVALID_TOKEN, GOOGLE_ID_TOKEN_EXPIRED, GOOGLE_AUTH_UNAVAILABLE, GOOGLE_AUTH_NOT_CONFIGURED, GOOGLE_ACCOUNT_LINK_CONFLICT, SOCIAL_ACCOUNT_CONFLICT, CONFLICT."
+                "description": "Stable machine-readable error code. Search and compatibility codes: INVALID_SEARCH_QUERY, INVALID_GAMES_LIMIT, INVALID_RECENT_PLAY_LIMIT, VALIDATION_ERROR, IGDB_RATE_LIMITED, IGDB_UPSTREAM_ERROR, TWITCH_AUTH_UNAVAILABLE, IGDB_NOT_CONFIGURED, INTERNAL_SERVER_ERROR, NOT_FOUND. Auth-related codes: UNAUTHORIZED, TOKEN_EXPIRED, TOKEN_REVOKED, INVALID_CREDENTIALS, ACCOUNT_NOT_FOUND, ACCOUNT_INACTIVE, ACCOUNT_SUSPENDED, EMAIL_ALREADY_IN_USE, NICKNAME_ALREADY_EXISTS, PASSWORD_RESET_TOKEN_INVALID, PASSWORD_RESET_TOKEN_USED, PASSWORD_RESET_TOKEN_EXPIRED, APPLE_IDENTITY_TOKEN_REQUIRED, APPLE_EMAIL_REQUIRED, APPLE_EMAIL_NOT_VERIFIED, APPLE_AUTH_INVALID_TOKEN, APPLE_IDENTITY_TOKEN_EXPIRED, APPLE_AUTH_UNAVAILABLE, APPLE_AUTH_NOT_CONFIGURED, GOOGLE_ID_TOKEN_REQUIRED, GOOGLE_EMAIL_REQUIRED, GOOGLE_EMAIL_NOT_VERIFIED, GOOGLE_AUTH_INVALID_TOKEN, GOOGLE_ID_TOKEN_EXPIRED, GOOGLE_AUTH_UNAVAILABLE, GOOGLE_AUTH_NOT_CONFIGURED, GOOGLE_ACCOUNT_LINK_CONFLICT, SOCIAL_ACCOUNT_CONFLICT, CONFLICT."
               },
               "message": {
                 "type": "string",
@@ -1963,6 +2012,7 @@
       },
       "PrivacySettings": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "showFriendsList",
           "showRecentlyPlayed",
@@ -2008,12 +2058,16 @@
       },
       "SteamStatus": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "isLinked",
           "steamId",
+          "steamId64",
           "displayName",
           "personaName",
+          "avatarUrl",
           "profileUrl",
+          "linkedAt",
           "canSync",
           "canDisconnect",
           "lastSteamSyncAt"
@@ -2046,12 +2100,26 @@
               "null"
             ]
           },
+          "avatarUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
           "profileUrl": {
             "type": [
               "string",
               "null"
             ],
             "format": "uri"
+          },
+          "linkedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           },
           "canSync": {
             "type": "boolean"
@@ -2122,6 +2190,7 @@
       },
       "RecentPlayData": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "games",
           "recentGames",
@@ -2381,16 +2450,6 @@
       }
     },
     "responses": {
-      "Success": {
-        "description": "Success envelope",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/SuccessEnvelope"
-            }
-          }
-        }
-      },
       "HealthSuccess": {
         "description": "Server health",
         "content": {

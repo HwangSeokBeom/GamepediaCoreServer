@@ -2626,11 +2626,12 @@ async function getCurrentUserProfile({ userId }) {
 }
 
 async function getMyRecentlyPlayedProfileGames({ userId, limit = PROFILE_RECENTLY_PLAYED_LIMIT }) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new AppError(400, 'INVALID_RECENT_PLAY_LIMIT', 'limit must be an integer between 1 and 50');
+  }
+
   await getEditableCurrentUser(userId);
-  const requestedLimit = Math.min(
-    Math.max(Number.parseInt(limit, 10) || PROFILE_RECENTLY_PLAYED_LIMIT, 1),
-    50
-  );
+  const requestedLimit = limit;
   const games = await buildCurrentUserRecentlyPlayedGames(userId, requestedLimit + 1);
   const visibleGames = games.slice(0, requestedLimit);
 
