@@ -1032,7 +1032,10 @@ async function getMySteamLinkStatus({ userId }) {
     steamLinked: steamLinkStatus.isLinked
   });
 
-  return steamLinkStatus;
+  return {
+    ...steamLinkStatus,
+    canSync: steamLinkStatus.isLinked && steamService.isSteamSyncConfigured()
+  };
 }
 
 async function getMyFavoritesMemoized({ userId, sort = 'latest', limit = null }) {

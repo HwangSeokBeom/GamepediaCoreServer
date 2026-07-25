@@ -15,7 +15,8 @@ const getCurrentUserProfile = asyncHandler(async (req, res) => {
 
 const getMyRecentlyPlayedProfileGames = asyncHandler(async (req, res) => {
   const result = await runWithLibraryRequestContext(() => userService.getMyRecentlyPlayedProfileGames({
-    userId: req.auth.userId
+    userId: req.auth.userId,
+    limit: req.query.limit
   }));
   const games = Array.isArray(result?.games) ? result.games : [];
 

@@ -165,10 +165,18 @@ function mapPrivacySettingsDto(settings) {
 
 function buildPrivacySettingsResponse(settings) {
   const privacy = mapPrivacySettingsDto(settings);
+  const compatibility = {
+    isFriendsListPublic: privacy.showFriendsList,
+    isRecentPlayPublic: privacy.showRecentlyPlayed,
+    isLikedGamesPublic: privacy.showLikedGames,
+    isReviewsPublic: privacy.showReviews,
+    steamFriendsFeatureAvailable: steamService.isSteamSyncConfigured()
+  };
 
   return {
     privacy,
-    ...privacy
+    ...privacy,
+    ...compatibility
   };
 }
 
@@ -2617,16 +2625,22 @@ async function getCurrentUserProfile({ userId }) {
   };
 }
 
-async function getMyRecentlyPlayedProfileGames({ userId }) {
+async function getMyRecentlyPlayedProfileGames({ userId, limit = PROFILE_RECENTLY_PLAYED_LIMIT }) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+    throw new AppError(400, 'INVALID_RECENT_PLAY_LIMIT', 'limit must be an integer between 1 and 50');
+  }
+
   await getEditableCurrentUser(userId);
-  const games = await buildCurrentUserRecentlyPlayedGames(userId);
+  const requestedLimit = limit;
+  const games = await buildCurrentUserRecentlyPlayedGames(userId, requestedLimit + 1);
+  const visibleGames = games.slice(0, requestedLimit);
 
   return {
-    games,
-    recentGames: games,
-    recentlyPlayed: games,
-    recentPlayedPreview: games,
-    hasMoreRecentPlayed: false
+    games: visibleGames,
+    recentGames: visibleGames,
+    recentlyPlayed: visibleGames,
+    recentPlayedPreview: visibleGames,
+    hasMoreRecentPlayed: games.length > requestedLimit
   };
 }
 
@@ -3690,6 +3704,10 @@ async function getMyFriendRecommendations({ currentUserId }) {
 }
 
 async function getFriendRecommendations({ currentUserId, targetUserId }) {
+  if (currentUserId === targetUserId) {
+    return getMyFriendRecommendations({ currentUserId });
+  }
+
   await assertFriendAccess({
     currentUserId,
     targetUserId

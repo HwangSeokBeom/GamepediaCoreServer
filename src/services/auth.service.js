@@ -105,7 +105,7 @@ function buildNicknameWithSuffix(baseNickname, suffix) {
   return `${effectiveBaseNickname.slice(0, maxBaseLength)}_${normalizedSuffix}`;
 }
 
-function isNicknameUniqueConstraintError(error) {
+function isUniqueConstraintErrorFor(error, fieldName) {
   if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
     return false;
   }
@@ -113,8 +113,22 @@ function isNicknameUniqueConstraintError(error) {
   const duplicateTarget = Array.isArray(error?.meta?.target)
     ? error.meta.target
     : [error?.meta?.target].filter(Boolean);
+  const normalizedFieldName = String(fieldName).toLowerCase();
 
-  return duplicateTarget.some((target) => String(target).toLowerCase().includes('nickname'));
+  return duplicateTarget.some((target) => {
+    const normalizedTarget = String(target).toLowerCase();
+    const targetParts = normalizedTarget.split(/[^a-z0-9]+/).filter(Boolean);
+
+    return normalizedTarget === normalizedFieldName || targetParts.includes(normalizedFieldName);
+  });
+}
+
+function isNicknameUniqueConstraintError(error) {
+  return isUniqueConstraintErrorFor(error, 'nickname');
+}
+
+function isEmailUniqueConstraintError(error) {
+  return isUniqueConstraintErrorFor(error, 'email');
 }
 
 async function resolveAvailableSocialNickname(tx, preferredNickname, fallbackPrefix) {
@@ -274,6 +288,14 @@ async function signUp({ email, password, nickname, profileImageUrl, deviceName }
       };
     });
   } catch (error) {
+    if (isEmailUniqueConstraintError(error)) {
+      throw new AppError(
+        409,
+        'EMAIL_ALREADY_IN_USE',
+        'An account with this email already exists'
+      );
+    }
+
     if (isNicknameUniqueConstraintError(error)) {
       throw new AppError(409, 'NICKNAME_ALREADY_EXISTS', 'Nickname already exists');
     }

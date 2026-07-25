@@ -4,9 +4,11 @@ const { validate } = require('../../middlewares/validate.middleware');
 const userController = require('./user.controller');
 const pushTokenController = require('../push/push-token.controller');
 const { createInMemoryRateLimit } = require('../../middlewares/rate-limit.middleware');
+const { AppError } = require('../../utils/error-response');
 const {
   blockUserBodySchema,
   blockedUserParamsSchema,
+  buildRecentlyPlayedValidationError,
   buildUserValidationError,
   friendActivityFeedQuerySchema,
   friendProfileParamsSchema,
@@ -18,6 +20,7 @@ const {
   privacySettingsSchema,
   pushTokenDeleteSchema,
   pushTokenRegistrationSchema,
+  recentlyPlayedQuerySchema,
   testPushSchema,
   updateMyTitlesSchema,
   userSearchQuerySchema,
@@ -47,8 +50,14 @@ router.get('/users/search', authenticateAccessToken, validate({
 
 router.get('/users/me', authenticateAccessToken, userController.getCurrentUserProfile);
 router.get('/users/me/profile', authenticateAccessToken, userController.getCurrentUserProfile);
-router.get('/users/me/recently-played', authenticateAccessToken, userController.getMyRecentlyPlayedProfileGames);
-router.get('/users/me/recent-plays', authenticateAccessToken, userController.getMyRecentlyPlayedProfileGames);
+router.get('/users/me/recently-played', authenticateAccessToken, validate({
+  query: recentlyPlayedQuerySchema,
+  errorMapper: buildRecentlyPlayedValidationError
+}), userController.getMyRecentlyPlayedProfileGames);
+router.get('/users/me/recent-plays', authenticateAccessToken, validate({
+  query: recentlyPlayedQuerySchema,
+  errorMapper: buildRecentlyPlayedValidationError
+}), userController.getMyRecentlyPlayedProfileGames);
 router.get('/users/me/friends/count', authenticateAccessToken, userController.getMyFriendsCount);
 router.get('/users/me/titles', authenticateAccessToken, userController.getMyTitles);
 router.get('/users/me/privacy', authenticateAccessToken, userController.getMyPrivacySettings);
@@ -137,7 +146,18 @@ router.patch(
 );
 
 router.delete('/users/me/profile-image', authenticateAccessToken, userController.removeCurrentUserProfileImage);
-router.delete('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, validate({
+router.delete('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, (req, res, next) => {
+  const body = req.body ?? {};
+  for (const key of ['deviceId', 'token']) {
+    if (body[key] !== undefined && req.query[key] !== undefined && body[key] !== req.query[key]) {
+      next(new AppError(400, 'PUSH_TOKEN_INVALID', `${key} conflicts between the request body and query`));
+      return;
+    }
+  }
+
+  req.body = { ...body, ...req.query };
+  next();
+}, validate({
   body: pushTokenDeleteSchema,
   errorMapper: buildUserValidationError
 }), pushTokenController.deleteMyPushToken);

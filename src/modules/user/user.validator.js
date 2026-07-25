@@ -6,6 +6,10 @@ const nicknameSchema = z.string().trim().min(2).max(30);
 const notificationsPageSchema = z.coerce.number().int().min(1).optional();
 const notificationsLimitSchema = z.coerce.number().int().min(1).max(50).optional();
 const activityFeedLimitSchema = z.coerce.number().int().min(1).max(50).optional();
+const recentlyPlayedLimitSchema = z.string()
+  .regex(/^(?:[1-9]|[1-4][0-9]|50)$/)
+  .transform((value) => Number(value))
+  .optional();
 const notificationIdSchema = z.string().uuid();
 const userIdSchema = z.string().uuid();
 const friendSearchKeywordSchema = z.string().trim().min(1).max(30);
@@ -63,6 +67,10 @@ const notificationsQuerySchema = z.object({
 const friendActivityFeedQuerySchema = z.object({
   cursor: z.string().uuid().optional(),
   limit: activityFeedLimitSchema
+});
+
+const recentlyPlayedQuerySchema = z.object({
+  limit: recentlyPlayedLimitSchema
 });
 
 const markNotificationsReadSchema = z.object({
@@ -278,6 +286,20 @@ function buildUserValidationError(error) {
   return new AppError(400, 'VALIDATION_ERROR', 'Request validation failed', details);
 }
 
+function buildRecentlyPlayedValidationError(error) {
+  const details = error.issues.map((issue) => ({
+    field: issue.path.join('.'),
+    message: issue.message
+  }));
+
+  return new AppError(
+    400,
+    'INVALID_RECENT_PLAY_LIMIT',
+    'limit must be an integer between 1 and 50',
+    details
+  );
+}
+
 module.exports = {
   blockUserBodySchema,
   blockedUserParamsSchema,
@@ -292,8 +314,10 @@ module.exports = {
   privacySettingsSchema,
   pushTokenDeleteSchema,
   pushTokenRegistrationSchema,
+  recentlyPlayedQuerySchema,
   testPushSchema,
   updateMyTitlesSchema,
   userSearchQuerySchema,
-  updateCurrentUserProfileSchema
+  updateCurrentUserProfileSchema,
+  buildRecentlyPlayedValidationError
 };
