@@ -153,8 +153,14 @@ test('PostgreSQL verification command delegates to the isolated executable gate'
 
   assert.equal(command, 'bash scripts/test/run-auth-postgres-gate.sh');
   assert.match(gate, /--publish "127\.0\.0\.1::5432"/);
+  assert.match(gate, /prisma generate/);
   assert.match(gate, /prisma migrate deploy/);
   assert.match(gate, /SELECT current_database\(\)/);
+  assert.match(
+    gate,
+    /active_database="\$\(docker exec[\s\S]*SELECT current_database\(\);[\s\S]*\|\| true\)"[\s\S]*if \[\[ "\$active_database" == "\$DATABASE_NAME" \]\]/
+  );
+  assert.doesNotMatch(gate, /pg_isready/);
   assert.match(gate, /trap cleanup EXIT INT TERM/);
   assert.match(gate, /test\/auth-refresh-postgres\.integration\.test\.js/);
   assert.match(gate, /test\/auth-signup-postgres\.integration\.test\.js/);

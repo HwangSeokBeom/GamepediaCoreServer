@@ -60,10 +60,16 @@ if [[ ! "$published_address" =~ ^127\.0\.0\.1:[0-9]+$ ]] || [[ ! "$published_por
 fi
 
 ready=0
+active_database=""
 for _ in $(seq 1 60); do
-  if docker exec "$CONTAINER_NAME" pg_isready \
+  active_database="$(docker exec "$CONTAINER_NAME" psql \
     --username "$POSTGRES_USER" \
-    --dbname "$DATABASE_NAME" >/dev/null 2>&1; then
+    --dbname "$DATABASE_NAME" \
+    --tuples-only \
+    --no-align \
+    --command 'SELECT current_database();' 2>/dev/null || true)"
+
+  if [[ "$active_database" == "$DATABASE_NAME" ]]; then
     ready=1
     break
   fi
@@ -71,19 +77,7 @@ for _ in $(seq 1 60); do
 done
 
 if [[ "$ready" -ne 1 ]]; then
-  echo "ERROR: PostgreSQL did not become ready within 60 seconds." >&2
-  exit 1
-fi
-
-active_database="$(docker exec "$CONTAINER_NAME" psql \
-  --username "$POSTGRES_USER" \
-  --dbname "$DATABASE_NAME" \
-  --tuples-only \
-  --no-align \
-  --command 'SELECT current_database();')"
-
-if [[ "$active_database" != "$DATABASE_NAME" ]]; then
-  echo "ERROR: Active database name does not match the generated gate database." >&2
+  echo "ERROR: Generated PostgreSQL database did not become queryable within 60 seconds." >&2
   exit 1
 fi
 
@@ -102,6 +96,9 @@ readonly TEST_ENV=(
 )
 
 unset DATABASE_URL
+
+echo "Generating the Prisma client for the isolated gate."
+env "${TEST_ENV[@]}" npx prisma generate
 
 echo "Applying all $MIGRATION_COUNT repository migrations."
 env "${TEST_ENV[@]}" npx prisma migrate deploy
