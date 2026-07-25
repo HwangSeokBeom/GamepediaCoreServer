@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const crypto = require('node:crypto');
 const jwt = require('jsonwebtoken');
+const { Prisma } = require('@prisma/client');
 const { env } = require('../src/config/env');
 const { prisma } = require('../src/config/prisma');
 const { app } = require('../src/app');
@@ -250,6 +251,77 @@ test('POST /auth/login rejects bad credentials without revealing account existen
   assert.deepEqual(unknownAccount.body.error, wrongPassword.body.error, 'unknown email and wrong password must be indistinguishable');
 });
 
+test('POST /auth/signup maps only email P2002 targets to EMAIL_ALREADY_IN_USE', async () => {
+  const targets = [
+    ['email'],
+    'email',
+    'User_email_key'
+  ];
+
+  for (const target of targets) {
+    restoreStubs();
+    stub(prisma.user, 'findUnique', async () => null);
+    stub(prisma.user, 'findFirst', async () => null);
+    stub(prisma, '$transaction', async () => {
+      throw new Prisma.PrismaClientKnownRequestError('fixture email uniqueness race', {
+        code: 'P2002',
+        clientVersion: 'fixture',
+        meta: { target }
+      });
+    });
+
+    const result = await post('/auth/signup', {
+      email: 'concurrent-signup@example.test',
+      password: 'contract-password-1',
+      nickname: 'concurrent-signup'
+    });
+
+    assert.equal(result.status, 409);
+    assertErrorEnvelope(result.body, 'EMAIL_ALREADY_IN_USE');
+    assert.doesNotMatch(JSON.stringify(result.body), /P2002|Prisma|Unique constraint/i);
+  }
+
+  restoreStubs();
+  stub(prisma.user, 'findUnique', async () => null);
+  stub(prisma.user, 'findFirst', async () => null);
+  stub(prisma, '$transaction', async () => {
+    throw new Prisma.PrismaClientKnownRequestError('fixture unrelated uniqueness race', {
+      code: 'P2002',
+      clientVersion: 'fixture',
+      meta: { target: 'User_externalId_key' }
+    });
+  });
+
+  const unrelated = await post('/auth/signup', {
+    email: 'unrelated-constraint@example.test',
+    password: 'contract-password-1',
+    nickname: 'unrelated-constraint'
+  });
+
+  assert.equal(unrelated.status, 409);
+  assertErrorEnvelope(unrelated.body, 'CONFLICT');
+
+  restoreStubs();
+  stub(prisma.user, 'findUnique', async () => null);
+  stub(prisma.user, 'findFirst', async () => null);
+  stub(prisma, '$transaction', async () => {
+    throw new Prisma.PrismaClientKnownRequestError('fixture nickname uniqueness race', {
+      code: 'P2002',
+      clientVersion: 'fixture',
+      meta: { target: 'User_nickname_key' }
+    });
+  });
+
+  const nicknameConflict = await post('/auth/signup', {
+    email: 'nickname-constraint@example.test',
+    password: 'contract-password-1',
+    nickname: 'nickname-constraint'
+  });
+
+  assert.equal(nicknameConflict.status, 409);
+  assertErrorEnvelope(nicknameConflict.body, 'NICKNAME_ALREADY_EXISTS');
+});
+
 test('POST /auth/refresh success returns user plus rotated pair and matches the spec', async () => {
   const rawToken = signRefreshJwt();
   stub(prisma.refreshToken, 'findUnique', async () => refreshTokenRow(rawToken));
@@ -327,14 +399,15 @@ test('POST /auth/refresh rejects inactive users with a stable code', async () =>
 });
 
 test('POST /auth/logout is idempotent from the client perspective', async () => {
-  let revocations = 0;
-  stub(prisma.refreshToken, 'updateMany', async () => {
-    revocations += 1;
-    return { count: revocations === 1 ? 1 : 0 };
+  const revocationQueries = [];
+  const refreshToken = signRefreshJwt();
+  stub(prisma.refreshToken, 'updateMany', async (query) => {
+    revocationQueries.push(query);
+    return { count: revocationQueries.length === 1 ? 1 : 0 };
   });
 
-  const first = await post('/auth/logout', { refreshToken: signRefreshJwt() });
-  const second = await post('/auth/logout', { refreshToken: signRefreshJwt() });
+  const first = await post('/auth/logout', { refreshToken });
+  const second = await post('/auth/logout', { refreshToken });
   const unknown = await post('/auth/logout', { refreshToken: 'completely-unknown-token' });
 
   for (const { status, body } of [first, second, unknown]) {
@@ -342,6 +415,11 @@ test('POST /auth/logout is idempotent from the client perspective', async () => 
     assert.deepEqual(body, { success: true, data: { loggedOut: true } });
     assertMatchesSchema(body, specResponseSchema('/auth/logout', 'post', 200), 'logout.200');
   }
+  assert.equal(revocationQueries.length, 3);
+  assert.equal(revocationQueries[0].where.tokenHash, tokenService.hashToken(refreshToken));
+  assert.equal(revocationQueries[1].where.tokenHash, revocationQueries[0].where.tokenHash);
+  assert.notEqual(revocationQueries[2].where.tokenHash, revocationQueries[0].where.tokenHash);
+  assert.deepEqual(Object.keys(revocationQueries[0].where).sort(), ['revokedAt', 'tokenHash']);
 });
 
 test('GET /auth/me authenticates a bearer access token and returns the user envelope', async () => {
