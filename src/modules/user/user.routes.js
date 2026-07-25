@@ -4,6 +4,7 @@ const { validate } = require('../../middlewares/validate.middleware');
 const userController = require('./user.controller');
 const pushTokenController = require('../push/push-token.controller');
 const { createInMemoryRateLimit } = require('../../middlewares/rate-limit.middleware');
+const { AppError } = require('../../utils/error-response');
 const {
   blockUserBodySchema,
   blockedUserParamsSchema,
@@ -137,7 +138,18 @@ router.patch(
 );
 
 router.delete('/users/me/profile-image', authenticateAccessToken, userController.removeCurrentUserProfileImage);
-router.delete('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, validate({
+router.delete('/users/me/push-token', authenticateAccessToken, pushTokenRateLimit, (req, res, next) => {
+  const body = req.body ?? {};
+  for (const key of ['deviceId', 'token']) {
+    if (body[key] !== undefined && req.query[key] !== undefined && body[key] !== req.query[key]) {
+      next(new AppError(400, 'PUSH_TOKEN_INVALID', `${key} conflicts between the request body and query`));
+      return;
+    }
+  }
+
+  req.body = { ...body, ...req.query };
+  next();
+}, validate({
   body: pushTokenDeleteSchema,
   errorMapper: buildUserValidationError
 }), pushTokenController.deleteMyPushToken);

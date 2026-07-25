@@ -20,10 +20,11 @@ const registerMyPushToken = asyncHandler(async (req, res) => {
 });
 
 const deleteMyPushToken = asyncHandler(async (req, res) => {
+  const body = req.body ?? {};
   const result = await pushTokenService.deletePushToken({
     userId: req.auth.userId,
-    deviceId: req.body.deviceId,
-    token: req.body.token
+    deviceId: body.deviceId,
+    token: body.token
   });
 
   res.status(200).json(successResponse(result));

@@ -77,11 +77,18 @@ flowchart LR
 - 이메일/비밀번호 로그인
 - Apple 로그인
 - Google 로그인
-- Refresh Token Rotation
-- 로그아웃 시 세션 폐기
-- 비밀번호 재설정 토큰 발급 및 사용
+- Refresh Token Rotation (단일 사용 토큰, PostgreSQL compare-and-swap으로 동시 요청 시 후속 토큰을 정확히 1개만 발급)
+- 로그아웃 시 세션 폐기 (제시된 세션만 폐기, 멱등)
+- 비밀번호 재설정 토큰 발급 및 사용 (재설정 시 모든 refresh 세션 무효화)
 
-인증 관련 엔드포인트는 [`src/routes/auth.routes.js`](/Users/hwangseokbeom/Documents/GitHub/GamePediaCoreServer/src/routes/auth.routes.js)에 정의되어 있습니다.
+인증 관련 엔드포인트는 [`src/routes/auth.routes.js`](src/routes/auth.routes.js)에 정의되어 있습니다.
+
+iOS/Android 공통 인증 계약과 동시성 불변식, 검증 절차는 다음 문서를 참고하세요.
+
+- [`docs/AUTH_CROSS_PLATFORM_CONTRACT.md`](docs/AUTH_CROSS_PLATFORM_CONTRACT.md) — 공통 계약(요청/응답/에러 코드/클라이언트·서버 책임 경계)
+- [`docs/AUTH_CONCURRENCY_INVARIANTS.md`](docs/AUTH_CONCURRENCY_INVARIANTS.md) — 토큰 회전/로그아웃/탈퇴/비밀번호 재설정 동시성 불변식
+- [`docs/AUTH_RUNTIME_VERIFICATION.md`](docs/AUTH_RUNTIME_VERIFICATION.md) — 검증 절차 (`npm run test:postgres` 필수 게이트)
+- [`openapi/cross-platform.openapi.json`](openapi/cross-platform.openapi.json) — 기계가 읽는 계약 원본
 
 ### 3.2 게임 정보 조회
 

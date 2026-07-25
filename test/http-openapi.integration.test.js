@@ -40,6 +40,8 @@ const recent = {
   recentPlayedPreview: [],
   hasMoreRecentPlayed: false
 };
+let capturedRecentLimit = null;
+let capturedPushTokenDelete = null;
 
 authMiddleware.authenticateAccessToken = (req, res, next) => {
   req.auth = { userId: USER_ID, email: user.email, status: user.status };
@@ -50,7 +52,10 @@ authService.appleLogin = async () => ({ user, tokens: { accessToken: 'fixture-ac
 userService.getCurrentUserProfile = async () => ({ user, friendCount: 0, likeCount: 0, reviewCount: 0, recentlyPlayed: [], hasMoreRecentPlayed: false });
 userService.getMyPrivacySettings = async () => privacy;
 userService.updateMyPrivacySettings = async () => privacy;
-userService.getMyRecentlyPlayedProfileGames = async () => ({ games: recent.games, hasMoreRecentPlayed: false });
+userService.getMyRecentlyPlayedProfileGames = async ({ limit }) => {
+  capturedRecentLimit = limit ?? null;
+  return { games: recent.games, hasMoreRecentPlayed: false };
+};
 userService.getMySteamFriends = async () => ({ friends: [], steamFriendsAvailable: false, steamFriendsLimitedByPrivacy: false, syncWarningCode: 'STEAM_NOT_CONNECTED' });
 userService.getMyFriendRecommendations = async () => ({ recommendations: [] });
 userService.getFriendRecommendations = async () => ({ recommendations: [] });
@@ -65,7 +70,10 @@ libraryService.getMySteamLinkStatus = async () => ({
   lastSteamSyncAt: null
 });
 pushTokenService.registerPushToken = async () => ({ registered: true, tokenId: 'fixture-token-id' });
-pushTokenService.deletePushToken = async () => ({ deactivated: true, updatedCount: 1 });
+pushTokenService.deletePushToken = async (input) => {
+  capturedPushTokenDelete = input;
+  return { deactivated: true, updatedCount: 1 };
+};
 
 const { app } = require('../src/app');
 
@@ -197,13 +205,17 @@ test('actual HTTP responses satisfy the cross-platform OpenAPI schemas', async (
     ['get', '/users/me'],
     ['get', '/users/me/privacy'],
     ['patch', '/users/me/privacy', { isFriendsListPublic: true }],
+    ['get', '/users/me/privacy-settings'],
+    ['patch', '/users/me/privacy-settings', { isRecentPlayPublic: false }],
     ['get', '/users/me/recently-played'],
+    ['get', '/users/me/recent-plays?limit=7', undefined, '/users/me/recent-plays'],
     ['get', '/users/me/steam'],
     ['post', '/users/me/friends/steam/import'],
     ['get', '/users/me/recommendations/friends'],
     ['get', `/users/${USER_ID}/friend-recommendations`, undefined, '/users/{userId}/friend-recommendations'],
     ['put', '/users/me/push-token', { token: 'x'.repeat(4096), platform: 'ios', deviceId: 'fixture-device' }],
-    ['delete', '/users/me/push-token', { deviceId: 'fixture-device' }]
+    ['delete', '/users/me/push-token', { deviceId: 'fixture-device' }],
+    ['delete', '/users/me/push-token?deviceId=query-device', undefined, '/users/me/push-token']
   ];
 
   for (const [method, path, body, contractPath = path] of cases) {
@@ -211,6 +223,19 @@ test('actual HTTP responses satisfy the cross-platform OpenAPI schemas', async (
     assert.equal(result.status, 200, `${method.toUpperCase()} ${path}`);
     assertSchema(result.payload, responseSchema(method, contractPath, result.status), `${method.toUpperCase()} ${path}`);
   }
+
+  assert.equal(capturedRecentLimit, '7');
+  assert.equal(capturedPushTokenDelete.deviceId, 'query-device');
+  assert.equal(capturedPushTokenDelete.token, undefined);
+
+  const conflictingDelete = await request(
+    baseUrl,
+    'delete',
+    '/users/me/push-token?deviceId=query-device',
+    { deviceId: 'body-device' }
+  );
+  assert.equal(conflictingDelete.status, 400);
+  assert.equal(conflictingDelete.payload.error.code, 'PUSH_TOKEN_INVALID');
 
   const oversized = await request(baseUrl, 'put', '/users/me/push-token', { token: 'x'.repeat(4097), platform: 'ios' });
   assert.equal(oversized.status, 400);

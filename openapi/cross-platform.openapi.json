@@ -5,98 +5,2607 @@
     "version": "2.0.0",
     "description": "Machine-readable subset for the GamePedia 2.0 iOS/Android contract gate. This is not the complete backend API. Dates are RFC 3339 UTC date-time strings; image URLs are absolute HTTP(S) URLs or null."
   },
-  "servers": [{ "url": "/" }],
-  "security": [{ "bearerAuth": [] }],
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
   "paths": {
-    "/health": {
-      "get": { "security": [], "summary": "Check server health", "responses": { "200": { "$ref": "#/components/responses/HealthSuccess" } } }
+    "/games/search": {
+      "get": {
+        "operationId": "searchGames",
+        "summary": "Search games by keyword",
+        "description": "Public endpoint (no authentication required; an Authorization header, valid or not, does not change behavior). Resolves the keyword through local alias/normalization rules, queries the IGDB provider, ranks the merged results, and returns at most `limit` games. Results may be served from a server-side cache (about 10 minutes TTL). `results` is an exact duplicate of `games` kept for released iOS 2.0 clients; new clients should read `games`.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "Search keyword. Trimmed server-side; 1-100 characters after trimming.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of games to return. Defaults to 20.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search completed. An empty `games` array with `meta.resultCount` = 0 is a successful response, not an error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GameSearchSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request validation failed. `error.code` is `INVALID_SEARCH_QUERY` when `q` is missing/empty/too long, `INVALID_GAMES_LIMIT` when `limit` is outside 1-30 or not an integer, otherwise `VALIDATION_ERROR`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The IGDB provider is rate limited and no cached result could satisfy the request. `error.code` is `IGDB_RATE_LIMITED`. Clients should back off and retry later; cached searches may still succeed during the cooldown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server-side failure. `error.code` is `IGDB_NOT_CONFIGURED` when provider credentials are absent, otherwise `INTERNAL_SERVER_ERROR`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider failure. `error.code` is `IGDB_UPSTREAM_ERROR` (IGDB unreachable, non-OK, or invalid JSON) or `TWITCH_AUTH_UNAVAILABLE` (provider token endpoint failure). Messages never include provider payloads or credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/games/suggestions": {
+      "get": {
+        "operationId": "getGameSuggestions",
+        "summary": "Lightweight search suggestions (typeahead)",
+        "description": "Public endpoint (no authentication required). Same keyword resolution pipeline as /games/search but returns a compact suggestion DTO capped at 8 items. Results may be served from a server-side cache (about 10 minutes TTL).",
+        "security": [],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "Search keyword. Trimmed server-side; 1-100 characters after trimming.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of suggestions to return. Defaults to 6.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8,
+              "default": 6
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Suggestions computed. An empty `suggestions` array with `meta.resultCount` = 0 is a successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GameSuggestionsSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request validation failed. `error.code` is `INVALID_SEARCH_QUERY` when `q` is missing/empty/too long, `INVALID_GAMES_LIMIT` when `limit` is outside 1-8 or not an integer, otherwise `VALIDATION_ERROR`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The IGDB provider is rate limited and no cached result could satisfy the request. `error.code` is `IGDB_RATE_LIMITED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server-side failure. `error.code` is `IGDB_NOT_CONFIGURED` when provider credentials are absent, otherwise `INTERNAL_SERVER_ERROR`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider failure. `error.code` is `IGDB_UPSTREAM_ERROR` or `TWITCH_AUTH_UNAVAILABLE`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/signup": {
+      "post": {
+        "operationId": "signUp",
+        "summary": "Create an account with email and password",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password",
+                  "nickname"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 320
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 72
+                  },
+                  "nickname": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 30
+                  },
+                  "profileImageUrl": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uri"
+                  },
+                  "deviceName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created; a session (user + token pair) is issued immediately.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request validation failed (`VALIDATION_ERROR` with field details).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`EMAIL_ALREADY_IN_USE` or `NICKNAME_ALREADY_EXISTS`. Stable under concurrent duplicate signups.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "login",
+        "summary": "Log in with email and password",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email",
+                  "password"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 320
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 72
+                  },
+                  "deviceName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New session issued. Existing sessions on other devices remain valid (multi-device policy).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request validation failed (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`INVALID_CREDENTIALS`. The response does not reveal whether the email exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`ACCOUNT_INACTIVE` or `ACCOUNT_SUSPENDED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/apple": {
+      "post": {
+        "operationId": "appleLogin",
+        "summary": "Sign in with Apple",
+        "description": "Verifies the Apple identity token (RS256, Apple JWKS, issuer and audience pinned). First login links or creates an account by verified email; subsequent logins resolve the stored (provider, subject) link. Concurrent first logins produce exactly one social link.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "identityToken"
+                ],
+                "properties": {
+                  "identityToken": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "deviceName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session issued for the linked account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`APPLE_IDENTITY_TOKEN_REQUIRED` (missing token) or `APPLE_EMAIL_REQUIRED` (first login without an email claim).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`APPLE_AUTH_INVALID_TOKEN`, `APPLE_IDENTITY_TOKEN_EXPIRED`, or `APPLE_EMAIL_NOT_VERIFIED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`ACCOUNT_INACTIVE` or `ACCOUNT_SUSPENDED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`SOCIAL_ACCOUNT_CONFLICT`: the Apple subject is already linked to a different sign-in method.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`APPLE_AUTH_UNAVAILABLE`: Apple JWKS could not be fetched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/google": {
+      "post": {
+        "operationId": "googleLogin",
+        "summary": "Sign in with Google",
+        "description": "Verifies the Google ID token (RS256, Google JWKS, issuer and audience pinned). First login links to an existing account only when the Google email is authoritative (verified gmail.com or hosted-domain); otherwise a new account is created or `GOOGLE_ACCOUNT_LINK_CONFLICT` is returned. Concurrent first logins produce exactly one social link.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "idToken"
+                ],
+                "properties": {
+                  "idToken": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "deviceName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Session issued for the linked account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`GOOGLE_ID_TOKEN_REQUIRED` (missing token) or `GOOGLE_EMAIL_REQUIRED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`GOOGLE_AUTH_INVALID_TOKEN`, `GOOGLE_ID_TOKEN_EXPIRED`, or `GOOGLE_EMAIL_NOT_VERIFIED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`ACCOUNT_INACTIVE` or `ACCOUNT_SUSPENDED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`GOOGLE_ACCOUNT_LINK_CONFLICT` or `SOCIAL_ACCOUNT_CONFLICT`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`GOOGLE_AUTH_UNAVAILABLE`: Google JWKS could not be fetched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "/auth/refresh": {
       "post": {
-        "security": [],
+        "operationId": "refreshSession",
         "summary": "Atomically rotate a refresh token",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RefreshRequest" } } } },
-        "responses": { "200": { "$ref": "#/components/responses/RefreshSuccess" }, "401": { "$ref": "#/components/responses/Error" } }
+        "description": "Atomically claims the presented refresh token (database compare-and-swap on `revokedAt IS NULL`) and issues a successor session in the same transaction. For any number of concurrent requests with the same token, exactly one succeeds; every loser and every later replay receives `401 TOKEN_REVOKED`. The success body contains BOTH the user and the rotated token pair.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "refreshToken"
+                ],
+                "properties": {
+                  "refreshToken": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "deviceName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "Optional human-readable device label stored with the refresh session (trimmed; 1-100 characters). Omitted or null keeps the session unlabeled; on refresh, omitting it preserves the rotated session’s previous label."
+                  }
+                },
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rotation succeeded: the presented token is now revoked and `data.tokens` is its only successor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSessionSuccessResponse"
+                }
+              }
+            },
+            "$ref": "#/components/responses/RefreshSuccess"
+          },
+          "400": {
+            "description": "Request validation failed (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`TOKEN_REVOKED` (already consumed, concurrent loser, or logged out), `TOKEN_EXPIRED`, or `UNAUTHORIZED` (bad signature, wrong token type, or subject mismatch).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "description": "`ACCOUNT_INACTIVE` or `ACCOUNT_SUSPENDED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`ACCOUNT_NOT_FOUND`: the account no longer exists (for example after deletion).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "summary": "Revoke one refresh session (idempotent)",
+        "description": "Revokes only the presented refresh token (single-device logout); other sessions of the same user stay valid. Idempotent: repeating the call, or calling it with an unknown or already-revoked token, still returns 200. Possession of the token is the authorization; no access token is required.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "refreshToken"
+                ],
+                "properties": {
+                  "refreshToken": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session is revoked (or was already invalid). A revoked token can never rotate again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthLogoutSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request validation failed (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/forgot-password": {
+      "post": {
+        "operationId": "forgotPassword",
+        "summary": "Request password reset instructions",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 320
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Always 200 with a fixed message; account existence is never revealed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthForgotPasswordSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request validation failed (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/reset-password": {
+      "post": {
+        "operationId": "resetPassword",
+        "summary": "Complete a password reset",
+        "description": "Claims the emailed reset token atomically (single use) and, in the same transaction, updates the password and deletes ALL refresh sessions of the user. Concurrent attempts with the same token allow exactly one success.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token",
+                  "newPassword"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "newPassword": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 72
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password updated; every existing refresh session is invalidated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthPasswordResetSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`PASSWORD_RESET_TOKEN_INVALID`, `PASSWORD_RESET_TOKEN_USED`, `PASSWORD_RESET_TOKEN_EXPIRED`, or `VALIDATION_ERROR`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`ACCOUNT_INACTIVE` or `ACCOUNT_SUSPENDED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "operationId": "getCurrentUser",
+        "summary": "Get the authenticated account",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthMeSuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHORIZED` (missing/invalid bearer token) or `TOKEN_EXPIRED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`ACCOUNT_INACTIVE` or `ACCOUNT_SUSPENDED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`ACCOUNT_NOT_FOUND`: the account behind the token no longer exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteCurrentUser",
+        "summary": "Delete the authenticated account",
+        "description": "Transactionally deletes the account and all of its refresh sessions (plus dependent rows via ON DELETE CASCADE). Afterwards no access or refresh token of the user can authenticate.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account deleted; all sessions are invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthAccountDeletedSuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHORIZED` or `TOKEN_EXPIRED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`ACCOUNT_INACTIVE` or `ACCOUNT_SUSPENDED`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`ACCOUNT_NOT_FOUND`: already deleted (repeat calls are rejected, not idempotent-success).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "security": [],
+        "summary": "Check server health",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/HealthSuccess"
+          }
+        }
       }
     },
     "/users/me": {
-      "get": { "summary": "Get current user profile", "responses": { "200": { "$ref": "#/components/responses/ProfileSuccess" }, "401": { "$ref": "#/components/responses/Error" } } },
-      "patch": { "summary": "Update current user profile", "responses": { "200": { "$ref": "#/components/responses/ProfileSuccess" }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" } } }
+      "get": {
+        "summary": "Get current user profile",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ProfileSuccess"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update current user profile",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ProfileSuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     },
     "/users/me/privacy": {
-      "get": { "summary": "Get privacy settings", "responses": { "200": { "$ref": "#/components/responses/PrivacySuccess" } } },
-      "patch": { "summary": "Update privacy settings", "requestBody": { "$ref": "#/components/requestBodies/PrivacyUpdate" }, "responses": { "200": { "$ref": "#/components/responses/PrivacySuccess" }, "400": { "$ref": "#/components/responses/Error" } } }
+      "get": {
+        "summary": "Get privacy settings",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/PrivacySuccess"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update privacy settings",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/PrivacyUpdate"
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/PrivacySuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     },
     "/users/me/privacy-settings": {
-      "get": { "deprecated": true, "summary": "iOS compatibility alias for /users/me/privacy", "responses": { "200": { "$ref": "#/components/responses/PrivacySuccess" } } },
-      "patch": { "deprecated": true, "summary": "iOS compatibility alias for /users/me/privacy", "requestBody": { "$ref": "#/components/requestBodies/PrivacyUpdate" }, "responses": { "200": { "$ref": "#/components/responses/PrivacySuccess" }, "400": { "$ref": "#/components/responses/Error" } } }
+      "get": {
+        "deprecated": true,
+        "summary": "iOS compatibility alias for /users/me/privacy",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/PrivacySuccess"
+          }
+        }
+      },
+      "patch": {
+        "deprecated": true,
+        "summary": "iOS compatibility alias for /users/me/privacy",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/PrivacyUpdate"
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/PrivacySuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     },
     "/users/me/recently-played": {
-      "get": { "summary": "Get current user's recently played games", "parameters": [{ "$ref": "#/components/parameters/Limit" }], "responses": { "200": { "$ref": "#/components/responses/RecentPlaySuccess" } } }
+      "get": {
+        "summary": "Get current user's recently played games",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/RecentPlaySuccess"
+          }
+        }
+      }
     },
     "/users/me/recent-plays": {
-      "get": { "deprecated": true, "summary": "iOS compatibility alias for /users/me/recently-played", "parameters": [{ "$ref": "#/components/parameters/Limit" }], "responses": { "200": { "$ref": "#/components/responses/RecentPlaySuccess" } } }
+      "get": {
+        "deprecated": true,
+        "summary": "iOS compatibility alias for /users/me/recently-played",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/RecentPlaySuccess"
+          }
+        }
+      }
     },
     "/users/me/steam": {
-      "get": { "summary": "Get DB-backed Steam connection status", "responses": { "200": { "description": "Steam status", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/SteamStatus" } } }] } } } } } }
+      "get": {
+        "summary": "Get DB-backed Steam connection status",
+        "responses": {
+          "200": {
+            "description": "Steam status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/SteamStatus"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "/users/me/friends/steam/import": {
-      "post": { "summary": "Refresh Steam friend discovery without creating friendships", "description": "Idempotent discovery operation. It never auto-creates GamePedia friendship rows.", "responses": { "200": { "$ref": "#/components/responses/SteamFriendImportSuccess" }, "401": { "$ref": "#/components/responses/Error" }, "502": { "$ref": "#/components/responses/Error" } } }
+      "post": {
+        "summary": "Refresh Steam friend discovery without creating friendships",
+        "description": "Idempotent discovery operation. It never auto-creates GamePedia friendship rows.",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/SteamFriendImportSuccess"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     },
     "/users/me/recommendations/friends": {
-      "get": { "summary": "Recommend games from all accepted friends", "responses": { "200": { "$ref": "#/components/responses/RecommendationSuccess" } } }
+      "get": {
+        "summary": "Recommend games from all accepted friends",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/RecommendationSuccess"
+          }
+        }
+      }
     },
     "/users/{userId}/friend-recommendations": {
-      "get": { "summary": "Recommend games using one accepted friend's visible signals", "parameters": [{ "$ref": "#/components/parameters/UserId" }], "responses": { "200": { "$ref": "#/components/responses/RecommendationSuccess" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } } }
+      "get": {
+        "summary": "Recommend games using one accepted friend's visible signals",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UserId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/RecommendationSuccess"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     },
     "/users/me/push-token": {
-      "put": { "summary": "Register or transfer a push token", "requestBody": { "$ref": "#/components/requestBodies/PushToken" }, "responses": { "200": { "$ref": "#/components/responses/PushRegistrationSuccess" }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" } } },
-      "post": { "summary": "Compatibility registration method", "requestBody": { "$ref": "#/components/requestBodies/PushToken" }, "responses": { "200": { "$ref": "#/components/responses/PushRegistrationSuccess" }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" } } },
-      "delete": { "summary": "Deactivate a push token", "description": "Accepts deviceId/token in query for deployed iOS compatibility or in a JSON body; conflicting duplicate inputs are rejected.", "parameters": [{ "name": "deviceId", "in": "query", "schema": { "type": ["string", "null"], "maxLength": 200 } }, { "name": "token", "in": "query", "schema": { "type": ["string", "null"], "minLength": 20, "maxLength": 4096 } }], "requestBody": { "required": false, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PushTokenDeleteRequest" } } } }, "responses": { "200": { "$ref": "#/components/responses/PushDeleteSuccess" }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" } } }
+      "put": {
+        "summary": "Register or transfer a push token",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/PushToken"
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/PushRegistrationSuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "summary": "Compatibility registration method",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/PushToken"
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/PushRegistrationSuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Deactivate a push token",
+        "description": "Accepts deviceId/token in query for deployed iOS compatibility or in a JSON body; conflicting duplicate inputs are rejected.",
+        "parameters": [
+          {
+            "name": "deviceId",
+            "in": "query",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 20,
+              "maxLength": 4096
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushTokenDeleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/PushDeleteSuccess"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
-    "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" } },
+    "schemas": {
+      "GameSearchSuccessResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/GameSearchData"
+          }
+        }
+      },
+      "GameSearchData": {
+        "type": "object",
+        "required": [
+          "query",
+          "games",
+          "results",
+          "suggestions",
+          "meta"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The original (trimmed) query as received."
+          },
+          "games": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GameListItem"
+            },
+            "description": "Ranked results, at most `limit` items. Canonical field for new clients."
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GameListItem"
+            },
+            "description": "Exact duplicate of `games`. iOS 2.0 compatibility alias; do not use in new clients."
+          },
+          "suggestions": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/GameSuggestionItem"
+            },
+            "description": "Compact companion suggestions derived from the same ranked result set."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/SearchMeta"
+          }
+        }
+      },
+      "GameSuggestionsSuccessResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/GameSuggestionsData"
+          }
+        }
+      },
+      "GameSuggestionsData": {
+        "type": "object",
+        "required": [
+          "suggestions",
+          "meta"
+        ],
+        "properties": {
+          "suggestions": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/GameSuggestionItem"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/SearchMeta"
+          }
+        }
+      },
+      "GameListItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "summary",
+          "coverUrl",
+          "genres",
+          "platforms",
+          "rating",
+          "aggregatedRating",
+          "totalRating",
+          "releaseDate"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "IGDB game id."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "coverUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absolute https image URL (cover_big size) or null."
+          },
+          "genres": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Deduplicated genre names. Empty array when unknown."
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Deduplicated platform names. Empty array when unknown."
+          },
+          "rating": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "First available of totalRating, aggregatedRating, IGDB user rating."
+          },
+          "aggregatedRating": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "totalRating": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "releaseDate": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Unix timestamp (seconds) of first release date, or null."
+          }
+        }
+      },
+      "GameSuggestionItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "coverUrl",
+          "rating"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "IGDB game id."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "coverUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rating": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      },
+      "SearchMeta": {
+        "type": "object",
+        "required": [
+          "originalQuery",
+          "normalizedQuery",
+          "effectiveQuery",
+          "resultCount"
+        ],
+        "properties": {
+          "originalQuery": {
+            "type": "string",
+            "description": "Trimmed query as received."
+          },
+          "normalizedQuery": {
+            "type": "string",
+            "description": "Lowercased/normalized form used for caching and ranking."
+          },
+          "effectiveQuery": {
+            "type": "string",
+            "description": "Query actually sent to the provider after alias resolution."
+          },
+          "resultCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of items in the returned list after applying `limit`."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "error"
+        ],
+        "properties": {
+          "success": {
+            "const": false
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Stable machine-readable error code. Search-related codes: INVALID_SEARCH_QUERY, INVALID_GAMES_LIMIT, VALIDATION_ERROR, IGDB_RATE_LIMITED, IGDB_UPSTREAM_ERROR, TWITCH_AUTH_UNAVAILABLE, IGDB_NOT_CONFIGURED, INTERNAL_SERVER_ERROR, NOT_FOUND. Auth-related codes: UNAUTHORIZED, TOKEN_EXPIRED, TOKEN_REVOKED, INVALID_CREDENTIALS, ACCOUNT_NOT_FOUND, ACCOUNT_INACTIVE, ACCOUNT_SUSPENDED, EMAIL_ALREADY_IN_USE, NICKNAME_ALREADY_EXISTS, PASSWORD_RESET_TOKEN_INVALID, PASSWORD_RESET_TOKEN_USED, PASSWORD_RESET_TOKEN_EXPIRED, APPLE_IDENTITY_TOKEN_REQUIRED, APPLE_EMAIL_REQUIRED, APPLE_EMAIL_NOT_VERIFIED, APPLE_AUTH_INVALID_TOKEN, APPLE_IDENTITY_TOKEN_EXPIRED, APPLE_AUTH_UNAVAILABLE, APPLE_AUTH_NOT_CONFIGURED, GOOGLE_ID_TOKEN_REQUIRED, GOOGLE_EMAIL_REQUIRED, GOOGLE_EMAIL_NOT_VERIFIED, GOOGLE_AUTH_INVALID_TOKEN, GOOGLE_ID_TOKEN_EXPIRED, GOOGLE_AUTH_UNAVAILABLE, GOOGLE_AUTH_NOT_CONFIGURED, GOOGLE_ACCOUNT_LINK_CONFLICT, SOCIAL_ACCOUNT_CONFLICT, CONFLICT."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable message. Sanitized server-side; may be localized. Clients must branch on `code`, never on `message`."
+              },
+              "details": {
+                "description": "Optional structured details. For validation failures this is an array of {field, message}.",
+                "type": [
+                  "array",
+                  "object",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ValidationErrorResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ErrorResponse"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "error": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "enum": [
+                      "INVALID_SEARCH_QUERY",
+                      "INVALID_GAMES_LIMIT",
+                      "VALIDATION_ERROR"
+                    ]
+                  },
+                  "details": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ValidationErrorDetail"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ValidationErrorDetail": {
+        "type": "object",
+        "required": [
+          "field",
+          "message"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "Dot-joined path of the invalid input, e.g. \"q\" or \"limit\"."
+          },
+          "message": {
+            "type": "string",
+            "description": "Sanitized validation message. Not stable; do not branch on it."
+          }
+        }
+      },
+      "AuthUser": {
+        "type": "object",
+        "description": "Public representation of the authenticated account. Never contains password hashes or token material.",
+        "required": [
+          "id",
+          "email",
+          "nickname",
+          "profileImageUrl",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "nickname": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 30
+          },
+          "profileImageUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absolute URL when set; null when the account has no profile image."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "INACTIVE",
+              "SUSPENDED"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 UTC timestamp."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 UTC timestamp."
+          }
+        }
+      },
+      "AuthTokenPair": {
+        "type": "object",
+        "description": "A freshly issued session. The refresh token is single-use: the first successful POST /auth/refresh with it revokes it and returns a successor.",
+        "required": [
+          "accessToken",
+          "refreshToken"
+        ],
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "description": "Short-lived JWT bearer token for Authorization headers."
+          },
+          "refreshToken": {
+            "type": "string",
+            "description": "Long-lived single-use JWT. Only its SHA-256 hash is stored server-side."
+          }
+        }
+      },
+      "AuthSessionData": {
+        "type": "object",
+        "required": [
+          "user",
+          "tokens"
+        ],
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/AuthUser"
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/AuthTokenPair"
+          }
+        }
+      },
+      "AuthSessionSuccessResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/AuthSessionData"
+          }
+        }
+      },
+      "AuthMeSuccessResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "user"
+            ],
+            "properties": {
+              "user": {
+                "$ref": "#/components/schemas/AuthUser"
+              }
+            }
+          }
+        }
+      },
+      "AuthLogoutSuccessResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "loggedOut"
+            ],
+            "properties": {
+              "loggedOut": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "AuthAccountDeletedSuccessResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "deleted",
+              "deletedAt"
+            ],
+            "properties": {
+              "deleted": {
+                "const": true
+              },
+              "deletedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      },
+      "AuthForgotPasswordSuccessResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "message"
+            ],
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "Fixed acknowledgement text. The response is identical whether or not the email exists; clients must not infer account existence."
+              }
+            }
+          }
+        }
+      },
+      "AuthPasswordResetSuccessResponse": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "type": "object",
+            "required": [
+              "passwordReset"
+            ],
+            "properties": {
+              "passwordReset": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "SuccessEnvelope": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {}
+        }
+      },
+      "HealthData": {
+        "type": "object",
+        "required": [
+          "status",
+          "push"
+        ],
+        "properties": {
+          "status": {
+            "const": "ok"
+          },
+          "push": {
+            "type": "object",
+            "required": [
+              "enabled",
+              "initialized",
+              "projectId",
+              "source",
+              "reason"
+            ],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "initialized": {
+                "type": "boolean"
+              },
+              "projectId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "success",
+          "error"
+        ],
+        "properties": {
+          "success": {
+            "const": false
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": [
+                  "object",
+                  "array",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "required": [
+          "refreshToken"
+        ],
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "deviceName": {
+            "type": "string",
+            "maxLength": 100
+          }
+        }
+      },
+      "RefreshData": {
+        "type": "object",
+        "required": [
+          "user",
+          "tokens"
+        ],
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "tokens": {
+            "type": "object",
+            "required": [
+              "accessToken",
+              "refreshToken"
+            ],
+            "properties": {
+              "accessToken": {
+                "type": "string",
+                "readOnly": true
+              },
+              "refreshToken": {
+                "type": "string",
+                "readOnly": true
+              }
+            }
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "nickname",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "nickname": {
+            "type": "string"
+          },
+          "profileImageUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "status": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ProfileData": {
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "friendCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "likeCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reviewCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "recentlyPlayed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecentGame"
+            }
+          },
+          "hasMoreRecentPlayed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PrivacyUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "showFriendsList": {
+            "type": "boolean"
+          },
+          "showRecentlyPlayed": {
+            "type": "boolean"
+          },
+          "showLikedGames": {
+            "type": "boolean"
+          },
+          "showReviews": {
+            "type": "boolean"
+          },
+          "isFriendsListPublic": {
+            "type": "boolean",
+            "deprecated": true
+          },
+          "isRecentPlayPublic": {
+            "type": "boolean",
+            "deprecated": true
+          },
+          "isLikedGamesPublic": {
+            "type": "boolean",
+            "deprecated": true
+          },
+          "isReviewsPublic": {
+            "type": "boolean",
+            "deprecated": true
+          }
+        }
+      },
+      "PrivacySettings": {
+        "type": "object",
+        "required": [
+          "showFriendsList",
+          "showRecentlyPlayed",
+          "showLikedGames",
+          "showReviews",
+          "isFriendsListPublic",
+          "isRecentPlayPublic",
+          "isLikedGamesPublic",
+          "isReviewsPublic"
+        ],
+        "properties": {
+          "privacy": {
+            "type": "object"
+          },
+          "showFriendsList": {
+            "type": "boolean"
+          },
+          "showRecentlyPlayed": {
+            "type": "boolean"
+          },
+          "showLikedGames": {
+            "type": "boolean"
+          },
+          "showReviews": {
+            "type": "boolean"
+          },
+          "isFriendsListPublic": {
+            "type": "boolean"
+          },
+          "isRecentPlayPublic": {
+            "type": "boolean"
+          },
+          "isLikedGamesPublic": {
+            "type": "boolean"
+          },
+          "isReviewsPublic": {
+            "type": "boolean"
+          },
+          "steamFriendsFeatureAvailable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SteamStatus": {
+        "type": "object",
+        "required": [
+          "isLinked",
+          "steamId",
+          "displayName",
+          "personaName",
+          "profileUrl",
+          "canSync",
+          "canDisconnect",
+          "lastSteamSyncAt"
+        ],
+        "properties": {
+          "isLinked": {
+            "type": "boolean"
+          },
+          "steamId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "steamId64": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "personaName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profileUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "canSync": {
+            "type": "boolean"
+          },
+          "canDisconnect": {
+            "type": "boolean"
+          },
+          "lastSteamSyncAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "RecentGame": {
+        "type": "object",
+        "required": [
+          "externalGameId",
+          "gameSource"
+        ],
+        "properties": {
+          "gameId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "externalGameId": {
+            "type": "string"
+          },
+          "gameSource": {
+            "type": "string",
+            "enum": [
+              "steam",
+              "igdb"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "coverUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "lastPlayedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "playtimeMinutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      },
+      "RecentPlayData": {
+        "type": "object",
+        "required": [
+          "games",
+          "recentGames",
+          "recentlyPlayed",
+          "recentPlayedPreview",
+          "hasMoreRecentPlayed"
+        ],
+        "properties": {
+          "games": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecentGame"
+            }
+          },
+          "recentGames": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecentGame"
+            }
+          },
+          "recentlyPlayed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecentGame"
+            }
+          },
+          "recentPlayedPreview": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecentGame"
+            }
+          },
+          "hasMoreRecentPlayed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "FriendRecommendation": {
+        "type": "object",
+        "required": [
+          "game"
+        ],
+        "properties": {
+          "game": {
+            "type": "object"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SteamFriendImportData": {
+        "type": "object",
+        "required": [
+          "friends",
+          "steamFriendsAvailable",
+          "steamFriendsLimitedByPrivacy",
+          "syncWarningCode"
+        ],
+        "properties": {
+          "friends": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "steamId64"
+              ],
+              "properties": {
+                "steamId64": {
+                  "type": "string"
+                },
+                "isLinkedToGamePedia": {
+                  "type": "boolean"
+                },
+                "userId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "nickname": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "profileImageUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uri"
+                }
+              }
+            }
+          },
+          "steamFriendsAvailable": {
+            "type": "boolean"
+          },
+          "steamFriendsLimitedByPrivacy": {
+            "type": "boolean"
+          },
+          "syncWarningCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PushTokenRequest": {
+        "type": "object",
+        "required": [
+          "token",
+          "platform"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 20,
+            "maxLength": 4096,
+            "writeOnly": true
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "ios",
+              "android"
+            ]
+          },
+          "deviceId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "appVersion": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "buildNumber": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "environment": {
+            "type": "string",
+            "maxLength": 50
+          }
+        }
+      },
+      "PushTokenDeleteRequest": {
+        "type": "object",
+        "anyOf": [
+          {
+            "required": [
+              "deviceId"
+            ]
+          },
+          {
+            "required": [
+              "token"
+            ]
+          }
+        ],
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "token": {
+            "type": "string",
+            "minLength": 20,
+            "maxLength": 4096,
+            "writeOnly": true
+          }
+        }
+      },
+      "PushRegistrationData": {
+        "type": "object",
+        "required": [
+          "registered"
+        ],
+        "properties": {
+          "registered": {
+            "const": true
+          }
+        }
+      },
+      "PushDeleteData": {
+        "type": "object",
+        "required": [
+          "deactivated",
+          "updatedCount"
+        ],
+        "properties": {
+          "deactivated": {
+            "const": true
+          },
+          "updatedCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Short-lived JWT access token issued by the auth endpoints. Sent as `Authorization: Bearer <accessToken>`."
+      }
+    },
     "parameters": {
-      "Limit": { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5 } },
-      "UserId": { "name": "userId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 5
+        }
+      },
+      "UserId": {
+        "name": "userId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
     },
     "requestBodies": {
-      "PrivacyUpdate": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PrivacyUpdate" } } } },
-      "PushToken": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PushTokenRequest" } } } }
+      "PrivacyUpdate": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PrivacyUpdate"
+            }
+          }
+        }
+      },
+      "PushToken": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PushTokenRequest"
+            }
+          }
+        }
+      }
     },
     "responses": {
-      "Success": { "description": "Success envelope", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } } },
-      "HealthSuccess": { "description": "Server health", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/HealthData" } } }] } } } },
-      "Error": { "description": "Shared error envelope", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-      "RefreshSuccess": { "description": "Rotated session", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/RefreshData" } } }] } } } },
-      "ProfileSuccess": { "description": "Current user profile", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/ProfileData" } } }] } } } },
-      "SteamFriendImportSuccess": { "description": "Steam friend discovery result", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/SteamFriendImportData" } } }] } } } },
-      "PushRegistrationSuccess": { "description": "Push token registered", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/PushRegistrationData" } } }] } } } },
-      "PushDeleteSuccess": { "description": "Push token deactivated", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/PushDeleteData" } } }] } } } },
-      "PrivacySuccess": { "description": "Privacy settings", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/PrivacySettings" } } }] } } } },
-      "RecentPlaySuccess": { "description": "Recently played page", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "$ref": "#/components/schemas/RecentPlayData" } } }] } } } },
-      "RecommendationSuccess": { "description": "Recommendations", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessEnvelope" }, { "properties": { "data": { "type": "object", "required": ["recommendations"], "properties": { "recommendations": { "type": "array", "items": { "$ref": "#/components/schemas/FriendRecommendation" } } } } } }] } } } }
-    },
-    "schemas": {
-      "SuccessEnvelope": { "type": "object", "required": ["success", "data"], "properties": { "success": { "const": true }, "data": {} } },
-      "HealthData": { "type": "object", "required": ["status", "push"], "properties": { "status": { "const": "ok" }, "push": { "type": "object", "required": ["enabled", "initialized", "projectId", "source", "reason"], "properties": { "enabled": { "type": "boolean" }, "initialized": { "type": "boolean" }, "projectId": { "type": ["string", "null"] }, "source": { "type": ["string", "null"] }, "reason": { "type": ["string", "null"] } } } } },
-      "ErrorEnvelope": { "type": "object", "required": ["success", "error"], "properties": { "success": { "const": false }, "error": { "type": "object", "required": ["code", "message"], "properties": { "code": { "type": "string" }, "message": { "type": "string" }, "details": { "type": ["object", "array", "null"] } } } } },
-      "RefreshRequest": { "type": "object", "required": ["refreshToken"], "properties": { "refreshToken": { "type": "string", "writeOnly": true }, "deviceName": { "type": "string", "maxLength": 100 } } },
-      "RefreshData": { "type": "object", "required": ["user", "tokens"], "properties": { "user": { "$ref": "#/components/schemas/User" }, "tokens": { "type": "object", "required": ["accessToken", "refreshToken"], "properties": { "accessToken": { "type": "string", "readOnly": true }, "refreshToken": { "type": "string", "readOnly": true } } } } },
-      "User": { "type": "object", "required": ["id", "email", "nickname", "status", "createdAt", "updatedAt"], "properties": { "id": { "type": "string", "format": "uuid" }, "email": { "type": "string", "format": "email" }, "nickname": { "type": "string" }, "profileImageUrl": { "type": ["string", "null"], "format": "uri" }, "status": { "type": "string" }, "createdAt": { "type": "string", "format": "date-time" }, "updatedAt": { "type": "string", "format": "date-time" } } },
-      "ProfileData": { "type": "object", "required": ["user"], "properties": { "user": { "$ref": "#/components/schemas/User" }, "friendCount": { "type": "integer", "minimum": 0 }, "likeCount": { "type": "integer", "minimum": 0 }, "reviewCount": { "type": "integer", "minimum": 0 }, "recentlyPlayed": { "type": "array", "items": { "$ref": "#/components/schemas/RecentGame" } }, "hasMoreRecentPlayed": { "type": "boolean" } } },
-      "PrivacyUpdate": { "type": "object", "minProperties": 1, "properties": { "showFriendsList": { "type": "boolean" }, "showRecentlyPlayed": { "type": "boolean" }, "showLikedGames": { "type": "boolean" }, "showReviews": { "type": "boolean" }, "isFriendsListPublic": { "type": "boolean", "deprecated": true }, "isRecentPlayPublic": { "type": "boolean", "deprecated": true }, "isLikedGamesPublic": { "type": "boolean", "deprecated": true }, "isReviewsPublic": { "type": "boolean", "deprecated": true } } },
-      "PrivacySettings": { "type": "object", "required": ["showFriendsList", "showRecentlyPlayed", "showLikedGames", "showReviews", "isFriendsListPublic", "isRecentPlayPublic", "isLikedGamesPublic", "isReviewsPublic"], "properties": { "privacy": { "type": "object" }, "showFriendsList": { "type": "boolean" }, "showRecentlyPlayed": { "type": "boolean" }, "showLikedGames": { "type": "boolean" }, "showReviews": { "type": "boolean" }, "isFriendsListPublic": { "type": "boolean" }, "isRecentPlayPublic": { "type": "boolean" }, "isLikedGamesPublic": { "type": "boolean" }, "isReviewsPublic": { "type": "boolean" }, "steamFriendsFeatureAvailable": { "type": "boolean" } } },
-      "SteamStatus": { "type": "object", "required": ["isLinked", "steamId", "displayName", "personaName", "profileUrl", "canSync", "canDisconnect", "lastSteamSyncAt"], "properties": { "isLinked": { "type": "boolean" }, "steamId": { "type": ["string", "null"] }, "steamId64": { "type": ["string", "null"] }, "displayName": { "type": ["string", "null"] }, "personaName": { "type": ["string", "null"] }, "profileUrl": { "type": ["string", "null"], "format": "uri" }, "canSync": { "type": "boolean" }, "canDisconnect": { "type": "boolean" }, "lastSteamSyncAt": { "type": ["string", "null"], "format": "date-time" } } },
-      "RecentGame": { "type": "object", "required": ["externalGameId", "gameSource"], "properties": { "gameId": { "type": ["integer", "null"] }, "externalGameId": { "type": "string" }, "gameSource": { "type": "string", "enum": ["steam", "igdb"] }, "name": { "type": ["string", "null"] }, "coverUrl": { "type": ["string", "null"], "format": "uri" }, "lastPlayedAt": { "type": ["string", "null"], "format": "date-time" }, "playtimeMinutes": { "type": ["integer", "null"], "minimum": 0 } } },
-      "RecentPlayData": { "type": "object", "required": ["games", "recentGames", "recentlyPlayed", "recentPlayedPreview", "hasMoreRecentPlayed"], "properties": { "games": { "type": "array", "items": { "$ref": "#/components/schemas/RecentGame" } }, "recentGames": { "type": "array", "items": { "$ref": "#/components/schemas/RecentGame" } }, "recentlyPlayed": { "type": "array", "items": { "$ref": "#/components/schemas/RecentGame" } }, "recentPlayedPreview": { "type": "array", "items": { "$ref": "#/components/schemas/RecentGame" } }, "hasMoreRecentPlayed": { "type": "boolean" } } },
-      "FriendRecommendation": { "type": "object", "required": ["game"], "properties": { "game": { "type": "object" }, "reason": { "type": ["string", "null"] } } },
-      "SteamFriendImportData": { "type": "object", "required": ["friends", "steamFriendsAvailable", "steamFriendsLimitedByPrivacy", "syncWarningCode"], "properties": { "friends": { "type": "array", "items": { "type": "object", "required": ["steamId64"], "properties": { "steamId64": { "type": "string" }, "isLinkedToGamePedia": { "type": "boolean" }, "userId": { "type": ["string", "null"], "format": "uuid" }, "nickname": { "type": ["string", "null"] }, "profileImageUrl": { "type": ["string", "null"], "format": "uri" } } } }, "steamFriendsAvailable": { "type": "boolean" }, "steamFriendsLimitedByPrivacy": { "type": "boolean" }, "syncWarningCode": { "type": ["string", "null"] } } },
-      "PushTokenRequest": { "type": "object", "required": ["token", "platform"], "properties": { "token": { "type": "string", "minLength": 20, "maxLength": 4096, "writeOnly": true }, "platform": { "type": "string", "enum": ["ios", "android"] }, "deviceId": { "type": "string", "maxLength": 200 }, "appVersion": { "type": "string", "maxLength": 50 }, "buildNumber": { "type": "string", "maxLength": 50 }, "environment": { "type": "string", "maxLength": 50 } } },
-      "PushTokenDeleteRequest": { "type": "object", "anyOf": [{ "required": ["deviceId"] }, { "required": ["token"] }], "properties": { "deviceId": { "type": "string", "maxLength": 200 }, "token": { "type": "string", "minLength": 20, "maxLength": 4096, "writeOnly": true } } },
-      "PushRegistrationData": { "type": "object", "required": ["registered"], "properties": { "registered": { "const": true } } },
-      "PushDeleteData": { "type": "object", "required": ["deactivated", "updatedCount"], "properties": { "deactivated": { "const": true }, "updatedCount": { "type": "integer", "minimum": 0 } } }
+      "Success": {
+        "description": "Success envelope",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/SuccessEnvelope"
+            }
+          }
+        }
+      },
+      "HealthSuccess": {
+        "description": "Server health",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/HealthData"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Error": {
+        "description": "Shared error envelope",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            }
+          }
+        }
+      },
+      "RefreshSuccess": {
+        "description": "Rotated session",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RefreshData"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "ProfileSuccess": {
+        "description": "Current user profile",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ProfileData"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "SteamFriendImportSuccess": {
+        "description": "Steam friend discovery result",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SteamFriendImportData"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "PushRegistrationSuccess": {
+        "description": "Push token registered",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PushRegistrationData"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "PushDeleteSuccess": {
+        "description": "Push token deactivated",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PushDeleteData"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "PrivacySuccess": {
+        "description": "Privacy settings",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PrivacySettings"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "RecentPlaySuccess": {
+        "description": "Recently played page",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RecentPlayData"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "RecommendationSuccess": {
+        "description": "Recommendations",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "recommendations"
+                      ],
+                      "properties": {
+                        "recommendations": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/FriendRecommendation"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
     }
-  }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ]
 }
