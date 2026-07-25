@@ -14,6 +14,26 @@ const STEAM_OWNED_GAMES_PATH = '/IPlayerService/GetOwnedGames/v0001/';
 const UPSTREAM_TIMEOUT_MS = 8000;
 const STEAM_PLAYER_SUMMARIES_BATCH_SIZE = 100;
 
+function getErrorCategory(error, fallback = 'upstream_error') {
+  return error?.code ?? error?.name ?? fallback;
+}
+
+function getSteamOperation(endpointUrl) {
+  try {
+    const url = new URL(endpointUrl);
+    if (url.hostname === 'store.steampowered.com') {
+      return url.pathname.startsWith('/appreviews/') ? 'app-reviews' : 'app-details';
+    }
+    if (url.pathname.includes('GetPlayerSummaries')) return 'player-summaries';
+    if (url.pathname.includes('GetFriendList')) return 'friend-list';
+    if (url.pathname.includes('GetRecentlyPlayedGames')) return 'recently-played';
+    if (url.pathname.includes('GetOwnedGames')) return 'owned-games';
+  } catch (error) {
+    return 'unknown';
+  }
+  return 'unknown';
+}
+
 function parseOptionalUrl(value) {
   if (typeof value !== 'string' || !value.trim()) {
     return null;
@@ -204,15 +224,14 @@ async function verifySteamOpenIdCallback(query) {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
     });
   } catch (error) {
-    logger.error('Steam OpenID verification request failed', { error });
+    logger.error('Steam OpenID verification request failed', { errorCategory: getErrorCategory(error) });
     throw new AppError(502, 'STEAM_LINK_UPSTREAM_ERROR', 'Steam is temporarily unavailable');
   }
 
   if (!response.ok) {
-    const upstreamBody = await response.text();
+    await response.text();
     logger.error('Steam OpenID verification returned a non-OK response', {
-      status: response.status,
-      body: upstreamBody.slice(0, 300)
+      status: response.status
     });
     throw new AppError(502, 'STEAM_LINK_UPSTREAM_ERROR', 'Steam is temporarily unavailable');
   }
@@ -235,6 +254,7 @@ async function verifySteamOpenIdCallback(query) {
 }
 
 async function fetchSteamJson(endpointUrl) {
+  const operation = getSteamOperation(endpointUrl);
   let response;
 
   try {
@@ -247,18 +267,17 @@ async function fetchSteamJson(endpointUrl) {
     });
   } catch (error) {
     logger.error('Steam Web API request failed', {
-      endpointUrl,
-      error
+      operation,
+      errorCategory: getErrorCategory(error)
     });
     throw new AppError(502, 'STEAM_UPSTREAM_ERROR', 'Steam is temporarily unavailable');
   }
 
   if (!response.ok) {
-    const upstreamBody = await response.text();
+    await response.text();
     logger.error('Steam Web API returned a non-OK response', {
-      endpointUrl,
-      status: response.status,
-      body: upstreamBody.slice(0, 300)
+      operation,
+      status: response.status
     });
     throw new AppError(502, 'STEAM_UPSTREAM_ERROR', 'Steam is temporarily unavailable');
   }
@@ -267,14 +286,15 @@ async function fetchSteamJson(endpointUrl) {
     return await response.json();
   } catch (error) {
     logger.error('Steam Web API returned invalid JSON', {
-      endpointUrl,
-      error
+      operation,
+      errorCategory: getErrorCategory(error, 'invalid_json')
     });
     throw new AppError(502, 'STEAM_UPSTREAM_ERROR', 'Steam is temporarily unavailable');
   }
 }
 
 async function fetchSteamStoreJson(endpointUrl) {
+  const operation = getSteamOperation(endpointUrl);
   let response;
 
   try {
@@ -287,18 +307,17 @@ async function fetchSteamStoreJson(endpointUrl) {
     });
   } catch (error) {
     logger.error('Steam Store API request failed', {
-      endpointUrl,
-      error
+      operation,
+      errorCategory: getErrorCategory(error)
     });
     throw new AppError(502, 'STEAM_STORE_UPSTREAM_ERROR', 'Steam Store is temporarily unavailable');
   }
 
   if (!response.ok) {
-    const upstreamBody = await response.text();
+    await response.text();
     logger.error('Steam Store API returned a non-OK response', {
-      endpointUrl,
-      status: response.status,
-      body: upstreamBody.slice(0, 300)
+      operation,
+      status: response.status
     });
     throw new AppError(502, 'STEAM_STORE_UPSTREAM_ERROR', 'Steam Store is temporarily unavailable');
   }
@@ -307,8 +326,8 @@ async function fetchSteamStoreJson(endpointUrl) {
     return await response.json();
   } catch (error) {
     logger.error('Steam Store API returned invalid JSON', {
-      endpointUrl,
-      error
+      operation,
+      errorCategory: getErrorCategory(error, 'invalid_json')
     });
     throw new AppError(502, 'STEAM_STORE_UPSTREAM_ERROR', 'Steam Store is temporarily unavailable');
   }
@@ -397,9 +416,8 @@ async function fetchPlayerSummaries({ steamIds64 }) {
 async function fetchPlayerSummarySafe({ steamId64 }) {
   if (!env.steamApiKey) {
     logger.warn('Steam profile enrichment skipped', {
-      steamId64,
       code: 'STEAM_API_NOT_CONFIGURED',
-      message: 'Steam integration is not configured'
+      steamIdAvailable: Boolean(normalizeSteamId64(steamId64))
     });
 
     return {
@@ -414,8 +432,6 @@ async function fetchPlayerSummarySafe({ steamId64 }) {
     const profile = await fetchPlayerSummary({ steamId64 });
 
     logger.info('Steam profile enrichment completed', {
-      steamId64,
-      steamWebApiBaseUrl: env.steamWebApiBaseUrl,
       hasPersonaName: Boolean(profile.personaName),
       hasAvatarUrl: Boolean(profile.avatarUrl),
       hasProfileUrl: Boolean(profile.profileUrl)
@@ -424,9 +440,7 @@ async function fetchPlayerSummarySafe({ steamId64 }) {
     return profile;
   } catch (error) {
     logger.warn('Steam profile refresh skipped', {
-      steamId64,
-      code: error?.code,
-      message: error?.message
+      errorCategory: getErrorCategory(error)
     });
     return {
       steamId64: normalizeSteamId64(steamId64),
@@ -457,7 +471,7 @@ function normalizeSteamLastPlayedAt(value) {
 function mapSteamRecentlyPlayedGame(game) {
   if (!Number.isInteger(game?.appid) || game.appid <= 0) {
     logger.warn('Steam game missing appid', {
-      game
+      payloadAvailable: Boolean(game)
     });
     return null;
   }
@@ -466,7 +480,7 @@ function mapSteamRecentlyPlayedGame(game) {
 
   if (!externalGameId) {
     logger.warn('Steam game missing externalGameId', {
-      game
+      appIdAvailable: Number.isInteger(game?.appid)
     });
     return null;
   }
@@ -496,7 +510,7 @@ function mapSteamRecentlyPlayedGame(game) {
 function mapSteamOwnedGame(game) {
   if (!Number.isInteger(game?.appid) || game.appid <= 0) {
     logger.warn('Steam owned game missing appid', {
-      game
+      payloadAvailable: Boolean(game)
     });
     return null;
   }
@@ -505,7 +519,7 @@ function mapSteamOwnedGame(game) {
 
   if (!externalGameId) {
     logger.warn('Steam owned game missing externalGameId', {
-      game
+      appIdAvailable: Number.isInteger(game?.appid)
     });
     return null;
   }
@@ -514,7 +528,7 @@ function mapSteamOwnedGame(game) {
 
   if (!gameName) {
     logger.warn('Steam owned game missing name', {
-      appid: game.appid
+      appIdAvailable: true
     });
     return null;
   }
@@ -593,9 +607,7 @@ async function fetchAppReviewSummarySafe({ appId }) {
     return await fetchAppReviewSummary({ appId });
   } catch (error) {
     logger.warn('Steam app review summary fetch skipped', {
-      appId,
-      code: error?.code,
-      message: error?.message
+      errorCategory: getErrorCategory(error)
     });
     return null;
   }
@@ -622,7 +634,6 @@ async function fetchFriendList({ steamId64 }) {
 
   if (!hasFriendsArray) {
     logger.warn('Steam friend list returned no accessible friend data', {
-      steamId64: normalizedSteamId64,
       code: 'STEAM_FRIENDS_UNAVAILABLE'
     });
   }
@@ -662,7 +673,6 @@ async function fetchRecentlyPlayedGames({ steamId64 }) {
 
     if (!hasGamesArray) {
       logger.debug('steam-friend-skip', {
-        steamId64: normalizedSteamId64,
         reason: 'private_profile',
         code: 'STEAM_RECENTLY_PLAYED_UNAVAILABLE'
       });
@@ -672,17 +682,7 @@ async function fetchRecentlyPlayedGames({ steamId64 }) {
       games: games
         .slice()
         .sort((left, right) => (right?.playtime_2weeks ?? 0) - (left?.playtime_2weeks ?? 0))
-        .map((game) => {
-          logger.info('[SteamAPI Raw]', {
-            steamId: normalizedSteamId64,
-            appid: Number.isInteger(game?.appid) ? game.appid : null,
-            playtime_2weeks: normalizeOptionalPlaytimeMinutes(game?.playtime_2weeks),
-            playtime_forever: normalizeOptionalPlaytimeMinutes(game?.playtime_forever),
-            last_played: normalizeSteamLastPlayedAt(game?.last_played)
-          });
-
-          return mapSteamRecentlyPlayedGame(game);
-        })
+        .map(mapSteamRecentlyPlayedGame)
         .filter(Boolean),
       syncWarningCode: hasGamesArray ? null : 'STEAM_RECENTLY_PLAYED_UNAVAILABLE'
     };
@@ -726,7 +726,6 @@ async function fetchOwnedGames({ steamId64 }) {
 
   if (!hasGamesArray || rawGames.length === 0) {
     logger.debug('steam-friend-skip', {
-      steamId64: normalizedSteamId64,
       reason: 'private_profile',
       code: 'STEAM_OWNED_GAMES_UNAVAILABLE'
     });

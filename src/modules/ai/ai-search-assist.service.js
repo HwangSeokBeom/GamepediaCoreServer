@@ -164,8 +164,8 @@ async function writeSearchLog({
     await prisma.aiSearchLog.create({
       data: {
         userId,
-        query,
-        normalizedQuery,
+        query: `sha256:${crypto.createHash('sha256').update(String(query)).digest('hex')}`,
+        normalizedQuery: `sha256:${crypto.createHash('sha256').update(String(normalizedQuery)).digest('hex')}`,
         intent,
         resultGameIds: items.map((item) => Number(item.gameId)).filter((gameId) => Number.isSafeInteger(gameId)),
         model,
