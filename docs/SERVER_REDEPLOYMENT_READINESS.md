@@ -41,8 +41,12 @@ WebSocket code.
 - CloudWatch Agent collects planned PM2 and Nginx logs plus memory/root-disk
   metrics. The app log stream will begin after the production PM2 process is
   allowed to start.
-- EC2 status/CPU and shared RDS CPU/storage/connection alarms exist, but no
-  notification target is attached yet.
+- EC2 status/CPU and shared RDS CPU/storage/connection alarms exist. All 15
+  shared alarms send `ALARM` and `OK` actions to the SNS topic
+  `project-services-ops-alerts`.
+- The SNS topic currently has zero confirmed subscriptions, so no human alert
+  will be delivered until the owner confirms an approved email or other
+  endpoint.
 
 ## Environment-name contract
 
