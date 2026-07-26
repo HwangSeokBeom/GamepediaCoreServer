@@ -1,9 +1,9 @@
 # GamePedia server redeployment readiness
 
-This document records the safe stopping point immediately before restoring
-production data and starting the replacement server. It does not authorize a
-database migration, process restart, DNS change, certificate issuance, or
-production cutover.
+This document records the replacement-host execution status after the owner
+approved abandoning unavailable historical production data and initializing a
+new service database. It does not authorize App Store upload or claim that the
+public GamePedia application is ready.
 
 ## Canonical runtime contract
 
@@ -30,11 +30,14 @@ WebSocket code.
   are not public.
 - Node.js 22, npm, PM2 7.0.3, Nginx, PostgreSQL 16, Redis 6, and Certbot are
   installed.
-- Nginx, PostgreSQL, Redis, and the application process remain stopped.
+- Redis is enabled on loopback.
+- Nginx configuration and a certificate for `gamepedia-api.duckdns.org` are
+  prepared, but Nginx is stopped to avoid exposing a public 502 response.
+- The production PM2 process is not running.
 - Exact source commit
-  `a91feb238939a8d16e01774f9879ca68a147069e` is staged without local changes.
-- `npm ci`, Prisma validation/generation, and JavaScript syntax validation
-  pass on the replacement host.
+  `5a900cac392054ab93e30e13d481c7b00bacfa95` is staged without local changes.
+- `npm ci`, Prisma validation/generation, migrations, and JavaScript syntax
+  validation pass on the replacement host.
 
 ## Environment-name contract
 
@@ -71,33 +74,38 @@ exists, the cutover gate must separately prove:
 4. Firebase initialization matches the intended production project;
 5. `/health` returns 200 through localhost and then through Nginx.
 
-## Data-recovery gate
+## Data state
 
-The new AWS account currently contains no RDS snapshot, EBS snapshot, AMI, S3
-backup, or AWS Backup recovery point for the previous deployment. The old
-account or an independently stored backup must provide:
+- Historical production data is classified `NO_BACKUP_FOUND`.
+- The owner explicitly approved abandoning historical recovery.
+- A new `gamepedia` database and least-privilege `gamepedia_app` role were
+  created on the private shared RDS instance.
+- All 33 Prisma migrations were applied.
+- One review account was created and login-tested through a temporary
+  localhost-only development process.
+- The initialized RDS state is protected by encrypted snapshot
+  `project-services-postgres-initialized-20260726`, which is available.
+- The new initialized state is classified `RECOVERABLE`.
 
-1. a timestamped PostgreSQL logical dump;
-2. an EBS/RDS snapshot where applicable;
-3. encryption and size evidence;
-4. a successful restore into an isolated database;
-5. all Prisma migrations applied with `prisma migrate deploy`;
-6. core table row counts and relationship checks.
+## Current blocker and next start sequence
 
-Do not initialize an empty production database or start PM2 while this gate is
-unresolved.
+Production startup verifies SMTP during boot. No approved production SMTP
+credential exists, so PM2 remains empty and Nginx remains stopped. This is a
+hard public-readiness blocker.
 
-## Pre-start sequence
+1. Store verified SMTP values in `production/gamepedia/runtime` without
+   printing or committing them.
+2. Run the production environment validator.
+3. Start PM2 and prove localhost PostgreSQL, Redis, SMTP, push initialization,
+   and `/health`.
+4. Enable Nginx only after localhost succeeds.
+5. Verify public HTTPS health and the review-account login contract.
+6. Complete an actual FCM delivery check if push is in the review scope.
 
-1. Obtain and verify the old-account backup without exposing credentials.
-2. Restore it into an isolated rehearsal database.
-3. Run the canonical and PostgreSQL test suites against the rehearsal copy.
-4. Create service-specific production PostgreSQL and Redis storage.
-5. Inject production environment values outside Git.
-6. Run `npm run deploy:validate:production`.
-7. Install the reviewed Nginx template but do not reload yet.
-8. Start PM2 only during the approved cutover window.
-9. Verify localhost database, Redis, SMTP, push, and `/health`.
-10. Issue/attach TLS, reload Nginx, and verify the public endpoint.
+Review credentials are stored only under
+`production/gamepedia/review-account`. Database and runtime values are stored
+under their corresponding `production/gamepedia/*` secret names.
 
-The current approved stopping point is immediately before step 1.
+The current status is `NO-GO_FOR_PUBLIC_APPLICATION`: database initialization,
+review-account creation, TLS preparation, and host hardening are complete, but
+production SMTP verification and application startup are not.
