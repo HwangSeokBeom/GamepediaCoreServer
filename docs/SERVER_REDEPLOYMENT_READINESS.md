@@ -2,8 +2,7 @@
 
 This document records the replacement-host execution status after the owner
 approved abandoning unavailable historical production data and initializing a
-new service database. It does not authorize App Store upload or claim that the
-public GamePedia application is ready.
+new service database. It does not authorize App Store upload.
 
 ## Canonical runtime contract
 
@@ -31,22 +30,25 @@ WebSocket code.
 - Node.js 22, npm, PM2 7.0.3, Nginx, PostgreSQL 16, Redis 6, and Certbot are
   installed.
 - Redis is enabled on loopback.
-- Nginx configuration and a certificate for `gamepedia-api.duckdns.org` are
-  prepared, but Nginx is stopped to avoid exposing a public 502 response.
-- The production PM2 process is not running.
+- Nginx is active and enabled with a valid certificate for
+  `gamepedia-api.duckdns.org`.
+- PM2 application `core-server` is online and `pm2-ec2-user` is active and
+  enabled for reboot recovery.
 - Exact source commit
   `5a900cac392054ab93e30e13d481c7b00bacfa95` is staged without local changes.
 - `npm ci`, Prisma validation/generation, migrations, and JavaScript syntax
   validation pass on the replacement host.
-- CloudWatch Agent collects planned PM2 and Nginx logs plus memory/root-disk
-  metrics. The app log stream will begin after the production PM2 process is
-  allowed to start.
+- CloudWatch Agent collects PM2 and Nginx logs plus memory/root-disk metrics.
 - EC2 status/CPU and shared RDS CPU/storage/connection alarms exist. All 15
   shared alarms send `ALARM` and `OK` actions to the SNS topic
   `project-services-ops-alerts`.
-- The SNS topic currently has zero confirmed subscriptions, so no human alert
-  will be delivered until the owner confirms an approved email or other
-  endpoint.
+- The SNS topic has one email subscription in `PendingConfirmation`; no human
+  alert is delivered until the owner confirms the AWS notification email.
+- Production startup verifies the configured Gmail SMTP transport.
+- Firebase Admin initializes from Secrets Manager-backed base64 credentials
+  for project `gamepedia-eb58c`.
+- Public HTTPS review-account login, current-user lookup, temporary push-token
+  registration, and immediate deletion all return 200.
 
 ## Environment-name contract
 
@@ -96,27 +98,23 @@ exists, the cutover gate must separately prove:
   `project-services-postgres-initialized-20260726`, which is available.
 - The new initialized state is classified `RECOVERABLE`.
 
-## Current blocker and next start sequence
+## Current blockers and next sequence
 
-Production startup verifies SMTP during boot. No approved production SMTP
-credential exists, so PM2 remains empty and Nginx remains stopped. This is a
-hard public-readiness blocker.
-
-1. Store verified SMTP values in `production/gamepedia/runtime` without
-   printing or committing them.
-2. Run the production environment validator.
-3. Start PM2 and prove localhost PostgreSQL, Redis, SMTP, push initialization,
-   and `/health`.
-4. Enable Nginx only after localhost succeeds.
-5. Verify public HTTPS health and the review-account login contract.
-6. Complete an actual FCM delivery check if push is in the review scope.
-7. Upgrade the AWS account plan or otherwise approve the Free Tier one-day RDS
-   backup-retention limit before production cutover.
+1. Confirm the SNS email subscription.
+2. Complete an actual APNs/FCM delivery check with a TestFlight device token.
+   The server-side registration/deletion contract and Firebase initialization
+   are verified, but a synthetic token is not delivery proof.
+3. Keep the Free Plan RDS limitation documented: `db.t4g.micro`, single-AZ,
+   one-day backup retention. Reassess class, retention, deletion protection,
+   and Multi-AZ before a production-scale cutover.
+4. Run the signed iOS archive and TestFlight review-account regression under a
+   separately approved client release step.
 
 Review credentials are stored only under
 `production/gamepedia/review-account`. Database and runtime values are stored
 under their corresponding `production/gamepedia/*` secret names.
 
-The current status is `NO-GO_FOR_PUBLIC_APPLICATION`: database initialization,
-review-account creation, TLS preparation, and host hardening are complete, but
-production SMTP verification and application startup are not.
+The current status is `PUBLIC_RUNTIME_READY_WITH_RELEASE_BLOCKERS`: database,
+SMTP, Firebase initialization, review-account login, PM2 reboot recovery,
+Nginx, TLS, and public health are verified. Actual device push delivery, SNS
+confirmation, and signed client release verification remain.
