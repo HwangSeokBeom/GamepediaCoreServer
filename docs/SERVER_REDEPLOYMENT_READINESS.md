@@ -4,6 +4,12 @@ This document records the replacement-host execution status after the owner
 approved abandoning unavailable historical production data and initializing a
 new service database. It does not authorize App Store upload.
 
+## Operations guide
+
+Day-to-day access, health checks, log inspection, safe restarts, incident
+response, and deployment handoff are documented in
+[OPERATIONS_RUNBOOK.md](./OPERATIONS_RUNBOOK.md).
+
 ## Canonical runtime contract
 
 - region: `ap-northeast-2`
