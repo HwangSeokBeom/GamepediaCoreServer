@@ -48,8 +48,8 @@ WebSocket code.
 - EC2 status/CPU and shared RDS CPU/storage/connection alarms exist. All 15
   shared alarms send `ALARM` and `OK` actions to the SNS topic
   `project-services-ops-alerts`.
-- The SNS topic has one email subscription in `PendingConfirmation`; no human
-  alert is delivered until the owner confirms the AWS notification email.
+- The SNS topic has one confirmed email subscription. AWS returned a concrete
+  subscription ARN on 2026-07-26, so alarm email delivery is enabled.
 - Production startup verifies the configured Gmail SMTP transport.
 - Firebase Admin initializes from Secrets Manager-backed base64 credentials
   for project `gamepedia-eb58c`.
@@ -106,14 +106,13 @@ exists, the cutover gate must separately prove:
 
 ## Current blockers and next sequence
 
-1. Confirm the SNS email subscription.
-2. Complete an actual APNs/FCM delivery check with a TestFlight device token.
+1. Complete an actual APNs/FCM delivery check with a TestFlight device token.
    The server-side registration/deletion contract and Firebase initialization
    are verified, but a synthetic token is not delivery proof.
-3. Keep the Free Plan RDS limitation documented: `db.t4g.micro`, single-AZ,
+2. Keep the Free Plan RDS limitation documented: `db.t4g.micro`, single-AZ,
    one-day backup retention. Reassess class, retention, deletion protection,
    and Multi-AZ before a production-scale cutover.
-4. Run the signed iOS archive and TestFlight review-account regression under a
+3. Run the signed iOS archive and TestFlight review-account regression under a
    separately approved client release step.
 
 Review credentials are stored only under
@@ -122,5 +121,5 @@ under their corresponding `production/gamepedia/*` secret names.
 
 The current status is `PUBLIC_RUNTIME_READY_WITH_RELEASE_BLOCKERS`: database,
 SMTP, Firebase initialization, review-account login, PM2 reboot recovery,
-Nginx, TLS, and public health are verified. Actual device push delivery, SNS
-confirmation, and signed client release verification remain.
+Nginx, TLS, public health, and SNS email confirmation are verified. Actual
+device push delivery and signed client release verification remain.
