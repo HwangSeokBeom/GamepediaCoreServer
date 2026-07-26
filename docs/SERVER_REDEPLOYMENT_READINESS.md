@@ -38,6 +38,11 @@ WebSocket code.
   `5a900cac392054ab93e30e13d481c7b00bacfa95` is staged without local changes.
 - `npm ci`, Prisma validation/generation, migrations, and JavaScript syntax
   validation pass on the replacement host.
+- CloudWatch Agent collects planned PM2 and Nginx logs plus memory/root-disk
+  metrics. The app log stream will begin after the production PM2 process is
+  allowed to start.
+- EC2 status/CPU and shared RDS CPU/storage/connection alarms exist, but no
+  notification target is attached yet.
 
 ## Environment-name contract
 
@@ -101,6 +106,8 @@ hard public-readiness blocker.
 4. Enable Nginx only after localhost succeeds.
 5. Verify public HTTPS health and the review-account login contract.
 6. Complete an actual FCM delivery check if push is in the review scope.
+7. Upgrade the AWS account plan or otherwise approve the Free Tier one-day RDS
+   backup-retention limit before production cutover.
 
 Review credentials are stored only under
 `production/gamepedia/review-account`. Database and runtime values are stored
