@@ -61,7 +61,10 @@ const updateArticle = asyncHandler(async (req, res) => {
 const publishArticle = asyncHandler(async (req, res) => {
   const result = await articleService.publishArticle({
     actorUserId: req.auth.userId,
-    slug: req.params.slug
+    slug: req.params.slug,
+    // Optional optimistic concurrency check: an editor who publishes the revision
+    // they reviewed gets a 409 rather than publishing someone else's newer edit.
+    expectedRevisionNumber: req.body?.expectedRevisionNumber ?? null
   });
 
   res.status(200).json(successResponse({ article: result }));
@@ -71,7 +74,8 @@ const retractArticle = asyncHandler(async (req, res) => {
   const result = await articleService.retractArticle({
     actorUserId: req.auth.userId,
     slug: req.params.slug,
-    reasonCode: req.body.reasonCode
+    reasonCode: req.body.reasonCode,
+    expectedRevisionNumber: req.body?.expectedRevisionNumber ?? null
   });
 
   res.status(200).json(successResponse({ article: result }));

@@ -74,6 +74,39 @@ function stubQueryRaw(handler) {
   };
 }
 
+/// Stubs the `SELECT ... FOR UPDATE` row lock the editorial mutations take.
+///
+/// `articleId` is the id the lock resolves to; pass null to simulate a missing
+/// article. Returns `{ lockCount, restore }` so a test can assert that the lock was
+/// actually taken — the round-2 finding was that the status, revision and asset
+/// reads happened outside any transaction, so "did it lock?" is the assertion that
+/// distinguishes the fix from the defect.
+function stubArticleLock(articleId) {
+  const state = { lockCount: 0 };
+  const original = prisma.$queryRaw;
+
+  prisma.$queryRaw = async (strings) => {
+    const sql = Array.isArray(strings) ? strings.join('?') : String(strings);
+
+    if (!/FOR UPDATE/i.test(sql)) {
+      throw new Error(`Unexpected raw query in an editorial test: ${sql}`);
+    }
+
+    state.lockCount += 1;
+
+    return articleId === null ? [] : [{ id: articleId }];
+  };
+
+  return {
+    get lockCount() {
+      return state.lockCount;
+    },
+    restore() {
+      prisma.$queryRaw = original;
+    }
+  };
+}
+
 /// Captures winston log records so privacy assertions can inspect exactly what a
 /// code path would have written.
 function captureLogs() {
@@ -119,6 +152,7 @@ module.exports = {
   USER_B,
   captureLogs,
   prisma,
+  stubArticleLock,
   stubPrisma,
   stubQueryRaw,
   stubTransaction

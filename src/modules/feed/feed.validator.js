@@ -1,6 +1,8 @@
 const { z } = require('zod');
 const { AppError } = require('../../utils/error-response');
 const { PRODUCT_EVENT_CODES } = require('../product/product.constants');
+const { countCodePoints } = require('../../utils/unicode-text');
+const { validateArticleMarkdown } = require('./article-markdown.validator');
 
 const uuidSchema = z.string().trim().uuid();
 const localeSchema = z.string().trim().regex(/^[a-z]{2}(?:-[A-Za-z0-9]{2,8})?$/, 'Expected a BCP-47 style locale');
@@ -50,15 +52,31 @@ const articleGameLinkInputSchema = z.object({
   relation: z.enum(['SUBJECT', 'MENTIONED', 'RELATED'])
 }).strict();
 
-// The body is CommonMark with HTML disabled. Raw HTML and script are rejected
-// here rather than sanitized later, so a stored body can never carry markup, an
-// event handler, or a remote resource of its own. Images belong to the
-// rights-reviewed article assets, not to inline HTML.
-const HTML_LIKE_PATTERN = /<\s*\/?\s*[a-zA-Z][^>]*>|<!--|javascript:|data:text\/html|on[a-z]+\s*=/i;
+// The body is validated against a real CommonMark AST, not a regular expression.
+//
+// The previous pattern blocked raw HTML but accepted every Markdown image form —
+// inline, reference-style and data: URL — so an image node bypassed the ArticleAsset
+// rights review and a published article could load a third-party tracking resource.
+// See article-markdown.validator.js for the allowed node and scheme sets.
+const bodyMarkdownSchema = z.string().trim()
+  // Length is bounded in code points so the check agrees with the stored column.
+  .refine((value) => countCodePoints(value) <= 40000,
+    'bodyMarkdown must be at most 40000 Unicode code points')
+  .superRefine((value, ctx) => {
+    const { valid, violations } = validateArticleMarkdown(value);
 
-const bodyMarkdownSchema = z.string().trim().max(40000)
-  .refine((value) => !HTML_LIKE_PATTERN.test(value),
-    'bodyMarkdown must be CommonMark without embedded HTML, script or data URLs');
+    if (valid) {
+      return;
+    }
+
+    // Reason codes only. The offending destination is never echoed back, so a
+    // rejection response cannot leak the tracking URL it refused.
+    for (const violation of violations) {
+      // No explicit path: this refinement is already scoped to the field, so
+      // adding one would produce 'bodyMarkdown.bodyMarkdown'.
+      ctx.addIssue({ code: 'custom', message: violation.reasonCode });
+    }
+  });
 
 const createArticleSchema = z.object({
   slug: slugSchema,
@@ -73,13 +91,20 @@ const createArticleSchema = z.object({
 }).strict();
 
 const updateArticleSchema = z.object({
+  // Optional optimistic concurrency check. When supplied and the article has moved
+  // on, the request is refused with ARTICLE_CONCURRENT_MODIFICATION instead of
+  // overwriting whatever another editor just committed.
+  expectedRevisionNumber: z.number().int().min(1).optional(),
   locale: localeSchema.optional(),
   headline: z.string().trim().min(1).max(200).optional(),
   excerpt: z.string().trim().min(1).max(600).optional(),
   // Omitted means "unchanged": the service carries the previous body forward.
   // An explicit null clears it.
   bodyMarkdown: bodyMarkdownSchema.nullish(),
-  changeNote: z.string().trim().min(1).max(300).nullish(),
+  // A correction note is required when the transition is CORRECTED; the service
+  // enforces that, and this bound keeps it storable.
+  changeNote: z.string().trim().min(1).refine((value) => countCodePoints(value) <= 300,
+    'changeNote must be at most 300 Unicode code points').nullish(),
   // PUBLISHED / RETRACTED are reached through the dedicated endpoints so the
   // database role re-check cannot be bypassed by a status patch.
   status: z.enum(['DRAFT', 'FACT_CHECK', 'RIGHTS_REVIEW', 'SCHEDULED', 'CORRECTED']).optional(),
@@ -97,8 +122,16 @@ const listArticlesQuerySchema = z.object({
 }).strict();
 
 const retractArticleSchema = z.object({
+  expectedRevisionNumber: z.number().int().min(1).optional(),
   reasonCode: z.enum(['factual_error', 'rights_issue', 'duplicate', 'source_retracted', 'editorial_decision'])
 }).strict();
+
+// The publish endpoint shipped without a request body, so an absent body must keep
+// working: `.default({})` accepts a bodyless POST while `.strict()` still rejects an
+// unknown field. Sending expectedRevisionNumber is opt-in optimistic concurrency.
+const publishArticleSchema = z.object({
+  expectedRevisionNumber: z.number().int().min(1).optional()
+}).strict().default({});
 
 const productEventSchema = z.object({
   // Client-generated idempotency key: a retried batch cannot double count.
@@ -133,8 +166,15 @@ function buildFeedValidationError(error) {
   }
 
   if (issueFields.has('bodyMarkdown')) {
-    return new AppError(400, 'INVALID_ARTICLE_BODY',
-      'bodyMarkdown must be CommonMark without embedded HTML, script or data URLs');
+    // Carry the reason codes so an editor can see *which* rule fired, without the
+    // response repeating the rejected destination.
+    const reasonCodes = [...new Set(error.issues
+      .filter((issue) => issue.path.join('.') === 'bodyMarkdown')
+      .map((issue) => issue.message))];
+
+    return new AppError(400, 'ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED',
+      'bodyMarkdown must be CommonMark without images, raw HTML, or non-https links',
+      reasonCodes.map((reasonCode) => ({ field: 'bodyMarkdown', message: reasonCode })));
   }
 
   return new AppError(400, 'VALIDATION_ERROR', 'Request validation failed',
@@ -143,6 +183,7 @@ function buildFeedValidationError(error) {
 
 module.exports = {
   articleSlugParamsSchema,
+  publishArticleSchema,
   buildFeedValidationError,
   createArticleSchema,
   listArticlesQuerySchema,

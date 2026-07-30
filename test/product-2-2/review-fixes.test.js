@@ -7,6 +7,8 @@ const {
   USER_A,
   USER_B,
   captureLogs,
+  prisma,
+  stubArticleLock,
   stubPrisma,
   stubQueryRaw,
   stubTransaction
@@ -225,11 +227,11 @@ test('a page emptied by privacy is reported distinctly from no activity', async 
 
 test('a trusted Steam sync links every row and reports a linked status', async () => {
   const libraryUpdates = [];
+  const restoreTransaction = stubTransaction();
+  const restoreQueryRaw = stubQueryRaw(() => [{ id: 'identity-1' }]);
   const restore = stubPrisma({
-    gameExternalIdentity: {
-      findUnique: async () => null,
-      create: async () => ({ id: 'identity-1', catalogGameId: CATALOG_GAME_A, verifiedAt: NOW })
-    },
+    gameExternalIdentity: { findUnique: async () => null },
+    gameLocalization: { create: async () => ({ id: 'localization-1' }) },
     catalogGame: { create: async () => ({ id: CATALOG_GAME_A }) },
     userGameLibrary: {
       update: async ({ where, data }) => {
@@ -258,6 +260,77 @@ test('a trusted Steam sync links every row and reports a linked status', async (
     assert.equal(libraryUpdates[0].ownershipProvenance, 'PROVIDER_VERIFIED');
   } finally {
     restore();
+    restoreQueryRaw();
+    restoreTransaction();
+  }
+});
+
+test('a Steam sync entry is atomic: an identity failure leaves no linked library row', async () => {
+  // Round-2 finding B. The catalog game create and the identity insert used to be
+  // independent statements, so a non-P2002 identity failure left a published orphan
+  // game behind and the retry created a second one. They are one transaction now,
+  // and the library update joins it.
+  const libraryUpdates = [];
+  let transactionRollbacks = 0;
+  const original = prisma.$transaction;
+
+  // A transaction stand-in that actually discards the writes of a failed callback.
+  prisma.$transaction = async (arg) => {
+    if (typeof arg !== 'function') {
+      return Promise.all(arg);
+    }
+
+    const staged = [];
+
+    try {
+      return await arg(new Proxy(prisma, {
+        get(target, property) {
+          if (property === 'userGameLibrary') {
+            return {
+              update: async ({ where, data }) => {
+                staged.push({ id: where.id, ...data });
+                return { id: where.id };
+              }
+            };
+          }
+
+          return target[property];
+        }
+      }));
+    } catch (error) {
+      transactionRollbacks += 1;
+      throw error;
+    } finally {
+      if (transactionRollbacks === 0) {
+        libraryUpdates.push(...staged);
+      }
+    }
+  };
+
+  const restoreQueryRaw = stubQueryRaw(() => {
+    throw new Error('identity insert failed for a reason that is not a unique violation');
+  });
+  const restore = stubPrisma({
+    gameExternalIdentity: { findUnique: async () => null },
+    gameLocalization: { create: async () => ({ id: 'localization-1' }) },
+    catalogGame: { create: async () => ({ id: CATALOG_GAME_A }) }
+  });
+
+  try {
+    const result = await catalogDualWriteService.linkVerifiedSteamOwnership({
+      entries: [{ libraryEntryId: 'row-1', externalGameId: '367520', gameName: 'Hollow Knight' }],
+      now: NOW
+    });
+
+    assert.equal(result.canonicalLinkStatus, 'unavailable');
+    assert.equal(result.canonicalPendingCount, 1);
+    assert.equal(transactionRollbacks, 1, 'the failure must abort the whole entry, not part of it');
+    assert.deepEqual(libraryUpdates, [],
+      'a rolled-back entry must not leave a library row pointing at an orphan game');
+  } finally {
+    restore();
+    restoreQueryRaw();
+    prisma.$transaction = original;
   }
 });
 
@@ -294,6 +367,8 @@ test('a Steam sync that cannot link reports degraded instead of a silent success
 
 test('a partially linked Steam sync is reported as partial', async () => {
   let calls = 0;
+  const restoreTransaction = stubTransaction();
+  const restoreQueryRaw = stubQueryRaw(() => [{ id: 'identity-1' }]);
   const restore = stubPrisma({
     gameExternalIdentity: {
       findUnique: async () => {
@@ -304,9 +379,9 @@ test('a partially linked Steam sync is reported as partial', async () => {
         }
 
         return null;
-      },
-      create: async () => ({ id: 'identity-1', catalogGameId: CATALOG_GAME_A, verifiedAt: NOW })
+      }
     },
+    gameLocalization: { create: async () => ({ id: 'localization-1' }) },
     catalogGame: { create: async () => ({ id: CATALOG_GAME_A }) },
     userGameLibrary: { update: async ({ where }) => ({ id: where.id }) }
   });
@@ -325,6 +400,8 @@ test('a partially linked Steam sync is reported as partial', async () => {
     assert.equal(result.canonicalPendingCount, 1);
   } finally {
     restore();
+    restoreQueryRaw();
+    restoreTransaction();
   }
 });
 
@@ -733,10 +810,12 @@ test('a genuine replay of the same session returns the committed outcome', async
 // H. Magazine body and correction audit
 // ===========================================================================
 
-function stubArticle({ existing, previousRevision, captured = {} }) {
-  return {
-    captured,
-    restore: stubPrisma({
+/// Stubs everything one editorial mutation touches, including the row lock and the
+/// in-transaction role read that round-2 finding C added.
+function stubArticle({ existing, previousRevision, captured = {}, roles = [{ role: 'EDITOR' }] }) {
+  const lock = stubArticleLock(existing?.id ?? 'a-1');
+  const restorePrisma = stubPrisma({
+      userRoleAssignment: { findMany: async () => roles },
       editorialArticle: {
         findUnique: async () => existing,
         update: async ({ data }) => {
@@ -755,7 +834,15 @@ function stubArticle({ existing, previousRevision, captured = {} }) {
       articleSource: { upsert: async () => ({ id: 's-1' }) },
       articleGameLink: { upsert: async () => ({ id: 'l-1' }) },
       articleAsset: { upsert: async () => ({ id: 'as-1' }) }
-    })
+  });
+
+  return {
+    captured,
+    lock,
+    restore() {
+      restorePrisma();
+      lock.restore();
+    }
   };
 }
 
@@ -834,6 +921,7 @@ test('an explicit null body clears it, so omission and clearing stay distinguish
 
 test('publishing carries the reviewed body into the published revision', async () => {
   const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
   const captured = {};
   const restore = stubPrisma({
     userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
@@ -842,7 +930,17 @@ test('publishing carries the reviewed body into the published revision', async (
         id: 'a-1', slug: 's', status: 'SCHEDULED', locale: 'ko', headline: 'H', excerpt: 'E',
         publishedAt: null, correctedAt: null, retractedAt: null, authorUserId: USER_A,
         scheduledFor: null, aiDraftUsed: false, createdAt: NOW, updatedAt: NOW,
-        currentRevision: null, sources: [], gameLinks: [], assets: [], revisions: []
+        // The reviewed body lives on the current revision, which is what publish
+        // re-validates before it commits.
+        currentRevision: {
+          revisionNumber: 3,
+          status: 'SCHEDULED',
+          bodyMarkdown: '# Reviewed body',
+          changeNote: null,
+          aiDraft: false,
+          createdAt: NOW
+        },
+        sources: [], gameLinks: [], assets: []
       }),
       update: async () => ({ id: 'a-1' })
     },
@@ -863,15 +961,23 @@ test('publishing carries the reviewed body into the published revision', async (
     assert.equal(captured.revisionData.status, 'PUBLISHED');
   } finally {
     restore();
+    lock.restore();
     restoreTransaction();
   }
 });
 
 test('a silent edit of published content is refused', async () => {
   const publishedArticle = {
-    id: 'a-1', status: 'PUBLISHED', headline: 'H', excerpt: 'E'
+    id: 'a-1',
+    status: 'PUBLISHED',
+    headline: 'H',
+    excerpt: 'E',
+    currentRevision: { revisionNumber: 4, bodyMarkdown: '# Body', changeNote: 'published' }
   };
+  const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
   const restore = stubPrisma({
+    userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
     editorialArticle: { findUnique: async () => publishedArticle }
   });
 
@@ -908,8 +1014,146 @@ test('a silent edit of published content is refused', async () => {
       }),
       (error) => error.code === 'ARTICLE_CORRECTION_REQUIRED'
     );
+
+    // Round-2 finding D: a status-only hop to CORRECTED wrote an audit revision for
+    // a change no reader could see, with changeNote null.
+    await assert.rejects(
+      articleService.updateArticle({
+        actorUserId: USER_A,
+        slug: 's',
+        input: { status: 'CORRECTED', sources: [], relatedGames: [], assets: [] },
+        now: NOW
+      }),
+      (error) => error.statusCode === 409 && error.code === 'ARTICLE_CORRECTION_EMPTY'
+    );
+
+    // Every rejection happened behind the row lock, not on a read taken before it.
+    assert.equal(lock.lockCount, 4);
   } finally {
     restore();
+    lock.restore();
+    restoreTransaction();
+  }
+});
+
+test('an edit racing a concurrent publish is refused as a correction, not applied silently', async () => {
+  // Round-2 finding C, exactly. The editor read SCHEDULED; between that read and
+  // the write another editor published. Because the status is now re-read under the
+  // lock, the edit is judged against PUBLISHED and rejected.
+  const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
+  const captured = { revisionData: null, articleUpdates: [] };
+  const restore = stubPrisma({
+    userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
+    editorialArticle: {
+      // What the lock sees: the competing publish already committed.
+      findUnique: async () => ({
+        id: 'a-1',
+        status: 'PUBLISHED',
+        headline: 'H',
+        excerpt: 'E',
+        currentRevision: { revisionNumber: 5, bodyMarkdown: '# Body', changeNote: 'published' }
+      }),
+      update: async ({ data }) => {
+        captured.articleUpdates.push(data);
+        return { id: 'a-1' };
+      }
+    },
+    articleRevision: {
+      findFirst: async () => ({ revisionNumber: 5, headline: 'H', excerpt: 'E', bodyMarkdown: '# Body' }),
+      create: async ({ data }) => {
+        captured.revisionData = data;
+        return { id: 'rev-6', revisionNumber: 6 };
+      }
+    }
+  });
+
+  try {
+    await assert.rejects(
+      articleService.updateArticle({
+        actorUserId: USER_A,
+        slug: 's',
+        // A perfectly ordinary draft edit, prepared while the article was SCHEDULED.
+        input: { headline: 'Draft-era headline', sources: [], relatedGames: [], assets: [] },
+        now: NOW
+      }),
+      (error) => error.statusCode === 409 && error.code === 'ARTICLE_CORRECTION_REQUIRED'
+    );
+
+    assert.equal(captured.revisionData, null, 'no revision may be written for a refused edit');
+    assert.deepEqual(captured.articleUpdates, [], 'the live article must be untouched');
+  } finally {
+    restore();
+    lock.restore();
+    restoreTransaction();
+  }
+});
+
+test('an edit whose expectedRevisionNumber is stale is a 409, not a lost update', async () => {
+  const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
+  const restore = stubPrisma({
+    userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
+    editorialArticle: {
+      findUnique: async () => ({
+        id: 'a-1',
+        status: 'DRAFT',
+        headline: 'H',
+        excerpt: 'E',
+        currentRevision: { revisionNumber: 7, bodyMarkdown: '# Newer body', changeNote: null }
+      })
+    }
+  });
+
+  try {
+    await assert.rejects(
+      articleService.updateArticle({
+        actorUserId: USER_A,
+        slug: 's',
+        input: { headline: 'Based on revision 6', expectedRevisionNumber: 6, sources: [], relatedGames: [], assets: [] },
+        now: NOW
+      }),
+      (error) => error.statusCode === 409 && error.code === 'ARTICLE_CONCURRENT_MODIFICATION'
+    );
+  } finally {
+    restore();
+    lock.restore();
+    restoreTransaction();
+  }
+});
+
+test('an editor whose role was revoked mid-request cannot complete the edit', async () => {
+  // The role is read inside the same transaction that holds the lock, so a
+  // revocation that commits while the request is in flight takes effect.
+  const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
+  const restore = stubPrisma({
+    userRoleAssignment: { findMany: async () => [] },
+    editorialArticle: {
+      findUnique: async () => ({
+        id: 'a-1',
+        status: 'DRAFT',
+        headline: 'H',
+        excerpt: 'E',
+        currentRevision: { revisionNumber: 1, bodyMarkdown: '# Body', changeNote: null }
+      })
+    }
+  });
+
+  try {
+    await assert.rejects(
+      articleService.updateArticle({
+        actorUserId: USER_B,
+        slug: 's',
+        input: { headline: 'Changed', sources: [], relatedGames: [], assets: [] },
+        now: NOW
+      }),
+      (error) => error.statusCode === 403 && error.code === 'FORBIDDEN_ROLE'
+    );
+  } finally {
+    restore();
+    lock.restore();
+    restoreTransaction();
   }
 });
 
@@ -920,7 +1164,15 @@ test('a proper correction sets correctedAt and records the change note', async (
       id: 'a-1', status: 'PUBLISHED', headline: 'H', excerpt: 'E', slug: 's', locale: 'ko',
       publishedAt: NOW, correctedAt: null, retractedAt: null, authorUserId: USER_A,
       scheduledFor: null, aiDraftUsed: false, createdAt: NOW, updatedAt: NOW,
-      currentRevision: null, sources: [], gameLinks: [], assets: []
+      currentRevision: {
+        revisionNumber: 4,
+        status: 'PUBLISHED',
+        bodyMarkdown: '# Body',
+        changeNote: 'published',
+        aiDraft: false,
+        createdAt: NOW
+      },
+      sources: [], gameLinks: [], assets: []
     },
     previousRevision: { revisionNumber: 4, headline: 'H', excerpt: 'E', bodyMarkdown: '# Body' }
   });
@@ -954,45 +1206,18 @@ test('a proper correction sets correctedAt and records the change note', async (
 });
 
 test('a retracted article is not publicly readable and a draft body is not public', () => {
-  const draft = articleService.mapArticle({
-    slug: 's',
-    status: 'DRAFT',
-    locale: 'ko',
-    headline: 'H',
-    excerpt: 'E',
-    publishedAt: null,
-    correctedAt: null,
-    retractedAt: null,
-    currentRevision: {
-      revisionNumber: 1,
-      status: 'DRAFT',
-      bodyMarkdown: '# Unpublished body',
-      changeNote: null,
-      aiDraft: false,
-      createdAt: NOW
-    },
-    sources: [],
-    gameLinks: [],
-    assets: []
-  });
-
-  // A public reader never sees an unpublished body.
-  assert.equal(draft.bodyMarkdown, null);
-  assert.equal(draft.bodyFormat, 'commonmark-no-html');
-
-  // An editor does.
-  const forEditor = articleService.mapArticle({
-    slug: 's',
-    status: 'DRAFT',
-    locale: 'ko',
-    headline: 'H',
-    excerpt: 'E',
-    publishedAt: null,
-    correctedAt: null,
-    retractedAt: null,
+  const draftRow = {
     id: 'a-1',
+    slug: 's',
+    status: 'DRAFT',
+    locale: 'ko',
+    headline: 'H',
+    excerpt: 'E',
     authorUserId: USER_A,
     scheduledFor: null,
+    publishedAt: null,
+    correctedAt: null,
+    retractedAt: null,
     aiDraftUsed: false,
     createdAt: NOW,
     updatedAt: NOW,
@@ -1007,20 +1232,59 @@ test('a retracted article is not publicly readable and a draft body is not publi
     sources: [],
     gameLinks: [],
     assets: []
-  }, { includeInternal: true });
+  };
+
+  // Round-2 finding D. The public DTO no longer degrades an unreadable article to a
+  // null body: it refuses. A nullable public body is what let OpenAPI promise a
+  // non-null field the server could not deliver.
+  assert.throws(
+    () => articleService.mapPublicArticle(draftRow),
+    (error) => error.statusCode === 404 && error.code === 'ARTICLE_NOT_FOUND'
+  );
+
+  for (const status of ['RETRACTED', 'FACT_CHECK', 'RIGHTS_REVIEW', 'SCHEDULED']) {
+    assert.throws(
+      () => articleService.mapPublicArticle({ ...draftRow, status }),
+      (error) => error.statusCode === 404 && error.code === 'ARTICLE_NOT_FOUND',
+      `${status} must not be publicly readable`
+    );
+  }
+
+  // A publicly readable row with no body is a data defect, surfaced rather than
+  // shipped to every client as bodyMarkdown: null.
+  assert.throws(
+    () => articleService.mapPublicArticle({
+      ...draftRow,
+      status: 'PUBLISHED',
+      currentRevision: { ...draftRow.currentRevision, status: 'PUBLISHED', bodyMarkdown: null }
+    }),
+    (error) => error.statusCode === 500 && error.code === 'ARTICLE_PUBLIC_BODY_MISSING'
+  );
+
+  // ...and so is a CORRECTED article with no correction note.
+  assert.throws(
+    () => articleService.mapPublicArticle({
+      ...draftRow,
+      status: 'CORRECTED',
+      correctedAt: NOW,
+      currentRevision: { ...draftRow.currentRevision, status: 'CORRECTED', changeNote: null }
+    }),
+    (error) => error.statusCode === 500 && error.code === 'ARTICLE_PUBLIC_CORRECTION_NOTE_MISSING'
+  );
+
+  // An editor sees the draft body and the internal workflow metadata.
+  const forEditor = articleService.mapEditorArticle(draftRow);
 
   assert.equal(forEditor.bodyMarkdown, '# Unpublished body');
+  assert.equal(forEditor.bodyFormat, 'commonmark-no-html');
+  assert.equal(forEditor.id, 'a-1');
+  assert.equal(forEditor.authorUserId, USER_A);
 
-  // A published article serves its body.
-  const published = articleService.mapArticle({
-    slug: 's',
+  // A published article serves its body, and every promised field is non-null.
+  const published = articleService.mapPublicArticle({
+    ...draftRow,
     status: 'PUBLISHED',
-    locale: 'ko',
-    headline: 'H',
-    excerpt: 'E',
     publishedAt: NOW,
-    correctedAt: null,
-    retractedAt: null,
     currentRevision: {
       revisionNumber: 5,
       status: 'PUBLISHED',
@@ -1028,12 +1292,24 @@ test('a retracted article is not publicly readable and a draft body is not publi
       changeNote: 'published',
       aiDraft: false,
       createdAt: NOW
-    },
-    sources: [],
-    gameLinks: [],
-    assets: []
+    }
   });
 
   assert.equal(published.bodyMarkdown, '# Published body');
   assert.equal(published.revision.revisionNumber, 5);
+  assert.equal(published.status, 'PUBLISHED');
+  // The public DTO must not leak internal workflow fields.
+  for (const internalField of ['id', 'authorUserId', 'scheduledFor', 'retractedAt', 'aiDraftUsed']) {
+    assert.equal(internalField in published, false, `${internalField} must not be public`);
+  }
+
+  // A Today card carries no body at all.
+  const summary = articleService.mapArticleSummary({
+    ...draftRow,
+    status: 'PUBLISHED',
+    publishedAt: NOW
+  });
+
+  assert.equal('bodyMarkdown' in summary, false, 'a Today card must not ship a 40 KB body');
+  assert.equal(summary.sourceCount, 0);
 });

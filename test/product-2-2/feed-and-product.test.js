@@ -7,6 +7,7 @@ const {
   USER_A,
   USER_B,
   captureLogs,
+  stubArticleLock,
   stubPrisma,
   stubTransaction
 } = require('./helpers/test-env');
@@ -246,6 +247,8 @@ test('the article state machine allows only the documented transitions', () => {
 
 test('publishing re-checks the role in the database and refuses without one', async () => {
   let roleLookups = 0;
+  const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
   const restore = stubPrisma({
     userRoleAssignment: {
       findMany: async () => {
@@ -253,7 +256,7 @@ test('publishing re-checks the role in the database and refuses without one', as
         return [];
       }
     },
-    editorialArticle: { findUnique: async () => ({ id: 'a-1', status: 'SCHEDULED', assets: [], revisions: [] }) }
+    editorialArticle: { findUnique: async () => ({ id: 'a-1', status: 'SCHEDULED', assets: [], currentRevision: null }) }
   });
 
   try {
@@ -263,13 +266,114 @@ test('publishing re-checks the role in the database and refuses without one', as
     );
 
     assert.equal(roleLookups, 1, 'the role must be read from the database at publish time');
+    // Round-2 finding C: the role, status, revision and asset reads must all sit
+    // behind the row lock, so a concurrent publish cannot invalidate them.
+    assert.equal(lock.lockCount, 1, 'the article row must be locked before anything is read');
   } finally {
     restore();
+    lock.restore();
+    restoreTransaction();
+  }
+});
+
+test('a publish that loses a race to another editor is a stable 409, not a silent overwrite', async () => {
+  // The caller publishes revision 4; another editor has already committed
+  // revision 5. Optimistic CAS on top of the row lock turns that into a conflict
+  // the client can retry rather than an unnoticed overwrite.
+  const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
+  const restore = stubPrisma({
+    userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
+    editorialArticle: {
+      findUnique: async () => ({
+        id: 'a-1',
+        status: 'SCHEDULED',
+        assets: [],
+        currentRevision: { revisionNumber: 5, bodyMarkdown: '# Someone else\'s edit' }
+      })
+    }
+  });
+
+  try {
+    await assert.rejects(
+      articleService.publishArticle({ actorUserId: USER_A, slug: 'some-article', expectedRevisionNumber: 4 }),
+      (error) => error.statusCode === 409 && error.code === 'ARTICLE_CONCURRENT_MODIFICATION'
+    );
+  } finally {
+    restore();
+    lock.restore();
+    restoreTransaction();
+  }
+});
+
+test('a body with no content can never be published', async () => {
+  // Round-2 finding D: bodyMarkdown was nullable all the way through publication,
+  // so an empty article could go public while OpenAPI promised a non-null body.
+  for (const bodyMarkdown of [null, '', '   \n  ']) {
+    const restoreTransaction = stubTransaction();
+    const lock = stubArticleLock('a-1');
+    const restore = stubPrisma({
+      userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
+      editorialArticle: {
+        findUnique: async () => ({
+          id: 'a-1',
+          status: 'SCHEDULED',
+          assets: [],
+          currentRevision: { revisionNumber: 1, bodyMarkdown }
+        })
+      }
+    });
+
+    try {
+      await assert.rejects(
+        articleService.publishArticle({ actorUserId: USER_A, slug: 'empty-article' }),
+        (error) => error.statusCode === 409 && error.code === 'ARTICLE_BODY_REQUIRED_FOR_PUBLICATION',
+        `body ${JSON.stringify(bodyMarkdown)} must not be publishable`
+      );
+    } finally {
+      restore();
+      lock.restore();
+      restoreTransaction();
+    }
+  }
+});
+
+test('publishing re-validates the stored body, so an unsafe draft cannot slip out later', async () => {
+  // A body saved before the Markdown rule tightened must not reach readers just
+  // because the publish step trusted the earlier write-time check.
+  const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
+  const restore = stubPrisma({
+    userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
+    editorialArticle: {
+      findUnique: async () => ({
+        id: 'a-1',
+        status: 'SCHEDULED',
+        assets: [],
+        currentRevision: {
+          revisionNumber: 2,
+          bodyMarkdown: 'Intro\n\n![tracking pixel](https://tracker.example/pixel)\n'
+        }
+      })
+    }
+  });
+
+  try {
+    await assert.rejects(
+      articleService.publishArticle({ actorUserId: USER_A, slug: 'legacy-body' }),
+      (error) => error.statusCode === 409 && error.code === 'ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED'
+    );
+  } finally {
+    restore();
+    lock.restore();
+    restoreTransaction();
   }
 });
 
 test('an unresolved hero image rights status blocks publication', async () => {
   for (const rightsStatus of ['UNKNOWN', 'USER_SUBMITTED', 'RESTRICTED']) {
+    const restoreTransaction = stubTransaction();
+    const lock = stubArticleLock('a-1');
     const restore = stubPrisma({
       userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
       editorialArticle: {
@@ -278,7 +382,7 @@ test('an unresolved hero image rights status blocks publication', async () => {
           status: 'SCHEDULED',
           aiDraftUsed: false,
           assets: [{ rightsStatus, isHero: true }],
-          revisions: []
+          currentRevision: { revisionNumber: 1, bodyMarkdown: '# Reviewed body' }
         })
       }
     });
@@ -289,14 +393,21 @@ test('an unresolved hero image rights status blocks publication', async () => {
         (error) => error.statusCode === 409 && error.code === 'ARTICLE_HERO_RIGHTS_UNRESOLVED',
         `${rightsStatus} must block publication`
       );
+
+      // The rights read must be inside the lock; the previous revision read the
+      // assets before the transaction, so a hero added in between went unnoticed.
+      assert.equal(lock.lockCount, 1);
     } finally {
       restore();
+      lock.restore();
+      restoreTransaction();
     }
   }
 });
 
 test('a cleared hero image publishes and an unresolved one is withheld from the DTO', async () => {
   const restoreTransaction = stubTransaction();
+  const lock = stubArticleLock('a-1');
   let articleReads = 0;
   const restore = stubPrisma({
     userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
@@ -327,8 +438,7 @@ test('a cleared hero image publishes and an unresolved one is withheld from the 
         },
         sources: [],
         gameLinks: [],
-        assets: [{ kind: 'HERO', url: 'https://cdn.example.test/hero.png', rightsStatus: 'OFFICIAL_PRESS_KIT', attribution: 'Press kit', isHero: true }],
-        revisions: []
+        assets: [{ kind: 'HERO', url: 'https://cdn.example.test/hero.png', rightsStatus: 'OFFICIAL_PRESS_KIT', attribution: 'Press kit', isHero: true }]
       }),
       update: async () => ({ id: 'a-1' })
     },
@@ -349,10 +459,11 @@ test('a cleared hero image publishes and an unresolved one is withheld from the 
     assert.equal(published.bodyFormat, 'commonmark-no-html');
   } finally {
     restore();
+    lock.restore();
     restoreTransaction();
   }
 
-  const withheld = articleService.mapArticle({
+  const withheld = articleService.mapPublicArticle({
     slug: 's',
     status: 'PUBLISHED',
     locale: 'ko',
@@ -382,6 +493,7 @@ test('an article is created as DRAFT even when the client asks for more', async 
   const created = [];
   const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
+    userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
     editorialArticle: {
       create: async ({ data }) => {
         created.push(data);
@@ -446,6 +558,7 @@ test('an article is created as DRAFT even when the client asks for more', async 
 test('a duplicate slug is a conflict, not a silent overwrite', async () => {
   const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
+    userRoleAssignment: { findMany: async () => [{ role: 'EDITOR' }] },
     editorialArticle: {
       create: async () => {
         throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {

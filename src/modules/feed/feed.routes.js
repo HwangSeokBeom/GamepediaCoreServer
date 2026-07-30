@@ -10,6 +10,7 @@ const {
   createArticleSchema,
   listArticlesQuerySchema,
   productEventBatchSchema,
+  publishArticleSchema,
   retractArticleSchema,
   todayQuerySchema,
   updateArticleSchema
@@ -62,7 +63,11 @@ router.post('/editorial/articles/:slug/publish',
   requireFeature('magazine'),
   authenticateAccessToken,
   requireRole('EDITOR', 'ADMIN'),
-  validate({ params: articleSlugParamsSchema, errorMapper: buildFeedValidationError }),
+  validate({
+    params: articleSlugParamsSchema,
+    body: publishArticleSchema,
+    errorMapper: buildFeedValidationError
+  }),
   feedController.publishArticle);
 
 router.post('/editorial/articles/:slug/retract',
