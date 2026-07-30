@@ -6,6 +6,7 @@ const moderationService = require('../moderation/moderation.service');
 const { AppError } = require('../../utils/error-response');
 const steamService = require('../../services/steam.service');
 const igdbService = require('../igdb/igdb.service');
+const catalogDualWriteService = require('../catalog/catalog-dual-write.service');
 const {
   buildGameImageResolverUrl,
   extractUsableIgdbCoverUrl
@@ -1247,6 +1248,11 @@ async function createReview({ userId, gameId, rating, content, containsSpoiler =
     gameId,
     reviewId: review.id
   });
+
+  // Product 2.2 dual write: gameId (an IGDB identity) stays authoritative and the
+  // canonical catalog id is recorded alongside it. Best effort by design.
+  await catalogDualWriteService.linkReview({ reviewId: review.id, gameId });
+
   const reviewDtoContext = await buildReviewDtoContext([review], userId);
 
   return {

@@ -12,6 +12,7 @@ const {
   extractUsableIgdbCoverUrl
 } = require('./library-image.service');
 const steamIgdbMatchService = require('./steam-igdb-match.service');
+const catalogDualWriteService = require('../catalog/catalog-dual-write.service');
 const { logger } = require('../../utils/logger');
 const { AppError } = require('../../utils/error-response');
 const {
@@ -7239,6 +7240,16 @@ async function updateLibraryStatus({
       message: activityError?.message ?? 'Library activity update failed'
     });
   }
+
+  // Product 2.2 dual write: record the canonical catalog id next to the legacy
+  // gameSource/externalGameId pair, which stays authoritative. Best effort by
+  // design — the library write above has already committed.
+  await catalogDualWriteService.linkLibraryEntry({
+    libraryEntryId: libraryEntry.id,
+    gameSource: libraryEntry.gameSource,
+    externalGameId: libraryEntry.externalGameId,
+    title: libraryEntry.gameName
+  });
 
   return {
     libraryEntry: mapLibraryStatusEntry(libraryEntry)

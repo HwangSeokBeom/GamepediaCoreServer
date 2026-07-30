@@ -110,6 +110,34 @@ function resolveMailMode() {
 const port = parseNumber('PORT', '3000');
 const llmProvider = (readEnv('LLM_PROVIDER') ?? 'openai').toLowerCase();
 
+// Product 2.2 kill switches. Every feature has an independent default so a
+// single failing feature can be turned off without touching the others, and a
+// database override row is not required for the shipped behavior.
+const PRODUCT_FEATURE_FLAG_KEYS = Object.freeze([
+  'openCatalog',
+  'aiQuickAdd',
+  'playlog',
+  'playCompass',
+  'gameDNA',
+  'monthlyReplay',
+  'todayFeed',
+  'magazine'
+]);
+
+function toEnvSegment(flagKey) {
+  return flagKey
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toUpperCase();
+}
+
+function resolveProductFeatureDefaults() {
+  return Object.freeze(Object.fromEntries(PRODUCT_FEATURE_FLAG_KEYS.map((flagKey) => [
+    flagKey,
+    parseBoolean(`PRODUCT_FEATURE_${toEnvSegment(flagKey)}_ENABLED`, 'true')
+  ])));
+}
+
 function getLlmProviderDefaults(provider) {
   if (provider === 'gemini') {
     return {
@@ -194,7 +222,33 @@ const env = {
   firebaseAdminProjectId: readEnv('FIREBASE_ADMIN_PROJECT_ID'),
   firebaseAdminClientEmailConfigured: Boolean(readEnv('FIREBASE_ADMIN_CLIENT_EMAIL')),
   firebaseAdminPrivateKeyConfigured: Boolean(readEnv('FIREBASE_ADMIN_PRIVATE_KEY')),
-  prismaQueryLogging: parseBoolean('PRISMA_QUERY_LOGGING', 'false')
+  prismaQueryLogging: parseBoolean('PRISMA_QUERY_LOGGING', 'false'),
+  // --- Product 2.2 ---
+  productConfigVersion: readEnv('PRODUCT_CONFIG_VERSION') ?? '2.2.0',
+  productFeatureFlagKeys: PRODUCT_FEATURE_FLAG_KEYS,
+  productFeatureFlagDefaults: resolveProductFeatureDefaults(),
+  catalogSubmissionPreviewTtlMinutes: parseBoundedNumber(
+    'CATALOG_SUBMISSION_PREVIEW_TTL_MINUTES',
+    '60',
+    { min: 5, max: 1440 }
+  ),
+  aiQuickAddDailyLimit: parseNumber('AI_QUICK_ADD_DAILY_LIMIT', readEnv('AI_RECOMMENDATION_DAILY_LIMIT') ?? '20'),
+  // Editorial source adapters may only ever reach hosts on this allowlist.
+  // Empty means "no outbound source fetching is configured".
+  editorialSourceAllowlist: Object.freeze((readEnv('EDITORIAL_SOURCE_HOST_ALLOWLIST') ?? '')
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean)),
+  editorialSourceFetchTimeoutMs: parseBoundedNumber(
+    'EDITORIAL_SOURCE_FETCH_TIMEOUT_MS',
+    '5000',
+    { min: 500, max: 30000 }
+  ),
+  editorialSourceMaxBytes: parseBoundedNumber(
+    'EDITORIAL_SOURCE_MAX_BYTES',
+    '524288',
+    { min: 1024, max: 5242880 }
+  )
 };
 
 function validateEnv(config) {

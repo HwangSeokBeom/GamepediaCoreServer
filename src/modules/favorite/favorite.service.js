@@ -2,6 +2,7 @@ const { Prisma } = require('@prisma/client');
 const { prisma } = require('../../config/prisma');
 const { logger } = require('../../utils/logger');
 const userActivityService = require('../user/user-activity.service');
+const catalogDualWriteService = require('../catalog/catalog-dual-write.service');
 const { mapFavoriteListToDto } = require('./favorite.mapper');
 
 const favoriteOrderByMap = {
@@ -54,6 +55,12 @@ async function addFavorite({ userId, gameId }) {
         message: activityError?.message ?? 'Favorite activity create failed'
       });
     }
+  }
+
+  // Product 2.2 dual write: gameId (an IGDB identity) stays authoritative and the
+  // canonical catalog id is recorded alongside it. Best effort by design.
+  if (favorite) {
+    await catalogDualWriteService.linkFavorite({ favoriteId: favorite.id, gameId });
   }
 
   return {
