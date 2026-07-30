@@ -44,14 +44,14 @@ test('a database override wins over the environment default', async () => {
     // Every other switch is independent and stays on its default.
     assert.equal(flags.playlog, true);
     assert.equal(flags.openCatalog, true);
-    assert.equal(await featureFlagService.isFeatureEnabled('aiQuickAdd'), false);
-    assert.equal(await featureFlagService.isFeatureEnabled('playlog'), true);
+    assert.deepEqual(await featureFlagService.isFeatureEnabled('aiQuickAdd'), { enabled: false, degraded: false });
+    assert.deepEqual(await featureFlagService.isFeatureEnabled('playlog'), { enabled: true, degraded: false });
   } finally {
     restore();
   }
 });
 
-test('a flag lookup failure falls back to environment defaults instead of failing', async () => {
+test('a flag lookup failure fails closed instead of restoring the enabled defaults', async () => {
   const logs = captureLogs();
   const restore = stubPrisma({
     productFeatureFlag: {
@@ -62,16 +62,55 @@ test('a flag lookup failure falls back to environment defaults instead of failin
   });
 
   try {
-    const { flags, source } = await featureFlagService.resolveFeatureFlags();
+    const { flags, source, degraded } = await featureFlagService.resolveFeatureFlags();
 
-    assert.equal(source, 'environment_defaults');
+    // Every environment default is `true`, so falling back to them would silently
+    // re-enable a feature an operator had explicitly disabled in the database.
+    assert.equal(source, 'database_unavailable');
+    assert.equal(degraded, true);
     assert.deepEqual(Object.keys(flags).sort(), [...FEATURE_FLAG_KEYS].sort());
-    assert.equal(Object.values(flags).every((value) => value === true), true);
-    assert.match(logs.serialize(), /product-feature-flag-lookup-failed/);
+    assert.equal(
+      Object.values(flags).every((value) => value === false),
+      true,
+      'an unreadable kill-switch state must disable every gated feature'
+    );
+
+    for (const flagKey of FEATURE_FLAG_KEYS) {
+      assert.deepEqual(await featureFlagService.isFeatureEnabled(flagKey), { enabled: false, degraded: true });
+    }
+
+    const serialized = logs.serialize();
+    assert.match(serialized, /product-feature-flag-lookup-failed/);
+    assert.match(serialized, /"fallback":"fail_closed"/);
+    // A reason code, never a raw database error string.
+    assert.equal(serialized.includes('database unavailable'), false);
   } finally {
     logs.restore();
     restore();
   }
+});
+
+test('an environment default applies only when the lookup succeeded with no row', async () => {
+  const restore = stubPrisma({
+    productFeatureFlag: { findMany: async () => [] }
+  });
+
+  try {
+    const { flags, source, degraded } = await featureFlagService.resolveFeatureFlags();
+
+    assert.equal(source, 'database');
+    assert.equal(degraded, false);
+    assert.equal(Object.values(flags).every((value) => value === true), true);
+  } finally {
+    restore();
+  }
+});
+
+test('the closed flag set covers every kill switch', () => {
+  const closed = featureFlagService.buildClosedFlags();
+
+  assert.deepEqual(Object.keys(closed).sort(), [...FEATURE_FLAG_KEYS].sort());
+  assert.equal(Object.values(closed).every((value) => value === false), true);
 });
 
 test('an unknown flag key is a programming error, not a silent false', async () => {
@@ -95,6 +134,30 @@ test('the product config DTO is versioned and lists every kill switch', async ()
     assert.equal(config.limits.quickAddPreviewMaxCandidates, 3);
     assert.equal(config.limits.quickAddPreviewMaxQuestions, 1);
     assert.deepEqual(config.allowlists.productEventCodes.sort(), [...PRODUCT_EVENT_CODES].sort());
+    assert.equal(config.featureFlagSource, 'database');
+    assert.equal(config.featureFlagStateDegraded, false);
+  } finally {
+    restore();
+  }
+});
+
+test('product config reports a degraded source and false features when flags are unreadable', async () => {
+  const restore = stubPrisma({
+    productFeatureFlag: {
+      findMany: async () => {
+        throw new Error('database unavailable');
+      }
+    }
+  });
+
+  try {
+    const config = await getProductConfig({ now: NOW });
+
+    // The client is told the truth: the state could not be read, and every gated
+    // feature is being enforced as off.
+    assert.equal(config.featureFlagSource, 'database_unavailable');
+    assert.equal(config.featureFlagStateDegraded, true);
+    assert.equal(Object.values(config.features).every((value) => value === false), true);
   } finally {
     restore();
   }
@@ -254,6 +317,14 @@ test('a cleared hero image publishes and an unresolved one is withheld from the 
         aiDraftUsed: false,
         createdAt: NOW,
         updatedAt: NOW,
+        currentRevision: {
+          revisionNumber: 4,
+          status: 'PUBLISHED',
+          bodyMarkdown: '# Published body',
+          changeNote: 'published',
+          aiDraft: false,
+          createdAt: NOW
+        },
         sources: [],
         gameLinks: [],
         assets: [{ kind: 'HERO', url: 'https://cdn.example.test/hero.png', rightsStatus: 'OFFICIAL_PRESS_KIT', attribution: 'Press kit', isHero: true }],
@@ -262,8 +333,8 @@ test('a cleared hero image publishes and an unresolved one is withheld from the 
       update: async () => ({ id: 'a-1' })
     },
     articleRevision: {
-      findFirst: async () => ({ revisionNumber: 3, headline: 'H', excerpt: 'E' }),
-      create: async () => ({ id: 'rev-4' })
+      findFirst: async () => ({ revisionNumber: 3, headline: 'H', excerpt: 'E', bodyMarkdown: '# Reviewed body' }),
+      create: async () => ({ id: 'rev-4', revisionNumber: 4 })
     }
   });
 
@@ -273,6 +344,9 @@ test('a cleared hero image publishes and an unresolved one is withheld from the 
     assert.equal(published.status, 'PUBLISHED');
     assert.equal(published.heroImage.url, 'https://cdn.example.test/hero.png');
     assert.equal(published.heroImageWithheldReason, null);
+    // The reviewed body must be carried into the published revision, not dropped.
+    assert.equal(published.bodyMarkdown, '# Published body');
+    assert.equal(published.bodyFormat, 'commonmark-no-html');
   } finally {
     restore();
     restoreTransaction();
@@ -287,6 +361,14 @@ test('a cleared hero image publishes and an unresolved one is withheld from the 
     publishedAt: NOW,
     correctedAt: null,
     retractedAt: null,
+    currentRevision: {
+      revisionNumber: 1,
+      status: 'PUBLISHED',
+      bodyMarkdown: '# Body',
+      changeNote: null,
+      aiDraft: false,
+      createdAt: NOW
+    },
     sources: [],
     gameLinks: [],
     assets: [{ kind: 'HERO', url: 'https://cdn.example.test/unknown.png', rightsStatus: 'UNKNOWN', attribution: null, isHero: true }]
@@ -305,6 +387,8 @@ test('an article is created as DRAFT even when the client asks for more', async 
         created.push(data);
         return { id: 'a-1' };
       },
+      // appendRevision points the article at its new current revision.
+      update: async () => ({ id: 'a-1' }),
       findUnique: async () => ({
         id: 'a-1',
         slug: 'new-article',
@@ -320,12 +404,23 @@ test('an article is created as DRAFT even when the client asks for more', async 
         aiDraftUsed: true,
         createdAt: NOW,
         updatedAt: NOW,
+        currentRevision: {
+          revisionNumber: 1,
+          status: 'DRAFT',
+          bodyMarkdown: '# Draft body',
+          changeNote: 'initial draft',
+          aiDraft: true,
+          createdAt: NOW
+        },
         sources: [],
         gameLinks: [],
         assets: []
       })
     },
-    articleRevision: { create: async () => ({ id: 'rev-1' }) }
+    articleRevision: {
+      findFirst: async () => null,
+      create: async () => ({ id: 'rev-1', revisionNumber: 1 })
+    }
   });
 
   try {
@@ -339,6 +434,9 @@ test('an article is created as DRAFT even when the client asks for more', async 
     assert.equal(created[0].status, 'DRAFT');
     assert.equal(created[0].aiDraftUsed, true);
     assert.equal(article.status, 'DRAFT');
+    // An editor reading a draft sees the body that will be published.
+    assert.equal(article.bodyMarkdown, '# Draft body');
+    assert.equal(article.revision.revisionNumber, 1);
   } finally {
     restore();
     restoreTransaction();

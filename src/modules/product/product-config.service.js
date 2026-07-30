@@ -14,13 +14,17 @@ const { CATALOG_PREVIEW_MAX_CANDIDATES } = require('../catalog/catalog.constants
 const PRODUCT_CONFIG_DTO_VERSION = 1;
 
 async function getProductConfig({ now = new Date() } = {}) {
-  const { flags, source } = await resolveFeatureFlags();
+  const { flags, source, degraded } = await resolveFeatureFlags();
 
   return {
     dtoVersion: PRODUCT_CONFIG_DTO_VERSION,
     productVersion: env.productConfigVersion,
     generatedAt: now.toISOString(),
+    // `database_unavailable` means the kill-switch state could not be read. Every
+    // gated feature is then reported false, which is the state the server is
+    // actually enforcing, rather than an optimistic environment default.
     featureFlagSource: source,
+    featureFlagStateDegraded: degraded,
     features: Object.fromEntries(FEATURE_FLAG_KEYS.map((flagKey) => [flagKey, flags[flagKey] === true])),
     limits: {
       playCompassMaxResults: PLAY_COMPASS_MAX_RESULTS,

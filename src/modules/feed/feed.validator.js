@@ -50,12 +50,22 @@ const articleGameLinkInputSchema = z.object({
   relation: z.enum(['SUBJECT', 'MENTIONED', 'RELATED'])
 }).strict();
 
+// The body is CommonMark with HTML disabled. Raw HTML and script are rejected
+// here rather than sanitized later, so a stored body can never carry markup, an
+// event handler, or a remote resource of its own. Images belong to the
+// rights-reviewed article assets, not to inline HTML.
+const HTML_LIKE_PATTERN = /<\s*\/?\s*[a-zA-Z][^>]*>|<!--|javascript:|data:text\/html|on[a-z]+\s*=/i;
+
+const bodyMarkdownSchema = z.string().trim().max(40000)
+  .refine((value) => !HTML_LIKE_PATTERN.test(value),
+    'bodyMarkdown must be CommonMark without embedded HTML, script or data URLs');
+
 const createArticleSchema = z.object({
   slug: slugSchema,
   locale: localeSchema,
   headline: z.string().trim().min(1).max(200),
   excerpt: z.string().trim().min(1).max(600),
-  bodyMarkdown: z.string().trim().max(40000).nullish(),
+  bodyMarkdown: bodyMarkdownSchema.nullish(),
   aiDraftUsed: z.boolean().default(false),
   sources: z.array(articleSourceInputSchema).max(10).default([]),
   relatedGames: z.array(articleGameLinkInputSchema).max(20).default([]),
@@ -66,8 +76,10 @@ const updateArticleSchema = z.object({
   locale: localeSchema.optional(),
   headline: z.string().trim().min(1).max(200).optional(),
   excerpt: z.string().trim().min(1).max(600).optional(),
-  bodyMarkdown: z.string().trim().max(40000).nullish(),
-  changeNote: z.string().trim().max(300).nullish(),
+  // Omitted means "unchanged": the service carries the previous body forward.
+  // An explicit null clears it.
+  bodyMarkdown: bodyMarkdownSchema.nullish(),
+  changeNote: z.string().trim().min(1).max(300).nullish(),
   // PUBLISHED / RETRACTED are reached through the dedicated endpoints so the
   // database role re-check cannot be bypassed by a status patch.
   status: z.enum(['DRAFT', 'FACT_CHECK', 'RIGHTS_REVIEW', 'SCHEDULED', 'CORRECTED']).optional(),
@@ -118,6 +130,11 @@ function buildFeedValidationError(error) {
 
   if ([...issueFields].some((field) => field.endsWith('eventId'))) {
     return new AppError(400, 'INVALID_PRODUCT_EVENT_ID', 'eventId must be an opaque token of 8 to 120 characters');
+  }
+
+  if (issueFields.has('bodyMarkdown')) {
+    return new AppError(400, 'INVALID_ARTICLE_BODY',
+      'bodyMarkdown must be CommonMark without embedded HTML, script or data URLs');
   }
 
   return new AppError(400, 'VALIDATION_ERROR', 'Request validation failed',

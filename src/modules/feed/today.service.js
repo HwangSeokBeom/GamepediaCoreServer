@@ -6,6 +6,7 @@ const gameDnaService = require('../play/game-dna.service');
 const playCompassService = require('../play/play-compass.service');
 const monthlyReplayService = require('../play/monthly-replay.service');
 const articleService = require('./article.service');
+const { buildFriendActivityVisibilityClauses } = require('../user/user-activity.service');
 const { toZonedDateKey } = require('../play/play-time.util');
 
 // Today feed.
@@ -137,7 +138,12 @@ async function buildGameBriefingSection({ userId, now }) {
   }
 
   const games = await prisma.catalogGame.findMany({
-    where: { id: { in: catalogGameIds }, mergedIntoCatalogGameId: null },
+    where: {
+      id: { in: catalogGameIds },
+      mergedIntoCatalogGameId: null,
+      // Never surface another account's PRIVATE catalog metadata.
+      OR: [{ publicationStatus: 'PUBLISHED' }, { createdByUserId: userId }]
+    },
     select: {
       id: true,
       originalTitle: true,
@@ -177,7 +183,7 @@ async function buildGameBriefingSection({ userId, now }) {
 async function buildBacklogRescueSection({ userId }) {
   const entries = await prisma.userGameLibrary.findMany({
     where: { userId, status: 'BACKLOG', catalogGameId: { not: null } },
-    select: { catalogGameId: true, createdAt: true, gameName: true, gameSource: true },
+    select: { catalogGameId: true, createdAt: true, gameName: true, gameSource: true, ownershipProvenance: true },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     take: 50
   });
@@ -201,7 +207,8 @@ async function buildBacklogRescueSection({ userId }) {
       title: entry.gameName,
       addedAt: entry.createdAt.toISOString(),
       reasonCode: 'backlog_never_logged',
-      ownershipProvenance: entry.gameSource === 'STEAM' ? 'PROVIDER_VERIFIED' : 'USER_CONFIRMED'
+      // Stored provenance only: gameSource is a client-settable label.
+      ownershipProvenance: entry.ownershipProvenance ?? 'UNKNOWN'
     }));
 
   return {
@@ -225,7 +232,12 @@ async function buildStartGuideSection({ userId }) {
   }
 
   const games = await prisma.catalogGame.findMany({
-    where: { id: { in: entries.map((entry) => entry.catalogGameId) }, mergedIntoCatalogGameId: null },
+    where: {
+      id: { in: entries.map((entry) => entry.catalogGameId) },
+      mergedIntoCatalogGameId: null,
+      // Never surface another account's PRIVATE catalog metadata.
+      OR: [{ publicationStatus: 'PUBLISHED' }, { createdByUserId: userId }]
+    },
     select: {
       id: true,
       originalTitle: true,
@@ -285,8 +297,17 @@ async function buildMonthlyReplaySection({ userId, timezone, now }) {
   };
 }
 
-/// Existing friend activity, surfaced unchanged: visibility still depends on the
+/// Existing friend activity, surfaced unchanged: visibility depends on the
 /// accepted friendship plus the friend's own privacy settings.
+///
+/// Privacy is enforced by delegating to user-activity.service's
+/// buildFriendActivityVisibilityClauses, which is the single source of the
+/// per-activity-type policy that the existing friend feed already uses. The
+/// previous implementation queried only rows WHERE showRecentlyPlayed = true and
+/// then derived "has a settings row" from that same filtered result, so a friend
+/// with an explicit false was indistinguishable from a friend with no row and was
+/// restored to the visible default. It also applied no policy at all to review or
+/// liked-game activity.
 async function buildFriendActivitySection({ userId }) {
   const friendships = await prisma.friendship.findMany({
     where: { userId },
@@ -299,21 +320,31 @@ async function buildFriendActivitySection({ userId }) {
     return { items: [], emptyReason: 'no_friends' };
   }
 
-  const visibleFriends = await prisma.userPrivacySettings.findMany({
-    where: { userId: { in: friendIds }, showRecentlyPlayed: true },
-    select: { userId: true }
+  // Every settings row for these friends, unfiltered, so an explicit false is
+  // distinguishable from an absent row.
+  const privacySettings = await prisma.userPrivacySettings.findMany({
+    where: { userId: { in: friendIds } },
+    select: {
+      userId: true,
+      showLikedGames: true,
+      showRecentlyPlayed: true,
+      showReviews: true
+    }
   });
-  const visibleFriendIds = new Set(visibleFriends.map((settings) => settings.userId));
-  // A friend with no explicit settings row keeps the shipped default (visible).
-  const settingsPresent = new Set(visibleFriends.map((settings) => settings.userId));
-  const eligibleIds = friendIds.filter((friendId) => visibleFriendIds.has(friendId) || !settingsPresent.has(friendId));
+  const privacySettingsMap = new Map(privacySettings.map((settings) => [settings.userId, settings]));
+  // A friend with no row keeps the shipped default (visible), which
+  // mapPrivacySettingsDto applies inside the shared policy.
+  const visibilityClauses = buildFriendActivityVisibilityClauses(friendIds, privacySettingsMap);
 
-  if (eligibleIds.length === 0) {
+  if (visibilityClauses.length === 0) {
     return { items: [], emptyReason: 'friend_activity_hidden_by_privacy' };
   }
 
   const events = await prisma.userActivityEvent.findMany({
-    where: { actorUserId: { in: eligibleIds }, isVisible: true },
+    // Each clause pairs a group of friends with exactly the activity types their
+    // settings expose, so the filter is applied in the database rather than after
+    // a bounded page has already been cut.
+    where: { OR: visibilityClauses, isVisible: true },
     select: {
       id: true,
       actorUserId: true,
@@ -342,7 +373,14 @@ async function buildFriendActivitySection({ userId }) {
       },
       createdAt: event.createdAt.toISOString()
     })),
-    emptyReason: events.length === 0 ? 'no_recent_friend_activity' : null
+    // Distinguish "nothing happened" from "everything that happened is hidden":
+    // the clauses already excluded fully-private friends, so a page that is empty
+    // while some friends were partially restricted is reported precisely.
+    emptyReason: events.length === 0
+      ? (visibilityClauses.length < friendIds.length
+        ? 'friend_activity_partially_hidden_by_privacy'
+        : 'no_recent_friend_activity')
+      : null
   };
 }
 
