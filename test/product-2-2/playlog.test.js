@@ -3,10 +3,13 @@ const assert = require('node:assert/strict');
 const { Prisma } = require('@prisma/client');
 const {
   CATALOG_GAME_A,
+  CATALOG_GAME_B,
   USER_A,
   USER_B,
   captureLogs,
-  stubPrisma
+  stubPrisma,
+  stubQueryRaw,
+  stubTransaction
 } = require('./helpers/test-env');
 
 const playlogService = require('../../src/modules/play/playlog.service');
@@ -154,6 +157,7 @@ test('creating a session never logs the note or the mood value', async () => {
 
 test('updating another account session is rejected as not found', async () => {
   const queries = [];
+  const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
     playSession: {
       findFirst: async ({ where }) => {
@@ -177,11 +181,13 @@ test('updating another account session is rejected as not found', async () => {
     assert.equal(queries[0].userId, USER_B, 'ownership must be part of the lookup, not a later check');
   } finally {
     restore();
+    restoreTransaction();
   }
 });
 
 test('deleting another account session removes nothing and reports not found', async () => {
   const deleteFilters = [];
+  const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
     playSession: {
       deleteMany: async ({ where }) => {
@@ -203,27 +209,22 @@ test('deleting another account session removes nothing and reports not found', a
     assert.equal(owned.deleted, true);
   } finally {
     restore();
+    restoreTransaction();
   }
 });
 
 test('a replayed delete clientMutationId does not delete twice', async () => {
   let deleteCalls = 0;
-  let receiptCalls = 0;
+  let claimAttempts = 0;
+  const restoreTransaction = stubTransaction();
+  // First claim wins (one row), second conflicts (no rows).
+  const restoreQueryRaw = stubQueryRaw(() => {
+    claimAttempts += 1;
+    return claimAttempts === 1 ? [{ id: 'receipt-1' }] : [];
+  });
   const restore = stubPrisma({
     clientMutationReceipt: {
-      create: async () => {
-        receiptCalls += 1;
-
-        if (receiptCalls === 1) {
-          return { id: 'receipt-1' };
-        }
-
-        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: 'test',
-          meta: { target: ['user_id', 'scope', 'client_mutation_id'] }
-        });
-      }
+      findUnique: async () => ({ resourceId: SESSION_ID })
     },
     playSession: {
       deleteMany: async () => {
@@ -251,6 +252,8 @@ test('a replayed delete clientMutationId does not delete twice', async () => {
     assert.equal(deleteCalls, 1, 'the second call must not reach the delete');
   } finally {
     restore();
+    restoreQueryRaw();
+    restoreTransaction();
   }
 });
 

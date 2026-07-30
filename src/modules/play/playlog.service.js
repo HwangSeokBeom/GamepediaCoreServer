@@ -43,14 +43,18 @@ function isRecordNotFound(error) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025';
 }
 
-async function assertCatalogGameUsable({ userId, catalogGameId, regionalReleaseId }) {
-  const canonicalId = await catalogIdentityService.resolveCanonicalGameId(catalogGameId);
+/// Resolves the requested catalog game to its canonical survivor and validates
+/// that the caller may reference it, plus that any regional release belongs to
+/// that *resolved* game. Returns the canonical id, which callers must persist —
+/// storing the requested id would leave a tombstone reference behind.
+async function assertCatalogGameUsable({ userId, catalogGameId, regionalReleaseId, client = prisma }) {
+  const canonicalId = await catalogIdentityService.resolveCanonicalGameId(catalogGameId, { client });
 
   if (!canonicalId) {
     throw new AppError(400, 'CATALOG_GAME_NOT_FOUND', 'The referenced catalog game could not be found');
   }
 
-  const game = await prisma.catalogGame.findFirst({
+  const game = await client.catalogGame.findFirst({
     where: {
       id: canonicalId,
       mergedIntoCatalogGameId: null,
@@ -64,7 +68,7 @@ async function assertCatalogGameUsable({ userId, catalogGameId, regionalReleaseI
   }
 
   if (regionalReleaseId) {
-    const release = await prisma.regionalRelease.findFirst({
+    const release = await client.regionalRelease.findFirst({
       where: { id: regionalReleaseId, catalogGameId: canonicalId },
       select: { id: true }
     });
@@ -212,121 +216,185 @@ function decodeCursor(cursor) {
 }
 
 async function updatePlaySession({ userId, sessionId, patch, clientMutationId = null }) {
-  const existing = await prisma.playSession.findFirst({
-    // userId is part of the lookup, so another account's id resolves to null.
-    where: { id: sessionId, userId },
-    select: { id: true, catalogGameId: true }
-  });
-
-  if (!existing) {
-    throw new AppError(404, 'PLAY_SESSION_NOT_FOUND', 'Play session could not be found');
-  }
-
-  if (patch.catalogGameId || patch.regionalReleaseId !== undefined) {
-    await assertCatalogGameUsable({
-      userId,
-      catalogGameId: patch.catalogGameId ?? existing.catalogGameId,
-      regionalReleaseId: patch.regionalReleaseId ?? null
-    });
-  }
-
-  if (clientMutationId) {
-    const replay = await recordMutationReceipt({
-      userId,
-      scope: 'play_session_update',
-      clientMutationId,
-      resourceId: sessionId,
-      outcomeCode: 'updated'
+  // The receipt and the mutation share one transaction. Writing the receipt first
+  // and committing it separately meant that if the update then failed, a retry
+  // with the same clientMutationId saw a duplicate receipt and reported a
+  // successful replay for a mutation that had never been applied.
+  const outcome = await prisma.$transaction(async (tx) => {
+    const existing = await tx.playSession.findFirst({
+      // userId is part of the lookup, so another account's id resolves to null.
+      where: { id: sessionId, userId },
+      select: { id: true, catalogGameId: true, regionalReleaseId: true }
     });
 
-    if (replay.duplicate) {
-      const current = await prisma.playSession.findFirst({ where: { id: sessionId, userId }, select: SESSION_SELECT });
-
-      return { session: current, idempotentReplay: true };
+    if (!existing) {
+      throw new AppError(404, 'PLAY_SESSION_NOT_FOUND', 'Play session could not be found');
     }
-  }
 
-  const updated = await prisma.playSession.update({
-    where: { id: existing.id },
-    data: {
-      ...(patch.catalogGameId ? { catalogGameId: patch.catalogGameId } : {}),
-      ...(patch.regionalReleaseId !== undefined ? { regionalReleaseId: patch.regionalReleaseId } : {}),
-      ...(patch.playedAt ? { playedAt: patch.playedAt } : {}),
-      ...(patch.durationMinutes !== undefined ? { durationMinutes: patch.durationMinutes } : {}),
-      ...(patch.progressPercent !== undefined ? { progressPercent: patch.progressPercent } : {}),
-      ...(patch.mood !== undefined ? { mood: patch.mood } : {}),
-      ...(patch.note !== undefined ? { note: patch.note } : {}),
-      ...(patch.outcome ? { outcome: patch.outcome } : {}),
-      ...(patch.visibility ? { visibility: patch.visibility } : {})
-    },
-    select: SESSION_SELECT
+    const gameChangeRequested = patch.catalogGameId !== undefined && patch.catalogGameId !== null;
+    const releaseProvided = patch.regionalReleaseId !== undefined;
+    let nextCatalogGameId = existing.catalogGameId;
+    let nextRegionalReleaseId;
+
+    if (gameChangeRequested || releaseProvided) {
+      // The candidate release is whatever the patch supplies; when the game moves
+      // and no release is supplied, the old release cannot be carried over
+      // because it belongs to the previous game.
+      const candidateReleaseId = releaseProvided ? patch.regionalReleaseId : null;
+
+      nextCatalogGameId = await assertCatalogGameUsable({
+        userId,
+        catalogGameId: patch.catalogGameId ?? existing.catalogGameId,
+        regionalReleaseId: candidateReleaseId,
+        client: tx
+      });
+
+      if (releaseProvided) {
+        nextRegionalReleaseId = patch.regionalReleaseId;
+      } else if (nextCatalogGameId !== existing.catalogGameId) {
+        // Game moved and no release was supplied: clear it rather than leave a
+        // release pointing at the previous canonical game.
+        nextRegionalReleaseId = null;
+      }
+    }
+
+    if (clientMutationId) {
+      const replay = await recordMutationReceipt({
+        client: tx,
+        userId,
+        scope: 'play_session_update',
+        clientMutationId,
+        resourceId: sessionId,
+        outcomeCode: 'updated'
+      });
+
+      if (replay.duplicate) {
+        // A receipt only exists if its transaction committed, so this is a real
+        // replay of an applied mutation.
+        if (replay.resourceId && replay.resourceId !== sessionId) {
+          throw new AppError(409, 'CLIENT_MUTATION_ID_REUSED',
+            'This clientMutationId was already used for a different play session');
+        }
+
+        const current = await tx.playSession.findFirst({
+          where: { id: sessionId, userId },
+          select: SESSION_SELECT
+        });
+
+        return { session: current, idempotentReplay: true };
+      }
+    }
+
+    const updated = await tx.playSession.update({
+      where: { id: existing.id },
+      data: {
+        // Always the canonical survivor, never the id the request supplied.
+        ...(nextCatalogGameId !== existing.catalogGameId ? { catalogGameId: nextCatalogGameId } : {}),
+        ...(nextRegionalReleaseId !== undefined ? { regionalReleaseId: nextRegionalReleaseId } : {}),
+        ...(patch.playedAt ? { playedAt: patch.playedAt } : {}),
+        ...(patch.durationMinutes !== undefined ? { durationMinutes: patch.durationMinutes } : {}),
+        ...(patch.progressPercent !== undefined ? { progressPercent: patch.progressPercent } : {}),
+        ...(patch.mood !== undefined ? { mood: patch.mood } : {}),
+        ...(patch.note !== undefined ? { note: patch.note } : {}),
+        ...(patch.outcome ? { outcome: patch.outcome } : {}),
+        ...(patch.visibility ? { visibility: patch.visibility } : {})
+      },
+      select: SESSION_SELECT
+    });
+
+    return { session: updated, idempotentReplay: false };
   });
 
   logger.info('play-session-updated', {
-    outcome: updated.outcome,
-    visibility: updated.visibility,
-    hasDuration: updated.durationMinutes !== null,
-    hasProgress: updated.progressPercent !== null,
-    hasMood: updated.mood !== null,
-    hasNote: updated.note !== null,
-    idempotentReplay: false
+    outcome: outcome.session?.outcome ?? null,
+    visibility: outcome.session?.visibility ?? null,
+    hasDuration: outcome.session?.durationMinutes != null,
+    hasProgress: outcome.session?.progressPercent != null,
+    hasMood: outcome.session?.mood != null,
+    hasNote: outcome.session?.note != null,
+    idempotentReplay: outcome.idempotentReplay
   });
 
-  return { session: updated, idempotentReplay: false };
+  return outcome;
 }
 
 async function deletePlaySession({ userId, sessionId, clientMutationId = null }) {
-  if (clientMutationId) {
-    const replay = await recordMutationReceipt({
-      userId,
-      scope: 'play_session_delete',
-      clientMutationId,
-      resourceId: sessionId,
-      outcomeCode: 'deleted'
-    });
+  // Receipt and delete share one transaction, so a failed delete cannot leave a
+  // receipt that makes the retry look like a successful replay.
+  const outcome = await prisma.$transaction(async (tx) => {
+    if (clientMutationId) {
+      const replay = await recordMutationReceipt({
+        client: tx,
+        userId,
+        scope: 'play_session_delete',
+        clientMutationId,
+        resourceId: sessionId,
+        outcomeCode: 'deleted'
+      });
 
-    if (replay.duplicate) {
-      return { deleted: false, idempotentReplay: true };
+      if (replay.duplicate) {
+        if (replay.resourceId && replay.resourceId !== sessionId) {
+          throw new AppError(409, 'CLIENT_MUTATION_ID_REUSED',
+            'This clientMutationId was already used for a different play session');
+        }
+
+        return { deleted: false, idempotentReplay: true };
+      }
     }
-  }
 
-  try {
     // deleteMany with userId in the filter means a foreign id deletes nothing.
-    const result = await prisma.playSession.deleteMany({ where: { id: sessionId, userId } });
+    const result = await tx.playSession.deleteMany({ where: { id: sessionId, userId } });
 
     if (result.count === 0) {
+      // Throwing rolls the receipt back with it.
       throw new AppError(404, 'PLAY_SESSION_NOT_FOUND', 'Play session could not be found');
     }
-
-    logger.info('play-session-deleted', { deletedCount: result.count, idempotentReplay: false });
 
     return { deleted: true, idempotentReplay: false };
-  } catch (error) {
-    if (isRecordNotFound(error)) {
-      throw new AppError(404, 'PLAY_SESSION_NOT_FOUND', 'Play session could not be found');
-    }
+  });
 
-    throw error;
-  }
+  logger.info('play-session-deleted', {
+    deleted: outcome.deleted,
+    idempotentReplay: outcome.idempotentReplay
+  });
+
+  return outcome;
 }
 
-/// Inserts an idempotency receipt. A duplicate insert means the mutation already
-/// ran, which the caller turns into a replay response.
-async function recordMutationReceipt({ userId, scope, clientMutationId, resourceId, outcomeCode }) {
-  try {
-    await prisma.clientMutationReceipt.create({
-      data: { userId, scope, clientMutationId, resourceId, outcomeCode },
-      select: { id: true }
-    });
+/// Claims an idempotency receipt.
+///
+/// Uses INSERT ... ON CONFLICT DO NOTHING rather than catching a unique violation.
+/// Inside a PostgreSQL transaction a raised constraint error aborts the entire
+/// transaction (SQLSTATE 25P02), so the old catch-then-query approach could not
+/// read the existing receipt and surfaced an opaque failure to every concurrent
+/// retry. ON CONFLICT does not raise, so the transaction stays usable.
+///
+/// Concurrency: a competing transaction holding the conflicting row makes this
+/// statement block until that transaction settles. If it committed, DO NOTHING
+/// returns no row and this caller is a genuine replay; if it rolled back, the
+/// insert proceeds and this caller owns the mutation.
+async function recordMutationReceipt({ client = prisma, userId, scope, clientMutationId, resourceId, outcomeCode }) {
+  const inserted = await client.$queryRaw`
+    INSERT INTO "client_mutation_receipts"
+      ("id", "user_id", "scope", "client_mutation_id", "resource_id", "outcome_code", "created_at")
+    VALUES (gen_random_uuid(), ${userId}::uuid, ${scope}, ${clientMutationId}, ${resourceId}, ${outcomeCode}, CURRENT_TIMESTAMP)
+    ON CONFLICT ("user_id", "scope", "client_mutation_id") DO NOTHING
+    RETURNING "id"
+  `;
 
-    return { duplicate: false };
-  } catch (error) {
-    if (!isUniqueViolation(error)) {
-      throw error;
-    }
-
-    return { duplicate: true };
+  if (Array.isArray(inserted) && inserted.length === 1) {
+    return { duplicate: false, resourceId: null };
   }
+
+  // Report which resource the key was originally used for, so reusing one
+  // clientMutationId across two different sessions surfaces as a conflict
+  // instead of a silently successful no-op.
+  const existing = await client.clientMutationReceipt.findUnique({
+    where: { userId_scope_clientMutationId: { userId, scope, clientMutationId } },
+    select: { resourceId: true }
+  });
+
+  return { duplicate: true, resourceId: existing?.resourceId ?? null };
 }
 
 /// Per-local-day aggregates for one month. Note bodies are never returned here;
