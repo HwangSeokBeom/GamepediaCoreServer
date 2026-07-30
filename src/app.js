@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const { env } = require('./config/env');
 const aiRoutes = require('./modules/ai/ai.routes');
+const apiV1Routes = require('./routes/api-v1.routes');
 const authRoutes = require('./routes/auth.routes');
 const favoriteRoutes = require('./modules/favorite/favorite.routes');
 const igdbRoutes = require('./modules/igdb/igdb.routes');
@@ -84,6 +85,9 @@ app.use(libraryRoutes);
 app.use(moderationRoutes);
 app.use(reviewRoutes);
 app.use(userRoutes);
+// Product 2.2 is mounted last and only owns /api/v1, so it cannot shadow an
+// existing unversioned route that a deployed client depends on.
+app.use(apiV1Routes);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
