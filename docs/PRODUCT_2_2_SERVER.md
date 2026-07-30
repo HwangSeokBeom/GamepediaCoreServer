@@ -277,6 +277,28 @@ consequence of account deletion. This asymmetry is deliberate: personal records
 are erased, shared facts are not silently rewritten. Verified by
 `test/product-2-2/product-2-2.postgres.test.js`.
 
+## Trust model
+
+| Level | What produces it | May back a PUBLISHED game? | May occupy the global provider key? |
+|---|---|---|---|
+| `PROVIDER_VERIFIED` | a real server-side provider response (Steam owned-games sync, IGDB lookup) | yes | yes, with `verifiedAt` and a `verificationSource` |
+| `OFFICIAL_SOURCE` | an allowlisted official source an editor accepted | yes | yes |
+| `EDITOR_VERIFIED` | an editor decision, role re-read from the database | yes | yes |
+| `USER_CONFIRMED` | a value the user typed or confirmed, including a parsed store URL or package id | no | no — `game_identity_claims` only |
+| `AI_INFERRED` | LLM extraction | no | no |
+| `UNKNOWN` | a legacy row whose origin cannot be proven | no | it may already hold the key, unverified; a real provider response promotes it in place |
+| `DISPUTED` | a contested fact | no | no |
+
+Ownership provenance on a library row follows the same rule: the Steam owned-games
+sync records `PROVIDER_VERIFIED`, a manual `POST /users/me/library/status` records
+`USER_CONFIRMED`, and a row that predates provenance tracking is `UNKNOWN`.
+`gameSource` is client settable and is never used to infer trust.
+
+Public promotion requires verified provenance on both the title and the identity,
+enforced at runtime by `assertPublicationTrust`. A quick-add submission therefore
+always produces a `PRIVATE` game owned by the submitter, and requesting public
+review only ever reaches `PENDING_REVIEW`.
+
 ## Verification
 
 See [`docs/PRODUCT_2_2_VERIFICATION.md`](./PRODUCT_2_2_VERIFICATION.md).

@@ -148,5 +148,108 @@ BEGIN
     RAISE EXCEPTION 'backfill: % canonical games have no provider identity', offending;
   END IF;
 
-  RAISE NOTICE 'Product 2.2 backfill assertions passed.';
+  -- 12. Review-fix corrections. No identity may claim PROVIDER_VERIFIED without a
+  --     verifiedAt: the first backfill wrote that provenance for every legacy row
+  --     even though nothing had been verified against a provider.
+  SELECT COUNT(*) INTO offending FROM "game_external_identities"
+  WHERE "provenance" = 'PROVIDER_VERIFIED' AND "verified_at" IS NULL;
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'review-fix: % identities claim PROVIDER_VERIFIED with no verifiedAt', offending;
+  END IF;
+
+  -- 13. A synthetic "PROVIDER:id" placeholder title carries no information and must
+  --     not be publicly searchable.
+  SELECT COUNT(*) INTO offending FROM "catalog_games"
+  WHERE "publication_status" = 'PUBLISHED'
+    AND "merged_into_catalog_game_id" IS NULL
+    AND "original_title" ~ '^(IGDB|STEAM|APPLE_APP_STORE|GOOGLE_PLAY|OFFICIAL_SITE|COMMUNITY):';
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'review-fix: % synthetic placeholder titles are still PUBLISHED', offending;
+  END IF;
+
+  -- 14. Ownership provenance exists and defaults honestly. A row created before
+  --     provenance tracking cannot be proven, so it must be UNKNOWN rather than
+  --     asserted as provider verified.
+  SELECT COUNT(*) INTO offending FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'user_game_library'
+    AND column_name = 'ownership_provenance' AND is_nullable = 'NO';
+  IF offending <> 1 THEN
+    RAISE EXCEPTION 'review-fix: user_game_library.ownership_provenance is missing or nullable';
+  END IF;
+
+  SELECT COUNT(*) INTO offending FROM "user_game_library"
+  WHERE "ownership_provenance" = 'PROVIDER_VERIFIED';
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'review-fix: % legacy library rows assert unprovable provider ownership', offending;
+  END IF;
+
+  -- 15. Unverified claims live in their own table, which must NOT be globally
+  --     unique on the provider key, so a claim cannot squat a key.
+  SELECT COUNT(*) INTO offending FROM pg_indexes
+  WHERE schemaname = 'public'
+    AND tablename = 'game_identity_claims'
+    AND indexname = 'game_identity_claims_catalog_game_id_provider_external_id_r_key';
+  IF offending <> 1 THEN
+    RAISE EXCEPTION 'review-fix: the identity-claim uniqueness index is missing';
+  END IF;
+
+  -- Every unique index on the claims table except its primary key must include
+  -- catalog_game_id. A unique index on (provider, external_id, region_key) alone
+  -- would recreate the squatting problem the separate table exists to prevent.
+  SELECT COUNT(*) INTO offending FROM pg_indexes
+  WHERE schemaname = 'public'
+    AND tablename = 'game_identity_claims'
+    AND indexdef LIKE 'CREATE UNIQUE INDEX%'
+    AND indexname <> 'game_identity_claims_pkey'
+    AND indexdef NOT LIKE '%catalog_game_id%';
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'review-fix: an identity-claim unique index is not scoped by catalog game';
+  END IF;
+
+  -- And the global identity table must still be uniquely keyed on the provider
+  -- triple, so a verified key remains single valued.
+  SELECT COUNT(*) INTO offending FROM pg_indexes
+  WHERE schemaname = 'public'
+    AND indexname = 'game_external_identities_provider_external_id_region_key_key';
+  IF offending <> 1 THEN
+    RAISE EXCEPTION 'review-fix: the global provider-key unique index is missing';
+  END IF;
+
+  -- 16. The article current revision is a real, enforced, unique reference.
+  SELECT COUNT(*) INTO offending
+  FROM information_schema.table_constraints tc
+  JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name
+  WHERE tc.table_schema = 'public'
+    AND tc.table_name = 'editorial_articles'
+    AND kcu.column_name = 'current_revision_id'
+    AND tc.constraint_type = 'FOREIGN KEY';
+  IF offending <> 1 THEN
+    RAISE EXCEPTION 'review-fix: editorial_articles.current_revision_id is not a foreign key';
+  END IF;
+
+  -- 17. Every article that has revisions must point at one of them.
+  SELECT COUNT(*) INTO offending FROM "editorial_articles" article
+  WHERE EXISTS (SELECT 1 FROM "article_revisions" r WHERE r."article_id" = article."id")
+    AND article."current_revision_id" IS NULL;
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'review-fix: % articles with revisions have no current revision', offending;
+  END IF;
+
+  -- 18. No stored normalized title may be empty while its source title is not:
+  --     that is the state that made Thai, Arabic and Cyrillic titles unsearchable.
+  SELECT COUNT(*) INTO offending FROM "catalog_games"
+  WHERE btrim("original_title") <> '' AND btrim("normalized_title") = ''
+    AND "original_title" ~ '[[:alnum:]]';
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'review-fix: % catalog games have an alphanumeric title that normalized to empty', offending;
+  END IF;
+
+  SELECT COUNT(*) INTO offending FROM "game_localizations"
+  WHERE btrim("title") <> '' AND btrim("normalized_title") = ''
+    AND "title" ~ '[[:alnum:]]';
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'review-fix: % localizations have an alphanumeric title that normalized to empty', offending;
+  END IF;
+
+  RAISE NOTICE 'Product 2.2 backfill and review-fix assertions passed.';
 END $$;

@@ -126,12 +126,17 @@ technical roadmap.
 
 ## 2026-07-30 — Kill switches and roles are read from the database per request
 
-- Status: accepted
+- Status: partially superseded by "An unreadable kill-switch state is treated as
+  off" below. The per-request database read stands; the fallback behavior on a
+  lookup *failure* was wrong and is corrected there.
 - Context: an operator disabling a feature, or revoking an editor role, must take
   effect immediately across every instance.
 - Decision: `product_feature_flags` and `user_role_assignments` are queried on
-  each request. A JWT role claim is never trusted. A flag lookup failure falls
-  back to environment defaults so a flag problem cannot take down an endpoint.
+  each request. A JWT role claim is never trusted. (The original wording continued
+  "a flag lookup failure falls back to environment defaults so a flag problem
+  cannot take down an endpoint" — that reasoning was wrong, because every default
+  is `true`, so the fallback silently re-enabled disabled features. See the
+  superseding entry.)
 - Alternatives: an in-process TTL cache (rejected: a stale cache would keep
   serving a killed feature, so it cannot be the basis of a safety decision);
   Redis (deferred: no shared store is a hard dependency yet).
@@ -155,3 +160,121 @@ technical roadmap.
 - Consequences: adding an event property or a publisher is a reviewed code change.
 - Verification impact: hostile-property and SSRF suites, plus a repository-wide log
   scan whose scanner is itself tested against planted leaks.
+
+## 2026-07-30 — Review corrections: a user-supplied value is a claim, not a fact
+
+- Status: accepted
+- Context: the independent review found that `ensureCanonicalGameForIdentity`
+  defaulted to `PUBLISHED` + `PROVIDER_VERIFIED`, that quick add attached a
+  syntax-parsed provider key as a verified global identity with confidence 1, and
+  that Play Compass inferred provider-verified ownership from
+  `gameSource === 'STEAM'`. Any authenticated user could therefore publish a
+  catalog game, mint a verified identity, or squat an unregistered Steam / App
+  Store / Google Play id and capture another account's future real provider sync.
+- Decision: only a real server-side provider response or an editor decision can
+  produce a verified identity or a publicly visible catalog fact. Every trust
+  field on the creation path is mandatory and there are no trust defaults;
+  `assertPublicationTrust` is a runtime invariant. Unverified claims live in
+  `game_identity_claims`, scoped per catalog game and deliberately not globally
+  unique, so a claim cannot block or capture a verified attachment. Ownership
+  provenance is stored on the library row and read from storage, never inferred
+  from `gameSource`.
+- Alternatives: keeping claims in `game_external_identities` behind a
+  `verified` flag (rejected: the globally unique key is exactly what a squatter
+  needs, and a partial unique index would still let the first claimant hold the
+  slot); trusting `gameSource` (rejected: a client sets it on a manual write).
+- Consequences: a manual library / review / favorite write that names an
+  unverified provider id leaves `catalogGameId` null. That is visible as "not
+  linked yet" rather than a fabricated link, and a later real provider sync links
+  it. Legacy backfilled identities were corrected to `UNKNOWN`, so some catalog
+  games are `PENDING_REVIEW` until a provider response or an editor confirms them.
+- Verification impact: the PostgreSQL gate asserts no identity claims
+  `PROVIDER_VERIFIED` without a `verifiedAt`, no synthetic placeholder title stays
+  `PUBLISHED`, no legacy library row asserts provider ownership, and that an
+  attacker's claim does not capture a victim's real Steam sync.
+
+## 2026-07-30 — A PostgreSQL transaction cannot absorb a constraint violation
+
+- Status: accepted
+- Context: the first version of the atomic idempotency fix wrapped the receipt
+  insert and the mutation in one transaction and caught `P2002` to detect a
+  replay. Under six concurrent retries five of them failed with an opaque error.
+  PostgreSQL aborts the whole transaction when a statement raises (SQLSTATE
+  25P02), so the follow-up read after the catch could never execute. Mocked tests
+  passed; only the real database exposed it.
+- Decision: claim inserts inside a transaction use
+  `INSERT ... ON CONFLICT DO NOTHING RETURNING id`, which never raises. A returned
+  row means this caller owns the mutation; no row means a genuine replay. A
+  competing uncommitted row makes the statement block until that transaction
+  settles, which gives the correct answer in both directions.
+- Alternatives: a `SAVEPOINT` around each insert (rejected: more moving parts for
+  the same guarantee); check-then-insert (rejected: still races, and the loser
+  still aborts its transaction).
+- Consequences: two claim inserts are raw SQL rather than Prisma delegate calls.
+  They are covered by both a source assertion and real-database concurrency tests.
+- Verification impact: `npm run test:postgres:product-2-2` runs ten concurrent
+  quick-add confirms and six concurrent deletes sharing one key.
+
+## 2026-07-30 — Normalization must preserve every script, and marks are letters
+
+- Status: accepted
+- Context: the shipped normalizer retained only ASCII, Hangul, Hiragana, Katakana
+  and CJK ideographs. Thai, Arabic, Cyrillic, Hebrew, Greek, Devanagari and
+  Vietnamese titles normalized to an empty string, which made them unstorable and
+  unsearchable, and it split `Pokémon` on its accent and `ゲーム` on the prolonged
+  sound mark.
+- Decision: NFKC, then treat only non-letter/non-number/non-retained-mark runs as
+  separators. Combining marks are retained because they are load-bearing —
+  dropping U+0E34 collapses Thai `กิน` to `กน`. PostgreSQL classifies marks as
+  `[:punct:]`, so the retained set is whitelisted explicitly, and
+  `RETAINED_MARK_RANGES` is the single source rendered into both the JS regex and
+  the SQL bracket expression. Trademark symbols are stripped before NFKC because
+  NFKC folds U+2122 into the letters `TM`.
+- Alternatives: dropping marks to match `[:alnum:]` (rejected: it collapses
+  distinct words in Thai and Devanagari); NFC instead of NFKC (rejected: fullwidth
+  and Roman-numeral forms would stop folding).
+- Consequences: slugs may be non-ASCII, which is what keeps a Thai or Cyrillic
+  title addressable. A stored title's normalization depends on the shared mark
+  whitelist, so changing it requires a new successor migration.
+- Verification impact: a unit test asserts the migration embeds the rendered mark
+  class verbatim; the PostgreSQL gate proves byte-level JS/SQL parity over a
+  multi-script corpus and asserts no alphanumeric title normalized to empty.
+
+## 2026-07-30 — An unreadable kill-switch state is treated as off
+
+- Status: accepted
+- Context: a feature-flag lookup failure fell back to the environment defaults,
+  and every default is `true`, so a database problem could silently re-enable a
+  feature an operator had disabled.
+- Decision: an environment default applies only when the lookup succeeded and had
+  no row for that key. A lookup failure reports every gated feature as false with
+  source `database_unavailable`, and `requireFeature` returns 503
+  `FEATURE_STATE_UNAVAILABLE`, distinct from `FEATURE_DISABLED` and retryable.
+- Alternatives: retrying the lookup (deferred: it does not change what to do when
+  the retry also fails); serving the last known state from memory (rejected: a
+  process-local cache cannot be the basis of a safety decision).
+- Consequences: a database outage disables Product 2.2 features rather than
+  exposing them. Pre-existing unversioned endpoints do not consult these flags and
+  are unaffected.
+- Verification impact: unit tests assert all-false plus a degraded source, and the
+  PostgreSQL gate flips a real flag row and observes it without a restart.
+
+## 2026-07-30 — Changing published content is an audited correction
+
+- Status: accepted
+- Context: a `PUBLISHED` article could be edited immediately with no status change
+  and no trace, and `bodyMarkdown` was written to revisions but never read, so the
+  public endpoint returned an article with no body.
+- Decision: one `appendRevision` path appends a revision and atomically points the
+  article at it; an omitted body carries the previous one forward and only an
+  explicit null clears it. Changing content that is already public requires status
+  `CORRECTED` with a non-empty `changeNote` and sets `correctedAt`. The body is
+  CommonMark with HTML disabled, rejected at the validator rather than sanitized
+  later.
+- Alternatives: sanitizing HTML on render (rejected: the stored value would still
+  contain markup, and every future reader would depend on the sanitizer).
+- Consequences: an editor cannot quietly fix a typo in a live article; it becomes a
+  visible correction. That is the intended trade.
+- Verification impact: the PostgreSQL gate drives the full lifecycle — draft,
+  three transitions, publish, silent-edit refusal, correction, retraction — and
+  asserts the body survives all of it.

@@ -24,7 +24,14 @@ INSERT INTO "user_game_library"
   ('00000000-0000-4000-8000-00000000b003', '00000000-0000-4000-8000-00000000a002', 'STEAM', '620',    'Portal 2',       'COMPLETED', 300,  now(), now(), now()),
   ('00000000-0000-4000-8000-00000000b004', '00000000-0000-4000-8000-00000000a002', 'IGDB',  '9999',   'IGDB Only Game', 'BACKLOG',   NULL, NULL,  now(), now()),
   ('00000000-0000-4000-8000-00000000b005', '00000000-0000-4000-8000-00000000a001', 'STEAM', '400',    'Portal',         'COMPLETED', 120,  now(), now(), now()),
-  ('00000000-0000-4000-8000-00000000b006', '00000000-0000-4000-8000-00000000a001', 'IGDB',  '5000',   'Portal',         'COMPLETED', 120,  now(), now(), now());
+  ('00000000-0000-4000-8000-00000000b006', '00000000-0000-4000-8000-00000000a001', 'IGDB',  '5000',   'Portal',         'COMPLETED', 120,  now(), now(), now()),
+  -- Non-Latin titles: under the original normalization these produced an empty
+  -- normalized_title and were impossible to find. The successor migration must
+  -- recompute them, and the assertions check that none stayed empty.
+  ('00000000-0000-4000-8000-00000000b007', '00000000-0000-4000-8000-00000000a002', 'IGDB',  '6001',   'เกมออนไลน์',        'PLAYING',   60,   now(), now(), now()),
+  ('00000000-0000-4000-8000-00000000b008', '00000000-0000-4000-8000-00000000a002', 'IGDB',  '6002',   'Онлайн игра',    'PLAYING',   60,   now(), now(), now()),
+  ('00000000-0000-4000-8000-00000000b009', '00000000-0000-4000-8000-00000000a002', 'IGDB',  '6003',   'العاب اونلاين',    'PLAYING',   60,   now(), now(), now()),
+  ('00000000-0000-4000-8000-00000000b010', '00000000-0000-4000-8000-00000000a002', 'IGDB',  '6004',   'Hollow Knight™', 'PLAYING',   60,   now(), now(), now());
 
 INSERT INTO "reviews" ("id", "user_id", "game_id", "rating", "content", "created_at", "updated_at") VALUES
   ('00000000-0000-4000-8000-00000000c001', '00000000-0000-4000-8000-00000000a001', '1942', 4.5, 'legacy review', now(), now()),

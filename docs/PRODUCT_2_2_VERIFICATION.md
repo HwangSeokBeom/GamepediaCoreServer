@@ -28,9 +28,9 @@ export NODE_ENV=test APP_ENV=test MAIL_MODE=log \
 | Syntax | `find src scripts test -name '*.js' ! -name '* 2.js' ! -name '* 3.js' -exec node --check {} \;` | VERIFIED, 0 failures |
 | Schema format | `npx prisma format` | VERIFIED |
 | Schema validity | `npx prisma validate` | VERIFIED |
-| Canonical tests | `npm test` | VERIFIED — 406 tests, 373 pass, 0 fail, 33 skipped |
+| Canonical tests | `npm test` | VERIFIED — 460 tests, 413 pass, 0 fail, 47 skipped |
 | PostgreSQL gate | `npm run test:postgres:product-2-2` | VERIFIED — exit 0 |
-| Pre-existing auth gate | `npm run test:postgres` | VERIFIED — exit 0, 37 migrations applied, 6/6 tests pass |
+| Pre-existing auth gate | `npm run test:postgres` | VERIFIED — exit 0, 38 migrations applied, 6/6 tests pass |
 | Whitespace | `git diff --check` | VERIFIED, clean |
 
 There is no `test:canonical` script in this repository. `npm test` **is** the
@@ -77,7 +77,7 @@ npm run test:postgres:product-2-2
   for both databases it creates,
 - binds PostgreSQL to `127.0.0.1` only, and removes the container on exit.
 
-**Phase A — fresh apply.** All 37 repository migrations applied to a new
+**Phase A — fresh apply.** All 38 repository migrations applied to a new
 database; the applied count is compared against the repository count;
 `prisma migrate diff --from-url … --to-schema-datamodel prisma/schema.prisma`
 must produce an empty migration (schema/migration drift is a hard failure);
@@ -86,8 +86,9 @@ integration tests in `test/product-2-2/product-2-2.postgres.test.js`.
 
 **Phase B — legacy upgrade.** A second database receives only the 33 pre-Product-2.2
 migrations (baseline schema read from the merge base with `origin/main`), is
-seeded with `scripts/test/product-2-2-legacy-fixture.sql`, and then has the 4
-Product 2.2 migrations applied on top. `scripts/test/verify-product-2-2-backfill.sql`
+seeded with `scripts/test/product-2-2-legacy-fixture.sql` — which includes Thai,
+Cyrillic, Arabic and trademarked titles — and then has the 5 Product 2.2
+migrations applied on top. `scripts/test/verify-product-2-2-backfill.sql`
 then asserts, raising on any violation:
 
 1. a `CONFIRMED` mapping collapsed Steam 367520 and IGDB 1942 onto one canonical game
@@ -101,6 +102,16 @@ then asserts, raising on any violation:
 9. both merged library rows converged on the same canonical game
 10. zero duplicate provider keys, and the unique index exists
 11. every surviving canonical game has at least one provider identity
+12. no identity claims `PROVIDER_VERIFIED` without a `verifiedAt`
+13. no synthetic `PROVIDER:id` placeholder title is still `PUBLISHED`
+14. `user_game_library.ownership_provenance` exists, is NOT NULL, and no legacy row
+    asserts unprovable provider ownership
+15. every non-primary-key unique index on `game_identity_claims` includes
+    `catalog_game_id`, and the global provider-key unique index still exists
+16. `editorial_articles.current_revision_id` is a real foreign key
+17. every article with revisions points at one
+18. no alphanumeric title on `catalog_games` or `game_localizations` normalized to
+    an empty string
 
 Finally `migrate deploy` is re-run to prove idempotency, and the backfill
 assertions are re-checked afterwards.
@@ -137,6 +148,20 @@ Product 2.2 PostgreSQL gate passed.
 | Source allowlist / SSRF | `feed-and-product.test.js` — 10 refusals, 20 blocked addresses, split-horizon DNS, redirect, size, timeout |
 | Feed ordering / partial failure | `feed-and-product.test.js` — fixed order, one failing section degrades alone, cursor |
 | Raw data log leak | `privacy-and-openapi.test.js` — repository scan plus planted-leak self-test |
+
+## Review-fix coverage
+
+| Review finding | Regression evidence |
+|---|---|
+| A Today privacy leak (P1) | `review-fixes.test.js` — table-driven over every activity type, six friend privacy combinations, unfiltered settings read, clauses applied in the query, precise empty reasons |
+| B new Steam sync rows unusable (P1) | `review-fixes.test.js` linked/partial/unavailable outcomes; gate: concurrent sync converges on one verified identity, and a null row is recovered on the next sync |
+| C user input promoted to public/verified (P1) | `catalog-identity.test.js` trust invariant and mandatory trust arguments; `review-fixes.test.js` ownership provenance; gate: a user-supplied provider id creates no game and no identity |
+| D quick-add identity squatting (P1) | `catalog-submission.test.js` claim-not-identity; gate: an attacker's claim does not capture a victim's real Steam sync, and Play Compass cannot read a PRIVATE game |
+| E concurrent confirm duplication (P1) | gate: ten concurrent confirms → exactly one game, one `personalCatalogGameId`, zero orphans, nine replays, plus a sequential retry |
+| F Playlog canonical/release/receipt (P1/P2) | `review-fixes.test.js` tombstone resolution, release clearing, mismatch rejection, receipt rollback, key reuse; gate: six concurrent deletes apply exactly once |
+| G international normalization (P1) | `catalog-identity.test.js` 13-script fixture table; gate: byte-level JS/SQL parity over a 19-title corpus and a non-Latin search round trip |
+| H magazine body and revision (P1) | `review-fixes.test.js` body carry-forward, publish body, silent-edit refusal, correction audit; gate: full lifecycle with the body intact |
+| I feature flag fail-open (P2) | `feed-and-product.test.js` all-false on lookup failure, degraded product-config, environment default only on success; gate: a real flag flip observed without a restart |
 
 ## Runtime notes
 
