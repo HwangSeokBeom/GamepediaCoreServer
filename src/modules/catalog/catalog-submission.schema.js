@@ -88,10 +88,14 @@ const aiExtractionResponseSchema = z.object({
 
 /// Shape persisted in game_submissions.draft. Re-validated on read so a row
 /// written by an older revision can never be applied blindly.
+///
+/// `parsedIdentityClaim` is the result of parsing the *syntax* of a store URL or
+/// package id. Parsing a string is not verification of anything, so the field is
+/// named as a claim and is only ever written to game_identity_claims.
 const persistedDraftSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   game: gameDraftSchema,
-  deterministicIdentity: identityDraftSchema.nullish(),
+  parsedIdentityClaim: identityDraftSchema.nullish(),
   aiUsed: z.boolean(),
   aiFallbackUsed: z.boolean(),
   degradedToManual: z.boolean()

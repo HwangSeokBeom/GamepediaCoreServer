@@ -13,6 +13,7 @@ const {
 } = require('./library-image.service');
 const steamIgdbMatchService = require('./steam-igdb-match.service');
 const catalogDualWriteService = require('../catalog/catalog-dual-write.service');
+const { OWNERSHIP_PROVENANCE } = require('../catalog/catalog.constants');
 const { logger } = require('../../utils/logger');
 const { AppError } = require('../../utils/error-response');
 const {
@@ -3366,7 +3367,15 @@ function buildLibraryEntryWriteData({
           : (nextStatus === GameLibraryStatus.PLAYING ? null : (existingEntry?.completedAt ?? null))
       ),
     lastPlayedAt: lastPlayedAt !== undefined ? lastPlayedAt : (existingEntry?.lastPlayedAt ?? null),
-    playtimeMinutes: playtimeMinutes !== undefined ? playtimeMinutes : (existingEntry?.playtimeMinutes ?? null)
+    playtimeMinutes: playtimeMinutes !== undefined ? playtimeMinutes : (existingEntry?.playtimeMinutes ?? null),
+    // A manual status write is the user's own claim about ownership, whatever
+    // gameSource they name. Only the Steam owned-games sync, which reads a real
+    // provider response, may record PROVIDER_VERIFIED — and it never routes
+    // through this helper. An existing PROVIDER_VERIFIED row is not downgraded by
+    // a later manual edit.
+    ownershipProvenance: existingEntry?.ownershipProvenance === OWNERSHIP_PROVENANCE.PROVIDER_VERIFIED
+      ? OWNERSHIP_PROVENANCE.PROVIDER_VERIFIED
+      : OWNERSHIP_PROVENANCE.USER_CONFIRMED
   };
 }
 
@@ -6887,8 +6896,34 @@ async function syncOwnedSteamGames({ userId }) {
       });
     }).filter(Boolean);
 
+    let canonicalLink = {
+      canonicalLinkStatus: 'linked',
+      canonicalLinkedCount: 0,
+      canonicalPendingCount: 0,
+      canonicalFailureReasonCodes: []
+    };
+
     if (operations.length > 0) {
-      await prisma.$transaction(operations);
+      const writtenRows = await prisma.$transaction(operations);
+
+      // Product 2.2: these appids and names came from a real Steam owned-games
+      // response that this server made, so they are provider facts and may
+      // establish a verified canonical identity. A row whose catalogGameId is
+      // still null from an earlier failed attempt is recovered here too, because
+      // every synced row is relinked on every sync.
+      //
+      // The result is reported rather than swallowed: if linking fails the caller
+      // sees canonicalLinkStatus partial/unavailable instead of a success that
+      // silently leaves the row invisible to Play Compass and Today.
+      canonicalLink = await catalogDualWriteService.linkVerifiedSteamOwnership({
+        entries: writtenRows
+          .filter((row) => row && row.id)
+          .map((row) => ({
+            libraryEntryId: row.id,
+            externalGameId: row.externalGameId,
+            gameName: row.gameName
+          }))
+      });
     }
 
     let igdbEnrichmentApplied = true;
@@ -7092,7 +7127,13 @@ async function syncOwnedSteamGames({ userId }) {
       igdbEnrichmentSkippedReason,
       steamSyncStatus,
       lastSteamSyncAt,
-      syncWarningCode: ownedGamesResult.syncWarningCode ?? null
+      syncWarningCode: ownedGamesResult.syncWarningCode ?? null,
+      // Additive Product 2.2 fields. A deployed client ignores unknown keys, and
+      // an operator can see when synced rows are not yet canonically usable.
+      canonicalLinkStatus: canonicalLink.canonicalLinkStatus,
+      canonicalLinkedCount: canonicalLink.canonicalLinkedCount,
+      canonicalPendingCount: canonicalLink.canonicalPendingCount,
+      canonicalFailureReasonCodes: canonicalLink.canonicalFailureReasonCodes
     };
   } finally {
     clearSteamSyncInProgress(userId);
@@ -7241,14 +7282,15 @@ async function updateLibraryStatus({
     });
   }
 
-  // Product 2.2 dual write: record the canonical catalog id next to the legacy
-  // gameSource/externalGameId pair, which stays authoritative. Best effort by
-  // design — the library write above has already committed.
-  await catalogDualWriteService.linkLibraryEntry({
+  // Product 2.2 dual write. The identifier and title came from the request body,
+  // so this only *resolves* an already verified identity; it never creates one and
+  // never publishes a catalog game. The row's ownershipProvenance is set to
+  // USER_CONFIRMED by buildLibraryEntryWriteData, because a manual status write is
+  // the user's own claim rather than a provider fact.
+  await catalogDualWriteService.linkResolvedLibraryEntry({
     libraryEntryId: libraryEntry.id,
     gameSource: libraryEntry.gameSource,
-    externalGameId: libraryEntry.externalGameId,
-    title: libraryEntry.gameName
+    externalGameId: libraryEntry.externalGameId
   });
 
   return {

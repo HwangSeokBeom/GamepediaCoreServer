@@ -57,10 +57,10 @@ async function addFavorite({ userId, gameId }) {
     }
   }
 
-  // Product 2.2 dual write: gameId (an IGDB identity) stays authoritative and the
-  // canonical catalog id is recorded alongside it. Best effort by design.
+  // Product 2.2 dual write: gameId came from the request body, so it is only
+  // *resolved* against an already verified identity, never used to create one.
   if (favorite) {
-    await catalogDualWriteService.linkFavorite({ favoriteId: favorite.id, gameId });
+    await catalogDualWriteService.linkResolvedFavorite({ favoriteId: favorite.id, gameId });
   }
 
   return {

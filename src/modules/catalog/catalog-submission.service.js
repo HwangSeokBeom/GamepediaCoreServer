@@ -86,16 +86,20 @@ function rankCandidates(candidates) {
     .slice(0, CATALOG_PREVIEW_MAX_CANDIDATES);
 }
 
-async function findByProviderIdentity({ userId, identity }) {
-  if (!identity) {
+/// Looks up an existing canonical game for a parsed provider key.
+///
+/// A verified identity is a strong signal and earns full confidence. An
+/// unverified row (a legacy backfill) is surfaced as a weaker candidate with its
+/// own reason code, because parsing a URL proves nothing about the key.
+async function findByProviderIdentity({ userId, claim }) {
+  if (!claim) {
     return [];
   }
 
-  const resolved = await catalogIdentityService.findCanonicalGameByIdentity({
-    provider: identity.provider,
-    externalId: identity.externalId,
-    regionKey: identity.regionKey
-  });
+  const resolved = await catalogIdentityService.findCanonicalGameByIdentity(
+    { provider: claim.provider, externalId: claim.externalId, regionKey: claim.regionKey },
+    { requireVerified: false }
+  );
 
   if (!resolved) {
     return [];
@@ -106,13 +110,17 @@ async function findByProviderIdentity({ userId, identity }) {
     select: CANDIDATE_SELECT
   });
 
-  return game
-    ? [buildCandidate({
-      game,
-      reasonCodes: ['provider_identity_exact'],
-      confidence: MATCH_STAGE_CONFIDENCE.provider_identity_exact
-    })]
-    : [];
+  if (!game) {
+    return [];
+  }
+
+  const reasonCode = resolved.verified ? 'provider_identity_exact' : 'provider_identity_unverified';
+
+  return [buildCandidate({
+    game,
+    reasonCodes: [reasonCode],
+    confidence: MATCH_STAGE_CONFIDENCE[reasonCode]
+  })];
 }
 
 async function findByExactTitle({ userId, input, locale, regionCode }) {
@@ -261,7 +269,7 @@ async function assertAndIncrementQuickAddUsage({ userId, now = new Date() }) {
 /// would put the user's unconfirmed natural-language text in the database, so a
 /// draft with no extracted title is stored with `originalTitle: null` and
 /// `requiresTitleConfirmation: true`, and confirmation must supply the title.
-function buildDraft({ deterministicIdentity, extraction }) {
+function buildDraft({ parsedIdentityClaim, extraction }) {
   const extracted = extraction?.extracted ?? null;
   const confidenceByPath = new Map((extraction?.fieldConfidence ?? [])
     .map((entry) => [entry.fieldPath, entry.confidence]));
@@ -299,24 +307,27 @@ function buildDraft({ deterministicIdentity, extraction }) {
     record(`regionalReleases.${index}`, true);
   }
 
-  const identities = deterministicIdentity
+  const identities = parsedIdentityClaim
     ? [{
-      provider: deterministicIdentity.provider,
-      externalId: deterministicIdentity.externalId,
-      regionKey: deterministicIdentity.regionKey
+      provider: parsedIdentityClaim.provider,
+      externalId: parsedIdentityClaim.externalId,
+      regionKey: parsedIdentityClaim.regionKey
     }]
     : [];
 
-  if (deterministicIdentity) {
+  if (parsedIdentityClaim) {
+    // The user supplied this key and the server only parsed its syntax. That is a
+    // user claim, not a provider fact, so it can never be PROVIDER_VERIFIED and
+    // can never carry confidence 1.
     fieldProvenance.push({
-      fieldPath: `identities.${deterministicIdentity.provider}`,
-      provenance: 'PROVIDER_VERIFIED',
-      confidence: 1
+      fieldPath: `identities.${parsedIdentityClaim.provider}`,
+      provenance: 'USER_CONFIRMED',
+      confidence: 0.5
     });
   }
 
   return persistedDraftSchema.parse({
-    version: 1,
+    version: 2,
     game: {
       originalTitle,
       requiresTitleConfirmation: originalTitle === null,
@@ -333,11 +344,11 @@ function buildDraft({ deterministicIdentity, extraction }) {
       identities,
       fieldProvenance
     },
-    deterministicIdentity: deterministicIdentity
+    parsedIdentityClaim: parsedIdentityClaim
       ? {
-        provider: deterministicIdentity.provider,
-        externalId: deterministicIdentity.externalId,
-        regionKey: deterministicIdentity.regionKey
+        provider: parsedIdentityClaim.provider,
+        externalId: parsedIdentityClaim.externalId,
+        regionKey: parsedIdentityClaim.regionKey
       }
       : null,
     aiUsed: Boolean(extraction?.aiUsed),
@@ -347,9 +358,11 @@ function buildDraft({ deterministicIdentity, extraction }) {
 }
 
 async function previewSubmission({ userId, inputType, input, locale, regionCode, platformHint = null, now = new Date() }) {
-  const deterministicIdentity = parseProviderIdentity({ inputType, input, platformHint });
+  // Syntax parsing only. This is a claim about a provider key, never a verified
+  // identity, and it is never written to the globally unique identity table.
+  const parsedIdentityClaim = parseProviderIdentity({ inputType, input, platformHint });
 
-  const identityCandidates = await findByProviderIdentity({ userId, identity: deterministicIdentity });
+  const identityCandidates = await findByProviderIdentity({ userId, claim: parsedIdentityClaim });
   const exactCandidates = identityCandidates.length > 0
     ? []
     : await findByExactTitle({ userId, input, locale, regionCode });
@@ -360,7 +373,7 @@ async function previewSubmission({ userId, inputType, input, locale, regionCode,
   const candidates = rankCandidates([...identityCandidates, ...exactCandidates, ...fuzzyCandidates]);
   const resolvedDeterministically = identityCandidates.length > 0
     || exactCandidates.length > 0
-    || (deterministicIdentity !== null && inputType !== 'TEXT');
+    || (parsedIdentityClaim !== null && inputType !== 'TEXT');
 
   let extraction = null;
 
@@ -371,7 +384,7 @@ async function previewSubmission({ userId, inputType, input, locale, regionCode,
     extraction = await catalogAiExtractor.extractGameDraft({ input, locale, regionCode, platformHint });
   }
 
-  const draft = buildDraft({ deterministicIdentity, extraction });
+  const draft = buildDraft({ parsedIdentityClaim, extraction });
   const expiresAt = new Date(now.getTime() + env.catalogSubmissionPreviewTtlMinutes * 60_000);
 
   const submission = await prisma.gameSubmission.create({
@@ -420,7 +433,7 @@ async function previewSubmission({ userId, inputType, input, locale, regionCode,
   logger.info('catalog-quick-add-preview', {
     submissionInputType: inputType,
     candidateCount: candidates.length,
-    deterministicIdentityFound: Boolean(deterministicIdentity),
+    parsedIdentityClaimFound: Boolean(parsedIdentityClaim),
     aiUsed: Boolean(extraction?.aiUsed),
     aiFallbackUsed: Boolean(extraction?.aiFallbackUsed),
     degradeReason: extraction?.degradeReason ?? null,
@@ -525,6 +538,44 @@ async function getSubmission({ userId, submissionId }) {
 /// Applies the user's confirmation. Either links an existing candidate or creates
 /// a PRIVATE canonical game owned by the submitter. `requestPublicReview` moves
 /// the submission to PENDING_REVIEW and never to PUBLISHED.
+/// Reads the committed outcome of a submission whose PREVIEW claim this request
+/// lost. Safe to call after the winning transaction committed, because the losing
+/// conditional update blocked on that row until it did.
+async function readConfirmedOutcome({ userId, submissionId }) {
+  const submission = await prisma.gameSubmission.findFirst({
+    where: { id: submissionId, userId },
+    select: { id: true, status: true, personalCatalogGameId: true, publicReviewStatus: true }
+  });
+
+  if (!submission) {
+    throw new AppError(404, 'SUBMISSION_NOT_FOUND', 'Game submission could not be found');
+  }
+
+  return {
+    submissionId: submission.id,
+    status: submission.status,
+    catalogGameId: submission.personalCatalogGameId,
+    createdNewGame: false,
+    idempotentReplay: true,
+    publicReviewStatus: submission.publicReviewStatus,
+    identityConflict: null
+  };
+}
+
+/// Applies the user's confirmation.
+///
+/// Concurrency: the PREVIEW -> confirmed transition is claimed with a conditional
+/// UPDATE ... WHERE status = 'PREVIEW' *inside* the same transaction that creates
+/// the game, so exactly one concurrent request can win. A loser's conditional
+/// update blocks on the row lock until the winner commits, then matches zero rows
+/// and returns the winner's committed result as an idempotent replay. Nothing here
+/// relies on a process-local lock, and no partial game can survive a rollback
+/// because every write shares the transaction.
+///
+/// Trust: a new game is always PRIVATE and owned by the submitter. The parsed
+/// provider key is recorded as an identity *claim*, never as a globally unique
+/// verified identity, so a submission cannot squat a provider key and capture
+/// another account's future real provider sync.
 async function confirmSubmission({
   userId,
   submissionId,
@@ -533,101 +584,118 @@ async function confirmSubmission({
   requestPublicReview = false,
   now = new Date()
 }) {
-  const submission = await prisma.gameSubmission.findUnique({
-    where: { id: submissionId },
-    select: { id: true, userId: true, status: true, draft: true, expiresAt: true, personalCatalogGameId: true, locale: true, regionCode: true }
-  });
+  const nextStatus = requestPublicReview ? 'PENDING_REVIEW' : 'PERSONAL_CONFIRMED';
+  const nextPublicReviewStatus = requestPublicReview ? 'PENDING_REVIEW' : 'PRIVATE';
 
-  if (!submission || submission.userId !== userId) {
-    throw new AppError(404, 'SUBMISSION_NOT_FOUND', 'Game submission could not be found');
-  }
-
-  // Confirming twice returns the first result rather than creating a second game.
-  if (submission.status !== 'PREVIEW') {
-    return {
-      submissionId: submission.id,
-      status: submission.status,
-      catalogGameId: submission.personalCatalogGameId,
-      createdNewGame: false,
-      idempotentReplay: true,
-      publicReviewStatus: submission.status === 'PENDING_REVIEW' ? 'PENDING_REVIEW' : 'PRIVATE'
-    };
-  }
-
-  if (submission.expiresAt.getTime() <= now.getTime()) {
-    await prisma.gameSubmission.update({
-      where: { id: submission.id },
-      data: { status: 'EXPIRED' },
-      select: { id: true }
+  const outcome = await prisma.$transaction(async (tx) => {
+    const submission = await tx.gameSubmission.findUnique({
+      where: { id: submissionId },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        draft: true,
+        expiresAt: true,
+        personalCatalogGameId: true,
+        locale: true,
+        regionCode: true
+      }
     });
 
-    throw new AppError(409, 'SUBMISSION_EXPIRED', 'This preview expired; request a new preview before confirming');
-  }
-
-  const parsedDraft = persistedDraftSchema.safeParse(submission.draft);
-
-  if (!parsedDraft.success) {
-    throw new AppError(422, 'SUBMISSION_DRAFT_INVALID', 'The stored draft is no longer valid; request a new preview');
-  }
-
-  const draft = parsedDraft.data;
-
-  if (selectedCatalogGameId) {
-    const canonicalId = await catalogIdentityService.resolveCanonicalGameId(selectedCatalogGameId);
-
-    if (!canonicalId) {
-      throw new AppError(400, 'CATALOG_GAME_NOT_FOUND', 'The selected catalog game could not be found');
+    if (!submission || submission.userId !== userId) {
+      throw new AppError(404, 'SUBMISSION_NOT_FOUND', 'Game submission could not be found');
     }
 
-    const visible = await prisma.catalogGame.findFirst({
-      where: { id: canonicalId, ...visibleToUser(userId) },
-      select: { id: true }
-    });
-
-    if (!visible) {
-      throw new AppError(400, 'CATALOG_GAME_NOT_FOUND', 'The selected catalog game could not be found');
+    // Confirming an already-confirmed submission returns the first result.
+    if (submission.status !== 'PREVIEW') {
+      return { lostClaim: true };
     }
 
-    const updated = await prisma.gameSubmission.update({
-      where: { id: submission.id },
-      data: {
+    if (submission.expiresAt.getTime() <= now.getTime()) {
+      await tx.gameSubmission.updateMany({
+        where: { id: submission.id, status: 'PREVIEW' },
+        data: { status: 'EXPIRED' }
+      });
+
+      throw new AppError(409, 'SUBMISSION_EXPIRED', 'This preview expired; request a new preview before confirming');
+    }
+
+    const parsedDraft = persistedDraftSchema.safeParse(submission.draft);
+
+    if (!parsedDraft.success) {
+      throw new AppError(422, 'SUBMISSION_DRAFT_INVALID', 'The stored draft is no longer valid; request a new preview');
+    }
+
+    const draft = parsedDraft.data;
+
+    if (selectedCatalogGameId) {
+      const canonicalId = await catalogIdentityService.resolveCanonicalGameId(selectedCatalogGameId, { client: tx });
+
+      if (!canonicalId) {
+        throw new AppError(400, 'CATALOG_GAME_NOT_FOUND', 'The selected catalog game could not be found');
+      }
+
+      const visible = await tx.catalogGame.findFirst({
+        where: { id: canonicalId, ...visibleToUser(userId) },
+        select: { id: true }
+      });
+
+      if (!visible) {
+        throw new AppError(400, 'CATALOG_GAME_NOT_FOUND', 'The selected catalog game could not be found');
+      }
+
+      // Conditional claim: only the request that flips PREVIEW proceeds.
+      const claimed = await tx.gameSubmission.updateMany({
+        where: { id: submission.id, status: 'PREVIEW' },
+        data: {
+          status: 'PERSONAL_CONFIRMED',
+          personalCatalogGameId: canonicalId,
+          publicReviewStatus: 'PRIVATE',
+          reviewedByUserId: null,
+          reviewedAt: null
+        }
+      });
+
+      if (claimed.count === 0) {
+        return { lostClaim: true };
+      }
+
+      return {
+        lostClaim: false,
+        submissionId: submission.id,
         status: 'PERSONAL_CONFIRMED',
-        personalCatalogGameId: canonicalId,
-        publicReviewStatus: 'PRIVATE'
-      },
-      select: { id: true, status: true }
+        catalogGameId: canonicalId,
+        createdNewGame: false,
+        idempotentReplay: false,
+        publicReviewStatus: 'PRIVATE',
+        identityConflict: null
+      };
+    }
+
+    const game = confirmedFields ? { ...draft.game, ...confirmedFields } : draft.game;
+    const titleFromUser = Boolean(confirmedFields?.originalTitle);
+
+    // A draft with no structured title cannot be completed from stored state,
+    // because the raw input was never persisted. The user must supply the title.
+    if (!game.originalTitle) {
+      throw new AppError(400, 'SUBMISSION_TITLE_REQUIRED',
+        'confirmedFields.originalTitle is required because no structured title could be derived', [{
+          field: 'confirmedFields.originalTitle',
+          message: 'required'
+        }]);
+    }
+
+    // Claim before creating anything, so a loser never reaches a create at all
+    // and no orphan catalog game can be produced.
+    const claimed = await tx.gameSubmission.updateMany({
+      where: { id: submission.id, status: 'PREVIEW' },
+      data: { status: nextStatus, publicReviewStatus: nextPublicReviewStatus, reviewedByUserId: null, reviewedAt: null }
     });
 
-    logger.info('catalog-quick-add-confirm', {
-      createdNewGame: false,
-      linkedExistingCandidate: true,
-      publicReviewRequested: false
-    });
+    if (claimed.count === 0) {
+      return { lostClaim: true };
+    }
 
-    return {
-      submissionId: updated.id,
-      status: updated.status,
-      catalogGameId: canonicalId,
-      createdNewGame: false,
-      idempotentReplay: false,
-      publicReviewStatus: 'PRIVATE'
-    };
-  }
-
-  const game = confirmedFields ? { ...draft.game, ...confirmedFields } : draft.game;
-  const titleFromUser = Boolean(confirmedFields?.originalTitle);
-
-  // A draft with no structured title cannot be completed from stored state,
-  // because the raw input was never persisted. The user must supply the title.
-  if (!game.originalTitle) {
-    throw new AppError(400, 'SUBMISSION_TITLE_REQUIRED',
-      'confirmedFields.originalTitle is required because no structured title could be derived', [{
-        field: 'confirmedFields.originalTitle',
-        message: 'required'
-      }]);
-  }
-
-  const result = await prisma.$transaction(async (tx) => {
     const createdGame = await tx.catalogGame.create({
       data: {
         originalTitle: game.originalTitle,
@@ -641,7 +709,9 @@ async function confirmSubmission({
         supportsSinglePlayer: game.supportsSinglePlayer ?? null,
         supportsMultiplayer: game.supportsMultiplayer ?? null,
         typicalSessionMinutes: game.typicalSessionMinutes ?? null,
-        // Immediately usable by the submitter, invisible to everyone else.
+        // Immediately usable by the submitter, invisible to everyone else. A
+        // submission can never produce a PUBLISHED game: the information behind it
+        // is USER_CONFIRMED or AI_INFERRED at best.
         publicationStatus: 'PRIVATE',
         titleProvenance: titleFromUser ? 'USER_CONFIRMED' : 'AI_INFERRED',
         createdByUserId: userId
@@ -685,24 +755,43 @@ async function confirmSubmission({
     }
 
     let identityConflict = null;
+    let identityClaimRecorded = false;
 
-    if (draft.deterministicIdentity) {
-      const attached = await catalogIdentityService.attachIdentity({
+    if (draft.parsedIdentityClaim) {
+      const claim = draft.parsedIdentityClaim;
+
+      // Syntax parsing is not verification, so this is recorded as a claim in
+      // game_identity_claims. It does not occupy the globally unique provider key,
+      // which means it cannot capture another account's future real provider sync.
+      await catalogIdentityService.recordIdentityClaim({
         client: tx,
         catalogGameId: createdGame.id,
-        provider: draft.deterministicIdentity.provider,
-        externalId: draft.deterministicIdentity.externalId,
-        regionKey: draft.deterministicIdentity.regionKey ?? GLOBAL_REGION_KEY,
-        provenance: 'PROVIDER_VERIFIED',
-        confidence: 1
+        submissionId: submission.id,
+        claimedByUserId: userId,
+        provider: claim.provider,
+        externalId: claim.externalId,
+        regionKey: claim.regionKey ?? GLOBAL_REGION_KEY,
+        provenance: 'USER_CONFIRMED',
+        claimSource: 'quick_add_syntax_parse'
       });
+      identityClaimRecorded = true;
 
-      // A provider key already owned by another canonical game is surfaced for
-      // review; it is never silently repointed or merged.
-      if (attached.conflict) {
+      // Report, for the client's benefit, that a verified identity already exists
+      // elsewhere. Nothing is repointed or merged.
+      const verified = await catalogIdentityService.findCanonicalGameByIdentity(
+        {
+          provider: claim.provider,
+          externalId: claim.externalId,
+          regionKey: claim.regionKey ?? GLOBAL_REGION_KEY
+        },
+        { client: tx, requireVerified: true }
+      );
+
+      if (verified && verified.catalogGameId !== createdGame.id) {
         identityConflict = {
-          provider: draft.deterministicIdentity.provider,
-          existingCatalogGameId: attached.identity?.catalogGameId ?? null
+          provider: claim.provider,
+          existingCatalogGameId: verified.catalogGameId,
+          reasonCode: 'verified_identity_already_exists'
         };
       }
     }
@@ -719,38 +808,52 @@ async function confirmSubmission({
       }))
     });
 
-    const updated = await tx.gameSubmission.update({
+    await tx.gameSubmission.update({
       where: { id: submission.id },
-      data: {
-        status: requestPublicReview ? 'PENDING_REVIEW' : 'PERSONAL_CONFIRMED',
-        personalCatalogGameId: createdGame.id,
-        // The submitter's own confirmation is never treated as review approval.
-        publicReviewStatus: requestPublicReview ? 'PENDING_REVIEW' : 'PRIVATE',
-        reviewedByUserId: null,
-        reviewedAt: null
-      },
-      select: { id: true, status: true, publicReviewStatus: true }
+      data: { personalCatalogGameId: createdGame.id },
+      select: { id: true }
     });
 
-    return { createdGame, updated, identityConflict };
+    return {
+      lostClaim: false,
+      submissionId: submission.id,
+      status: nextStatus,
+      catalogGameId: createdGame.id,
+      createdNewGame: true,
+      idempotentReplay: false,
+      publicReviewStatus: nextPublicReviewStatus,
+      identityConflict,
+      identityClaimRecorded
+    };
   });
+
+  if (outcome.lostClaim) {
+    const replay = await readConfirmedOutcome({ userId, submissionId });
+
+    logger.info('catalog-quick-add-confirm', {
+      createdNewGame: false,
+      linkedExistingCandidate: false,
+      publicReviewRequested: requestPublicReview,
+      idempotentReplay: true,
+      claimLost: true
+    });
+
+    return replay;
+  }
 
   logger.info('catalog-quick-add-confirm', {
-    createdNewGame: true,
-    linkedExistingCandidate: false,
+    createdNewGame: outcome.createdNewGame,
+    linkedExistingCandidate: !outcome.createdNewGame,
     publicReviewRequested: requestPublicReview,
-    identityConflictDetected: Boolean(result.identityConflict)
+    identityConflictDetected: Boolean(outcome.identityConflict),
+    identityClaimRecorded: Boolean(outcome.identityClaimRecorded),
+    idempotentReplay: false,
+    claimLost: false
   });
 
-  return {
-    submissionId: result.updated.id,
-    status: result.updated.status,
-    catalogGameId: result.createdGame.id,
-    createdNewGame: true,
-    idempotentReplay: false,
-    publicReviewStatus: result.updated.publicReviewStatus,
-    identityConflict: result.identityConflict
-  };
+  const { lostClaim: _lostClaim, identityClaimRecorded: _claimRecorded, ...response } = outcome;
+
+  return response;
 }
 
 module.exports = {

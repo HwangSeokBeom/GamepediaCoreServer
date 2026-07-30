@@ -1249,9 +1249,10 @@ async function createReview({ userId, gameId, rating, content, containsSpoiler =
     reviewId: review.id
   });
 
-  // Product 2.2 dual write: gameId (an IGDB identity) stays authoritative and the
-  // canonical catalog id is recorded alongside it. Best effort by design.
-  await catalogDualWriteService.linkReview({ reviewId: review.id, gameId });
+  // Product 2.2 dual write: gameId came from the request body, so it is only
+  // *resolved* against an already verified identity. It never creates one, and
+  // catalogGameId stays null when nothing verified exists.
+  await catalogDualWriteService.linkResolvedReview({ reviewId: review.id, gameId });
 
   const reviewDtoContext = await buildReviewDtoContext([review], userId);
 

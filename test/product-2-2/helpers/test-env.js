@@ -55,6 +55,25 @@ function stubTransaction(client = prisma) {
   };
 }
 
+/// Stubs `$queryRaw`, which the ON CONFLICT DO NOTHING claim inserts use.
+///
+/// `handler` receives the joined SQL text and the interpolated values, and returns
+/// the rows the statement should produce: one row means the insert won the claim,
+/// zero rows means it conflicted with an existing row.
+function stubQueryRaw(handler) {
+  const original = prisma.$queryRaw;
+
+  prisma.$queryRaw = async (strings, ...values) => {
+    const sql = Array.isArray(strings) ? strings.join('?') : String(strings);
+
+    return handler(sql, values);
+  };
+
+  return function restore() {
+    prisma.$queryRaw = original;
+  };
+}
+
 /// Captures winston log records so privacy assertions can inspect exactly what a
 /// code path would have written.
 function captureLogs() {
@@ -101,5 +120,6 @@ module.exports = {
   captureLogs,
   prisma,
   stubPrisma,
+  stubQueryRaw,
   stubTransaction
 };

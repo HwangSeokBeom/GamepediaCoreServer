@@ -652,8 +652,9 @@ async function createActivityEvent({
   });
 
   // Product 2.2 dual write: the legacy gameSource/externalGameId/igdbGameId
-  // triple stays authoritative; the canonical catalog id is additive.
-  await catalogDualWriteService.linkActivityEvent({
+  // triple stays authoritative; the canonical catalog id is additive and is only
+  // resolved against an already verified identity.
+  await catalogDualWriteService.linkResolvedActivityEvent({
     activityEventId: activityEvent.id,
     gameSource,
     externalGameId,

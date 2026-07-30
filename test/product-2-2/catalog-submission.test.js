@@ -8,6 +8,7 @@ const {
   captureLogs,
   prisma,
   stubPrisma,
+  stubQueryRaw,
   stubTransaction
 } = require('./helpers/test-env');
 
@@ -162,7 +163,7 @@ test('the extraction prompt marks the user input as untrusted data', () => {
 
 test('AI-derived draft fields are pinned to AI_INFERRED provenance', () => {
   const draft = catalogSubmissionService.buildDraft({
-    deterministicIdentity: null,
+    parsedIdentityClaim: null,
     extraction: {
       // A hostile completion claiming provider verification must not be believed.
       extracted: {
@@ -196,18 +197,27 @@ test('AI-derived draft fields are pinned to AI_INFERRED provenance', () => {
   );
 });
 
-test('a deterministically parsed provider key keeps PROVIDER_VERIFIED provenance', () => {
+test('a parsed provider key is a USER_CONFIRMED claim, never PROVIDER_VERIFIED', () => {
   const draft = catalogSubmissionService.buildDraft({
-    deterministicIdentity: { provider: 'STEAM', externalId: '367520', regionKey: 'GLOBAL' },
+    parsedIdentityClaim: { provider: 'STEAM', externalId: '367520', regionKey: 'GLOBAL' },
     extraction: null
   });
 
   assert.deepEqual(draft.game.identities, [{ provider: 'STEAM', externalId: '367520', regionKey: 'GLOBAL' }]);
   assert.equal(draft.aiUsed, false);
   assert.equal(draft.degradedToManual, false);
+
+  const identityEntry = draft.game.fieldProvenance.find((entry) => entry.fieldPath === 'identities.STEAM');
+
+  // Parsing the syntax of a store URL proves nothing about the key. Labelling it
+  // PROVIDER_VERIFIED with confidence 1 is what let a submission squat a provider
+  // identity and capture another account's future real Steam sync.
+  assert.equal(identityEntry.provenance, 'USER_CONFIRMED');
+  assert.ok(identityEntry.confidence < 1, 'an unverified claim must not carry confidence 1');
   assert.equal(
-    draft.game.fieldProvenance.find((entry) => entry.fieldPath === 'identities.STEAM').provenance,
-    'PROVIDER_VERIFIED'
+    draft.game.fieldProvenance.some((entry) => entry.provenance === 'PROVIDER_VERIFIED'),
+    false,
+    'nothing in a submission draft may claim provider verification'
   );
 });
 
@@ -271,6 +281,7 @@ test('reading another account submission reports 404 and discloses nothing', asy
 });
 
 test('confirming another account submission is rejected as not found', async () => {
+  const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
     gameSubmission: {
       findUnique: async () => ({
@@ -293,6 +304,7 @@ test('confirming another account submission is rejected as not found', async () 
     );
   } finally {
     restore();
+    restoreTransaction();
   }
 });
 
@@ -300,7 +312,7 @@ test('confirmation creates a PRIVATE game and never publishes, even when review 
   const createdGames = [];
   const submissionUpdates = [];
   const draft = catalogSubmissionService.buildDraft({
-    deterministicIdentity: null,
+    parsedIdentityClaim: null,
     extraction: {
       extracted: {
         originalTitle: 'A Brand New Game',
@@ -331,9 +343,15 @@ test('confirmation creates a PRIVATE game and never publishes, even when review 
         locale: 'ko',
         regionCode: 'KR'
       }),
+      updateMany: async ({ where, data }) => {
+        // Conditional claim: only matches while the row is still PREVIEW.
+        assert.equal(where.status, 'PREVIEW');
+        submissionUpdates.push(data);
+        return { count: 1 };
+      },
       update: async ({ data }) => {
         submissionUpdates.push(data);
-        return { id: SUBMISSION_ID, status: data.status, publicReviewStatus: data.publicReviewStatus };
+        return { id: SUBMISSION_ID };
       }
     },
     catalogGame: {
@@ -375,6 +393,7 @@ test('confirmation creates a PRIVATE game and never publishes, even when review 
 
 test('confirming twice returns the first result instead of creating a second game', async () => {
   let createCalls = 0;
+  const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
     gameSubmission: {
       findUnique: async () => ({
@@ -386,6 +405,13 @@ test('confirming twice returns the first result instead of creating a second gam
         personalCatalogGameId: CATALOG_GAME_A,
         locale: 'ko',
         regionCode: 'KR'
+      }),
+      // The replay path reads the committed outcome.
+      findFirst: async () => ({
+        id: SUBMISSION_ID,
+        status: 'PERSONAL_CONFIRMED',
+        personalCatalogGameId: CATALOG_GAME_A,
+        publicReviewStatus: 'PRIVATE'
       })
     },
     catalogGame: {
@@ -408,6 +434,7 @@ test('confirming twice returns the first result instead of creating a second gam
     assert.equal(createCalls, 0, 'a repeated confirm must not create another game');
   } finally {
     restore();
+    restoreTransaction();
   }
 });
 
@@ -424,9 +451,10 @@ test('an expired preview cannot be confirmed', async () => {
         locale: 'ko',
         regionCode: 'KR'
       }),
-      update: async () => ({ id: SUBMISSION_ID })
+      updateMany: async () => ({ count: 1 })
     }
   });
+  const restoreTransaction = stubTransaction();
 
   try {
     await assert.rejects(
@@ -435,10 +463,12 @@ test('an expired preview cannot be confirmed', async () => {
     );
   } finally {
     restore();
+    restoreTransaction();
   }
 });
 
 test('a stored draft that no longer validates is refused rather than applied', async () => {
+  const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
     gameSubmission: {
       findUnique: async () => ({
@@ -461,6 +491,7 @@ test('a stored draft that no longer validates is refused rather than applied', a
     );
   } finally {
     restore();
+    restoreTransaction();
   }
 });
 
@@ -529,7 +560,13 @@ test('a deterministic provider match short-circuits before the AI budget is touc
 
   const restore = stubPrisma({
     gameExternalIdentity: {
-      findUnique: async () => ({ catalogGameId: CATALOG_GAME_A, provenance: 'PROVIDER_VERIFIED', confidence: 1 })
+      findUnique: async () => ({
+        catalogGameId: CATALOG_GAME_A,
+        provenance: 'PROVIDER_VERIFIED',
+        confidence: 1,
+        verifiedAt: new Date('2026-07-01T00:00:00.000Z'),
+        verificationSource: 'steam_owned_games_sync'
+      })
     },
     catalogGame: {
       findUnique: async () => ({ id: CATALOG_GAME_A, mergedIntoCatalogGameId: null }),
@@ -601,12 +638,94 @@ test('the shared AI daily budget rejects the request past its limit', async () =
   }
 });
 
-test('a provider key owned by another canonical game is reported, not repointed', async () => {
-  const { Prisma } = require('@prisma/client');
+test('a quick-add claim never occupies the global identity and reports a verified conflict', async () => {
   const draft = catalogSubmissionService.buildDraft({
-    deterministicIdentity: { provider: 'STEAM', externalId: '367520', regionKey: 'GLOBAL' },
+    parsedIdentityClaim: { provider: 'STEAM', externalId: '367520', regionKey: 'GLOBAL' },
     extraction: null
   });
+  const identityWrites = [];
+  const claimWrites = [];
+  const restoreTransaction = stubTransaction();
+  // The claim insert goes through ON CONFLICT DO NOTHING raw SQL.
+  const restoreQueryRaw = stubQueryRaw((sql, values) => {
+    if (sql.includes('game_identity_claims')) {
+      claimWrites.push({ catalogGameId: values[0], provenance: values[6], claimSource: values[7] });
+      return [{ id: 'claim-1' }];
+    }
+
+    return [];
+  });
+  const restore = stubPrisma({
+    gameSubmission: {
+      findUnique: async () => ({
+        id: SUBMISSION_ID,
+        userId: USER_A,
+        status: 'PREVIEW',
+        draft,
+        expiresAt: new Date(Date.now() + 60_000),
+        personalCatalogGameId: null,
+        locale: 'ko',
+        regionCode: 'KR'
+      }),
+      updateMany: async () => ({ count: 1 }),
+      update: async () => ({ id: SUBMISSION_ID })
+    },
+    catalogGame: {
+      create: async () => ({ id: CATALOG_GAME_A }),
+      findUnique: async ({ where }) => ({ id: where.id, mergedIntoCatalogGameId: null })
+    },
+    gameExternalIdentity: {
+      create: async (args) => {
+        identityWrites.push(args);
+        return { id: 'identity-1' };
+      },
+      // A verified identity for this key already exists on another game.
+      findUnique: async () => ({
+        catalogGameId: CATALOG_GAME_B,
+        provenance: 'PROVIDER_VERIFIED',
+        confidence: 1,
+        verifiedAt: new Date('2026-07-01T00:00:00.000Z'),
+        verificationSource: 'steam_owned_games_sync'
+      })
+    },
+    gameIdentityClaim: { findUnique: async () => null },
+    gameFieldEvidence: { createMany: async () => ({ count: 1 }) }
+  });
+
+  try {
+    const result = await catalogSubmissionService.confirmSubmission({
+      userId: USER_A,
+      submissionId: SUBMISSION_ID,
+      confirmedFields: { originalTitle: 'Hollow Knight' }
+    });
+
+    // The claim goes to game_identity_claims, never to the globally unique
+    // game_external_identities table.
+    assert.equal(identityWrites.length, 0, 'a submission must not write a global identity');
+    assert.equal(claimWrites.length, 1);
+    assert.equal(claimWrites[0].provenance, 'USER_CONFIRMED');
+    assert.equal(claimWrites[0].claimSource, 'quick_add_syntax_parse');
+    assert.equal(claimWrites[0].catalogGameId, CATALOG_GAME_A);
+
+    // The existing verified identity is reported, not repointed or merged.
+    assert.deepEqual(result.identityConflict, {
+      provider: 'STEAM',
+      existingCatalogGameId: CATALOG_GAME_B,
+      reasonCode: 'verified_identity_already_exists'
+    });
+  } finally {
+    restore();
+    restoreQueryRaw();
+    restoreTransaction();
+  }
+});
+
+test('a draft with no structured title cannot be confirmed without one', async () => {
+  const draft = catalogSubmissionService.buildDraft({ parsedIdentityClaim: null, extraction: null });
+
+  assert.equal(draft.game.originalTitle, null);
+  assert.equal(draft.game.requiresTitleConfirmation, true);
+
   const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
     gameSubmission: {
@@ -620,58 +739,7 @@ test('a provider key owned by another canonical game is reported, not repointed'
         locale: 'ko',
         regionCode: 'KR'
       }),
-      update: async ({ data }) => ({ id: SUBMISSION_ID, status: data.status, publicReviewStatus: data.publicReviewStatus })
-    },
-    catalogGame: { create: async () => ({ id: CATALOG_GAME_A }) },
-    gameExternalIdentity: {
-      create: async () => {
-        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: 'test',
-          meta: { target: ['provider', 'external_id', 'region_key'] }
-        });
-      },
-      findUnique: async () => ({ id: 'identity-1', catalogGameId: CATALOG_GAME_B })
-    },
-    gameFieldEvidence: { createMany: async () => ({ count: 1 }) }
-  });
-
-  try {
-    const result = await catalogSubmissionService.confirmSubmission({
-      userId: USER_A,
-      submissionId: SUBMISSION_ID,
-      // A URL-only draft has no structured title, so the user supplies one.
-      confirmedFields: { originalTitle: 'Hollow Knight' }
-    });
-
-    assert.deepEqual(result.identityConflict, {
-      provider: 'STEAM',
-      existingCatalogGameId: CATALOG_GAME_B
-    });
-  } finally {
-    restore();
-    restoreTransaction();
-  }
-});
-
-test('a draft with no structured title cannot be confirmed without one', async () => {
-  const draft = catalogSubmissionService.buildDraft({ deterministicIdentity: null, extraction: null });
-
-  assert.equal(draft.game.originalTitle, null);
-  assert.equal(draft.game.requiresTitleConfirmation, true);
-
-  const restore = stubPrisma({
-    gameSubmission: {
-      findUnique: async () => ({
-        id: SUBMISSION_ID,
-        userId: USER_A,
-        status: 'PREVIEW',
-        draft,
-        expiresAt: new Date(Date.now() + 60_000),
-        personalCatalogGameId: null,
-        locale: 'ko',
-        regionCode: 'KR'
-      })
+      updateMany: async () => ({ count: 1 })
     }
   });
 
@@ -682,12 +750,13 @@ test('a draft with no structured title cannot be confirmed without one', async (
     );
   } finally {
     restore();
+    restoreTransaction();
   }
 });
 
 test('a user-confirmed title is recorded as USER_CONFIRMED, not AI_INFERRED', async () => {
   const createdGames = [];
-  const draft = catalogSubmissionService.buildDraft({ deterministicIdentity: null, extraction: null });
+  const draft = catalogSubmissionService.buildDraft({ parsedIdentityClaim: null, extraction: null });
   const restoreTransaction = stubTransaction();
   const restore = stubPrisma({
     gameSubmission: {
@@ -701,8 +770,10 @@ test('a user-confirmed title is recorded as USER_CONFIRMED, not AI_INFERRED', as
         locale: 'ko',
         regionCode: 'KR'
       }),
-      update: async ({ data }) => ({ id: SUBMISSION_ID, status: data.status, publicReviewStatus: data.publicReviewStatus })
+      updateMany: async () => ({ count: 1 }),
+      update: async () => ({ id: SUBMISSION_ID })
     },
+
     catalogGame: {
       create: async ({ data }) => {
         createdGames.push(data);

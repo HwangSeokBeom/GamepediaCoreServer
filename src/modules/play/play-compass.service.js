@@ -70,9 +70,11 @@ function buildOwnershipEvidence(entry) {
     source: entry.gameSource,
     externalGameId: entry.externalGameId,
     libraryStatus: entry.status,
-    // Steam-synced rows are provider verified; a manual library edit is only
-    // ever the user's own claim.
-    provenance: entry.gameSource === 'STEAM' ? 'PROVIDER_VERIFIED' : 'USER_CONFIRMED',
+    // The stored provenance is the only answer. gameSource is a label a client can
+    // set on a manual write, so inferring PROVIDER_VERIFIED from gameSource ===
+    // 'STEAM' would let a user's own claim present itself as a provider fact.
+    provenance: entry.ownershipProvenance ?? 'UNKNOWN',
+    ownershipVerified: entry.ownershipProvenance === 'PROVIDER_VERIFIED',
     playtimeMinutes: entry.playtimeMinutes ?? null,
     lastPlayedAt: entry.lastPlayedAt ? entry.lastPlayedAt.toISOString() : null,
     // The library records ownership, not installation. Install state is not
@@ -299,6 +301,7 @@ async function recommend({ userId, request, now = new Date() }) {
       status: true,
       gameSource: true,
       externalGameId: true,
+      ownershipProvenance: true,
       playtimeMinutes: true,
       lastPlayedAt: true,
       updatedAt: true
@@ -329,7 +332,14 @@ async function recommend({ userId, request, now = new Date() }) {
 
   const [catalogGames, playSessions, compassEvents, friendOverlap] = await Promise.all([
     prisma.catalogGame.findMany({
-      where: { id: { in: catalogGameIds } },
+      // Visibility is enforced here, not only in the catalog module. Without it a
+      // quick-add claim could bind one account's library row to another account's
+      // PRIVATE game and leak its title and metadata into these recommendations.
+      where: {
+        id: { in: catalogGameIds },
+        mergedIntoCatalogGameId: null,
+        OR: [{ publicationStatus: 'PUBLISHED' }, { createdByUserId: userId }]
+      },
       select: {
         id: true,
         originalTitle: true,
@@ -516,6 +526,7 @@ async function recordCompassEvent({ userId, catalogGameId, action, reasonCodes =
 module.exports = {
   RECENT_PLAY_WINDOW_DAYS,
   SNOOZE_WINDOW_DAYS,
+  buildOwnershipEvidence,
   estimateSessionMinutes,
   hashCompassRequest,
   recommend,
