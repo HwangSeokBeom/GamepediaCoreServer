@@ -2,6 +2,11 @@
 
 The machine-readable source is `openapi/cross-platform.openapi.json`. It covers only the mobile gate subset.
 
+Product 2.2 (the Play Intelligence slice) is a **separate additive contract** in
+`openapi/product-2.2.openapi.json`, mounted entirely under `/api/v1`. It changes
+nothing in this document: every operation below keeps its current unversioned
+path, behavior and response shape. See `docs/PRODUCT_2_2_SERVER.md`.
+
 | Operation | Canonical behavior | Compatibility |
 |---|---|---|
 | Recent plays | `GET /users/me/recently-played?limit=1..50`; omitted or strict integer only, malformed/out-of-range values return `400 INVALID_RECENT_PLAY_LIMIT`; UTC/null dates; four equivalent list keys | `/users/me/recent-plays` is deprecated after released clients migrate |

@@ -18,7 +18,16 @@ const timezoneSchema = z.string().trim().min(1).max(64).regex(
   /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+){0,2}$/,
   'timezone must be an IANA identifier such as Asia/Seoul'
 );
-const monthSchema = z.string().trim().regex(/^\d{4}-\d{2}$/, 'month must be formatted as YYYY-MM');
+// The month component is range-checked here, not only inside the service, so an
+// impossible month is rejected at the request boundary.
+const monthSchema = z.string().trim()
+  .regex(/^\d{4}-\d{2}$/, 'month must be formatted as YYYY-MM')
+  .refine((value) => {
+    const month = Number(value.slice(5, 7));
+    const year = Number(value.slice(0, 4));
+
+    return month >= 1 && month <= 12 && year >= 1970 && year <= 9999;
+  }, 'month must be a real calendar month formatted as YYYY-MM');
 const platformSchema = z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9_-]+$/)
   .transform((value) => value.toUpperCase());
 

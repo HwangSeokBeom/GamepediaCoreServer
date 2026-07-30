@@ -146,14 +146,14 @@ async function findByExactTitle({ userId, input, locale, regionCode }) {
 
   for (const hit of localizationHits) {
     const localeMatch = hit.languageCode === locale || hit.languageCode === 'und';
-    const regionMatch = hit.regionCode === null || hit.regionCode === regionCode;
+    const regionMatch = hit.regionCode === 'GLOBAL' || hit.regionCode === regionCode;
     const reasonCodes = ['locale_alias_exact'];
 
     if (localeMatch) {
       reasonCodes.push('normalized_title_exact');
     }
 
-    if (regionMatch && hit.regionCode !== null) {
+    if (regionMatch && hit.regionCode !== 'GLOBAL') {
       reasonCodes.push('region_match');
     }
 
@@ -655,7 +655,9 @@ async function confirmSubmission({
           catalogGameId: createdGame.id,
           kind: localization.kind,
           languageCode: localization.languageCode,
-          regionCode: localization.regionCode ?? null,
+          // The AI contract allows a null regionCode; storage normalizes it to
+          // the GLOBAL sentinel so the unique key always applies.
+          regionCode: localization.regionCode ?? 'GLOBAL',
           title: localization.title,
           normalizedTitle: normalizeTitle(localization.title),
           provenance: 'AI_INFERRED'

@@ -1,0 +1,1537 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "GamePedia Product 2.2 Play Intelligence API",
+    "version": "2.2.0",
+    "description": "Machine-readable contract for the Product 2.2 server surface: the canonical open game catalog, AI-assisted quick add, Playlog, Game DNA, Play Compass, Monthly Replay, the Today feed, the editorial magazine and the product control plane. This document covers only the /api/v1 Product 2.2 subset and is not the complete backend API; the deployed mobile gate subset stays in openapi/cross-platform.openapi.json, and every pre-existing unversioned route is unchanged by this contract.",
+    "contact": {
+      "name": "GamePedia backend"
+    }
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Same-origin deployment root"
+    }
+  ],
+  "tags": [
+    { "name": "catalog", "description": "Canonical game catalog reads and follows" },
+    { "name": "quick-add", "description": "AI-assisted game submission" },
+    { "name": "playlog", "description": "Play session records and calendar" },
+    { "name": "play-intelligence", "description": "Game DNA, Play Compass and Monthly Replay" },
+    { "name": "feed", "description": "Today feed and editorial magazine" },
+    { "name": "product", "description": "Feature configuration and analytics intake" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Access token issued by POST /auth/login or POST /auth/refresh. Editor and admin capability is never read from this token: it is resolved from user_role_assignments on every privileged request."
+      }
+    },
+    "schemas": {
+      "SuccessEnvelope": {
+        "type": "object",
+        "required": ["success", "data"],
+        "properties": {
+          "success": { "const": true },
+          "data": { "type": "object" }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": ["success", "error"],
+        "properties": {
+          "success": { "const": false },
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "details": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "field": { "type": "string" },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "CatalogProvenance": {
+        "type": "string",
+        "description": "AI_INFERRED is never a source of truth and can never become a published fact without a human confirmation.",
+        "enum": [
+          "PROVIDER_VERIFIED",
+          "OFFICIAL_SOURCE",
+          "USER_CONFIRMED",
+          "COMMUNITY_CONFIRMED",
+          "EDITOR_VERIFIED",
+          "AI_INFERRED",
+          "UNKNOWN",
+          "DISPUTED"
+        ]
+      },
+      "CatalogIdentityProvider": {
+        "type": "string",
+        "enum": ["IGDB", "STEAM", "APPLE_APP_STORE", "GOOGLE_PLAY", "OFFICIAL_SITE", "COMMUNITY"]
+      },
+      "CatalogServiceStatus": {
+        "type": "string",
+        "enum": ["ANNOUNCED", "PRE_REGISTRATION", "LIVE", "MAINTENANCE", "SUNSET_ANNOUNCED", "SHUTDOWN"]
+      },
+      "CatalogPublicationStatus": {
+        "type": "string",
+        "enum": ["PRIVATE", "PENDING_REVIEW", "PUBLISHED", "REJECTED"]
+      },
+      "GameExternalIdentity": {
+        "type": "object",
+        "required": ["provider", "externalId", "regionKey", "provenance", "confidence"],
+        "properties": {
+          "provider": { "$ref": "#/components/schemas/CatalogIdentityProvider" },
+          "externalId": { "type": "string", "maxLength": 200 },
+          "regionKey": {
+            "type": "string",
+            "maxLength": 16,
+            "description": "GLOBAL when the provider key is not region scoped. (provider, externalId, regionKey) is unique in the database."
+          },
+          "provenance": { "$ref": "#/components/schemas/CatalogProvenance" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "GameLocalization": {
+        "type": "object",
+        "required": ["kind", "languageCode", "title", "provenance"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["ORIGINAL_TITLE", "REGIONAL_TITLE", "ALIAS"] },
+          "languageCode": { "type": "string", "maxLength": 16 },
+          "regionCode": { "type": ["string", "null"], "maxLength": 8 },
+          "title": { "type": "string", "maxLength": 300 },
+          "provenance": { "$ref": "#/components/schemas/CatalogProvenance" }
+        }
+      },
+      "RegionalRelease": {
+        "type": "object",
+        "description": "One country/language/platform service edition of a game work, with its own operator, availability window, server region and lifecycle status.",
+        "required": ["id", "countryCode", "languageCode", "platform", "serviceStatus", "provenance"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "countryCode": { "type": "string", "maxLength": 8 },
+          "languageCode": { "type": "string", "maxLength": 16 },
+          "platform": { "type": "string", "maxLength": 40 },
+          "operatorName": { "type": ["string", "null"], "maxLength": 200 },
+          "serverRegion": { "type": ["string", "null"], "maxLength": 60 },
+          "releaseDate": { "type": ["string", "null"], "format": "date" },
+          "shutdownDate": { "type": ["string", "null"], "format": "date" },
+          "serviceStatus": { "$ref": "#/components/schemas/CatalogServiceStatus" },
+          "provenance": { "$ref": "#/components/schemas/CatalogProvenance" }
+        }
+      },
+      "GameAsset": {
+        "type": "object",
+        "required": ["kind", "url", "rightsStatus", "provenance", "usableAsPublicHero"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["COVER", "HERO", "SCREENSHOT", "LOGO"] },
+          "url": { "type": "string" },
+          "rightsStatus": {
+            "type": "string",
+            "enum": ["UNKNOWN", "PROVIDER_LICENSED", "OFFICIAL_PRESS_KIT", "USER_SUBMITTED", "CLEARED", "RESTRICTED"]
+          },
+          "provenance": { "$ref": "#/components/schemas/CatalogProvenance" },
+          "attribution": { "type": ["string", "null"] },
+          "usableAsPublicHero": {
+            "type": "boolean",
+            "description": "False for UNKNOWN, USER_SUBMITTED and RESTRICTED rights. An image that is not usable as a public hero must not be rendered as one."
+          }
+        }
+      },
+      "GameFieldEvidence": {
+        "type": "object",
+        "required": ["fieldPath", "provenance", "confidence", "sourceType"],
+        "properties": {
+          "fieldPath": { "type": "string", "maxLength": 120 },
+          "provenance": { "$ref": "#/components/schemas/CatalogProvenance" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "sourceType": { "type": "string", "maxLength": 40 },
+          "sourceUrl": { "type": ["string", "null"] },
+          "observedAt": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "CatalogGameSummary": {
+        "type": "object",
+        "required": ["catalogGameId", "originalTitle", "publicationStatus", "titleProvenance", "identities"],
+        "properties": {
+          "catalogGameId": { "type": "string", "format": "uuid" },
+          "originalTitle": { "type": "string", "maxLength": 300 },
+          "slug": { "type": ["string", "null"] },
+          "developerName": { "type": ["string", "null"] },
+          "publisherName": { "type": ["string", "null"] },
+          "firstReleaseDate": { "type": ["string", "null"], "format": "date" },
+          "genres": { "type": "array", "items": { "type": "string" } },
+          "platforms": { "type": "array", "items": { "type": "string" } },
+          "publicationStatus": { "$ref": "#/components/schemas/CatalogPublicationStatus" },
+          "titleProvenance": { "$ref": "#/components/schemas/CatalogProvenance" },
+          "identities": { "type": "array", "items": { "$ref": "#/components/schemas/GameExternalIdentity" } },
+          "matchScore": { "type": "number" }
+        }
+      },
+      "CatalogGameDetail": {
+        "allOf": [
+          { "$ref": "#/components/schemas/CatalogGameSummary" },
+          {
+            "type": "object",
+            "required": ["localizations", "regionalReleases", "assets", "fieldEvidence"],
+            "properties": {
+              "steamTags": { "type": "array", "items": { "type": "string" } },
+              "supportsSinglePlayer": { "type": ["boolean", "null"] },
+              "supportsMultiplayer": { "type": ["boolean", "null"] },
+              "typicalSessionMinutes": { "type": ["integer", "null"] },
+              "localizations": { "type": "array", "items": { "$ref": "#/components/schemas/GameLocalization" } },
+              "regionalReleases": { "type": "array", "items": { "$ref": "#/components/schemas/RegionalRelease" } },
+              "assets": { "type": "array", "items": { "$ref": "#/components/schemas/GameAsset" } },
+              "fieldEvidence": { "type": "array", "items": { "$ref": "#/components/schemas/GameFieldEvidence" } },
+              "requestedCatalogGameId": { "type": "string", "format": "uuid" },
+              "resolvedFromMerge": { "type": "boolean" },
+              "isFollowedByMe": { "type": "boolean" },
+              "createdAt": { "type": ["string", "null"], "format": "date-time" },
+              "updatedAt": { "type": ["string", "null"], "format": "date-time" }
+            }
+          }
+        ]
+      },
+      "SubmissionPreviewRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["inputType", "input", "locale", "regionCode"],
+        "properties": {
+          "inputType": { "type": "string", "enum": ["TEXT", "URL", "PROVIDER_ID"] },
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Raw user input. It is used to resolve candidates and then discarded: only its SHA-256 fingerprint and the structured fields the user confirms are ever persisted. The server never fetches a submitted URL."
+          },
+          "locale": { "type": "string", "maxLength": 16 },
+          "regionCode": { "type": "string", "minLength": 2, "maxLength": 2 },
+          "platformHint": { "type": ["string", "null"], "maxLength": 40 }
+        }
+      },
+      "SubmissionPreviewResponse": {
+        "type": "object",
+        "required": [
+          "submissionId",
+          "existingCandidates",
+          "newGameDraft",
+          "fieldProvenance",
+          "clarifyingQuestions",
+          "resolution",
+          "personalRegistrationAvailable",
+          "publicReviewStatus"
+        ],
+        "properties": {
+          "submissionId": { "type": "string", "format": "uuid" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "expiresAt": { "type": "string", "format": "date-time" },
+          "existingCandidates": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "At most three existing candidates, each with allowlisted match reason codes and a confidence.",
+            "items": {
+              "allOf": [
+                { "$ref": "#/components/schemas/CatalogGameSummary" },
+                {
+                  "type": "object",
+                  "required": ["matchReasonCodes", "matchConfidence"],
+                  "properties": {
+                    "matchReasonCodes": { "type": "array", "items": { "type": "string" } },
+                    "matchConfidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                  }
+                }
+              ]
+            }
+          },
+          "newGameDraft": {
+            "type": "object",
+            "required": ["originalTitle", "requiresTitleConfirmation"],
+            "properties": {
+              "originalTitle": {
+                "type": ["string", "null"],
+                "description": "Null when no structured title could be derived. The raw natural-language input is never persisted as a fallback title."
+              },
+              "requiresTitleConfirmation": {
+                "type": "boolean",
+                "description": "When true, confirm must supply confirmedFields.originalTitle or the request is rejected with SUBMISSION_TITLE_REQUIRED."
+              }
+            }
+          },
+          "fieldProvenance": { "type": "array", "items": { "$ref": "#/components/schemas/GameFieldEvidence" } },
+          "clarifyingQuestions": {
+            "type": "array",
+            "maxItems": 1,
+            "description": "At most one clarifying question.",
+            "items": { "type": "string", "maxLength": 300 }
+          },
+          "resolution": {
+            "type": "object",
+            "required": ["stage", "aiUsed", "aiFallbackUsed"],
+            "properties": {
+              "stage": {
+                "type": "string",
+                "enum": ["provider_identity_exact", "title_exact", "fuzzy_title", "ai_extraction", "manual_draft"]
+              },
+              "aiUsed": { "type": "boolean" },
+              "aiFallbackUsed": {
+                "type": "boolean",
+                "description": "True when AI failed, timed out, was over quota or returned a body that failed Zod validation, and the response degraded to a minimal manual draft."
+              },
+              "degradeReason": { "type": ["string", "null"] }
+            }
+          },
+          "personalRegistrationAvailable": {
+            "type": "boolean",
+            "description": "Personal registration is immediately available."
+          },
+          "publicReviewStatus": {
+            "const": "PENDING_REVIEW",
+            "description": "Public catalog visibility always requires review. AI never publishes and never merges."
+          }
+        }
+      },
+      "SubmissionConfirmRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "selectedCatalogGameId": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "description": "Link one of the previewed candidates instead of creating a new game. Mutually exclusive with confirmedFields."
+          },
+          "confirmedFields": { "type": ["object", "null"] },
+          "requestPublicReview": {
+            "type": "boolean",
+            "default": false,
+            "description": "Requests public listing. The submitter's own confirmation is never treated as review approval."
+          }
+        }
+      },
+      "PlaySessionOutcome": {
+        "type": "string",
+        "enum": ["CONTINUE", "PAUSED", "DROPPED", "COMPLETED"]
+      },
+      "PlaySession": {
+        "type": "object",
+        "required": [
+          "id",
+          "catalogGameId",
+          "playedAt",
+          "outcome",
+          "visibility",
+          "provenance",
+          "clientMutationId"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "catalogGameId": { "type": "string", "format": "uuid" },
+          "regionalReleaseId": { "type": ["string", "null"], "format": "uuid" },
+          "playedAt": { "type": "string", "format": "date-time" },
+          "durationMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 1440 },
+          "progressPercent": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 },
+          "mood": {
+            "type": ["string", "null"],
+            "enum": ["RELAXED", "FOCUSED", "EXCITED", "BORED", "FRUSTRATED", "NOSTALGIC", null]
+          },
+          "note": {
+            "type": ["string", "null"],
+            "maxLength": 2000,
+            "description": "Private user content. Never logged and never emitted as a Product Event property."
+          },
+          "outcome": { "$ref": "#/components/schemas/PlaySessionOutcome" },
+          "visibility": { "type": "string", "enum": ["PRIVATE", "FRIENDS", "PUBLIC"], "default": "PRIVATE" },
+          "provenance": { "$ref": "#/components/schemas/CatalogProvenance" },
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 120,
+            "description": "Idempotency key. (userId, clientMutationId) is unique, so a retried create returns the original record instead of a duplicate."
+          },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreatePlaySessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["catalogGameId", "playedAt", "outcome", "clientMutationId"],
+        "properties": {
+          "catalogGameId": { "type": "string", "format": "uuid" },
+          "regionalReleaseId": { "type": ["string", "null"], "format": "uuid" },
+          "playedAt": { "type": "string", "format": "date-time" },
+          "durationMinutes": { "type": ["integer", "null"], "minimum": 1, "maximum": 1440 },
+          "progressPercent": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 },
+          "mood": { "type": ["string", "null"] },
+          "note": { "type": ["string", "null"], "maxLength": 2000 },
+          "outcome": { "$ref": "#/components/schemas/PlaySessionOutcome" },
+          "visibility": { "type": "string", "enum": ["PRIVATE", "FRIENDS", "PUBLIC"], "default": "PRIVATE" },
+          "clientMutationId": { "type": "string", "minLength": 8, "maxLength": 120 }
+        }
+      },
+      "GameDna": {
+        "type": "object",
+        "required": [
+          "signalCount",
+          "confidence",
+          "generatedAt",
+          "dataFreshness",
+          "genreProfile",
+          "completionProfile",
+          "sessionLengthProfile",
+          "socialProfile",
+          "toneProfile",
+          "missingSignals",
+          "reasonCodes",
+          "computation"
+        ],
+        "properties": {
+          "signalCount": { "type": "integer", "minimum": 0 },
+          "confidence": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"] },
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "dataFreshness": { "type": "object" },
+          "genreProfile": { "type": "object" },
+          "completionProfile": { "type": "object" },
+          "sessionLengthProfile": { "type": "object" },
+          "socialProfile": { "type": "object" },
+          "toneProfile": { "type": "object" },
+          "ratingProfile": { "type": "object" },
+          "missingSignals": { "type": "array", "items": { "type": "string" } },
+          "reasonCodes": { "type": "array", "items": { "type": "string" } },
+          "computation": {
+            "type": "object",
+            "required": ["deterministic"],
+            "properties": {
+              "deterministic": {
+                "const": true,
+                "description": "Game DNA is always computed deterministically. AI narration is optional and additive, and the endpoint works with AI disabled."
+              },
+              "aiNarrationIncluded": { "type": "boolean" }
+            }
+          }
+        }
+      },
+      "PlayCompassRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["availableMinutes"],
+        "properties": {
+          "availableMinutes": { "type": "integer", "minimum": 5, "maximum": 1440 },
+          "mood": { "type": ["string", "null"] },
+          "energy": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"], "default": "MEDIUM" },
+          "soloOrParty": { "type": "string", "enum": ["SOLO", "PARTY", "EITHER"], "default": "EITHER" },
+          "continueOrStart": { "type": "string", "enum": ["CONTINUE", "START", "EITHER"], "default": "EITHER" },
+          "availablePlatforms": { "type": "array", "maxItems": 12, "items": { "type": "string" } },
+          "friendUserIds": { "type": "array", "maxItems": 20, "items": { "type": "string", "format": "uuid" } }
+        }
+      },
+      "PlayCompassResponse": {
+        "type": "object",
+        "required": ["recommendations", "confidence", "generatedAt", "dataFreshness", "ownedOnly"],
+        "properties": {
+          "recommendations": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "At most three picks, drawn only from owned PLAYING/BACKLOG library entries. A default request never proposes an unowned game.",
+            "items": {
+              "type": "object",
+              "required": ["catalogGameId", "score", "scoreComponents", "reasonCodes", "ownershipEvidence", "rank"],
+              "properties": {
+                "catalogGameId": { "type": "string", "format": "uuid" },
+                "title": { "type": ["string", "null"] },
+                "rank": { "type": "integer", "minimum": 1, "maximum": 3 },
+                "score": { "type": "number" },
+                "scoreComponents": { "type": "object" },
+                "reasonCodes": { "type": "array", "items": { "type": "string" } },
+                "estimatedSessionMinutes": { "type": "integer" },
+                "estimatedSessionBasis": { "type": "string" },
+                "ownershipEvidence": {
+                  "type": "object",
+                  "required": ["source", "externalGameId", "libraryStatus", "provenance", "installEvidence"],
+                  "properties": {
+                    "source": { "type": "string" },
+                    "externalGameId": { "type": "string" },
+                    "libraryStatus": { "type": "string" },
+                    "provenance": { "$ref": "#/components/schemas/CatalogProvenance" },
+                    "playtimeMinutes": { "type": ["integer", "null"] },
+                    "lastPlayedAt": { "type": ["string", "null"], "format": "date-time" },
+                    "installEvidence": {
+                      "type": "object",
+                      "required": ["known"],
+                      "properties": {
+                        "known": { "type": "boolean" },
+                        "reason": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "confidence": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"] },
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "dataFreshness": { "type": "object" },
+          "emptyReason": { "type": ["string", "null"] },
+          "ownedOnly": { "const": true },
+          "requestHash": { "type": "string" }
+        }
+      },
+      "PlayCompassEventRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["catalogGameId", "action"],
+        "properties": {
+          "catalogGameId": { "type": "string", "format": "uuid" },
+          "action": {
+            "type": "string",
+            "enum": ["SELECTED", "EXCLUDED", "SNOOZED", "PLAY_CONFIRMED"],
+            "description": "Only these allowlisted actions can be recorded."
+          },
+          "reasonCodes": { "type": "array", "maxItems": 12, "items": { "type": "string" } },
+          "requestHash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+          "occurredAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MonthlyReplay": {
+        "type": "object",
+        "required": [
+          "monthKey",
+          "timezone",
+          "window",
+          "generatedAt",
+          "isEmpty",
+          "playedDates",
+          "totals",
+          "startedGames",
+          "completedGames",
+          "droppedGames",
+          "genreDistribution",
+          "moodDistribution",
+          "provenance",
+          "missingData"
+        ],
+        "properties": {
+          "monthKey": { "type": "string", "pattern": "^\\d{4}-\\d{2}$" },
+          "timezone": { "type": "string" },
+          "window": {
+            "type": "object",
+            "description": "Half-open UTC window covering the local month. Boundaries are resolved through the timezone, so a DST transition inside the month cannot drop or duplicate an hour.",
+            "required": ["startUtc", "endUtc", "localDayCount"],
+            "properties": {
+              "startUtc": { "type": "string", "format": "date-time" },
+              "endUtc": { "type": "string", "format": "date-time" },
+              "localDayCount": { "type": "integer", "minimum": 28, "maximum": 31 }
+            }
+          },
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "isEmpty": { "type": "boolean" },
+          "emptyReason": { "type": ["string", "null"] },
+          "playedDates": { "type": "array", "items": { "type": "string", "format": "date" } },
+          "totals": { "type": "object" },
+          "startedGames": { "type": "array", "items": { "type": "object" } },
+          "completedGames": { "type": "array", "items": { "type": "object" } },
+          "droppedGames": { "type": "array", "items": { "type": "object" } },
+          "mostPlayedGame": { "type": ["object", "null"] },
+          "surpriseGame": { "type": ["object", "null"] },
+          "genreDistribution": { "type": "object" },
+          "moodDistribution": { "type": "object" },
+          "perGame": { "type": "array", "items": { "type": "object" } },
+          "provenance": { "type": "object" },
+          "missingData": {
+            "type": "array",
+            "description": "Structured explanation of anything the response could not account for.",
+            "items": {
+              "type": "object",
+              "required": ["code"],
+              "properties": {
+                "code": { "type": "string" },
+                "affectedSessionCount": { "type": "integer" },
+                "affectedGameCount": { "type": "integer" },
+                "effect": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "TodayFeed": {
+        "type": "object",
+        "required": ["generatedAt", "sections", "meta"],
+        "properties": {
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "timezone": { "type": "string" },
+          "locale": { "type": ["string", "null"] },
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["key", "status"],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "enum": [
+                    "playCompass",
+                    "gameDNA",
+                    "gameBriefing",
+                    "backlogRescue",
+                    "spoilerFreeStartGuide",
+                    "editorialCuration",
+                    "monthlyReplay",
+                    "friendActivity"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["ok", "disabled", "unavailable"],
+                  "description": "A failing section is reported as unavailable while every other section still renders."
+                },
+                "reasonCode": { "type": ["string", "null"] },
+                "data": { "type": ["object", "null"] }
+              }
+            }
+          },
+          "meta": {
+            "type": "object",
+            "required": ["sectionOrder", "nextCursor", "partialFailure"],
+            "properties": {
+              "sectionOrder": { "type": "array", "items": { "type": "string" } },
+              "limit": { "type": "integer" },
+              "nextCursor": { "type": ["string", "null"] },
+              "partialFailure": { "type": "boolean" }
+            }
+          }
+        }
+      },
+      "Article": {
+        "type": "object",
+        "required": ["slug", "status", "locale", "headline", "excerpt", "sources", "relatedGames"],
+        "properties": {
+          "slug": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["DRAFT", "FACT_CHECK", "RIGHTS_REVIEW", "SCHEDULED", "PUBLISHED", "CORRECTED", "RETRACTED"]
+          },
+          "locale": { "type": "string" },
+          "headline": { "type": "string", "maxLength": 200 },
+          "excerpt": { "type": "string", "maxLength": 600 },
+          "publishedAt": { "type": ["string", "null"], "format": "date-time" },
+          "correctedAt": { "type": ["string", "null"], "format": "date-time" },
+          "retractedAt": { "type": ["string", "null"], "format": "date-time" },
+          "heroImage": {
+            "type": ["object", "null"],
+            "description": "Null unless the hero asset has a resolved rights status. An image with an unknown or restricted rights status is never offered as a public hero."
+          },
+          "heroImageWithheldReason": { "type": ["string", "null"] },
+          "sources": {
+            "type": "array",
+            "description": "Third-party references. Only the headline, a short excerpt, the source URL, timestamps and a content hash are stored; the full original text never is.",
+            "items": {
+              "type": "object",
+              "required": ["sourceType", "publisherKey", "headline", "sourceUrl", "fetchedAt", "contentHash", "provenance"],
+              "properties": {
+                "sourceType": { "type": "string", "enum": ["OFFICIAL_RSS", "STEAM_NEWS", "OFFICIAL_SITE", "EDITOR_MANUAL"] },
+                "publisherKey": { "type": "string" },
+                "headline": { "type": "string", "maxLength": 300 },
+                "excerpt": { "type": ["string", "null"], "maxLength": 400 },
+                "sourceUrl": { "type": "string" },
+                "publishedAt": { "type": ["string", "null"], "format": "date-time" },
+                "fetchedAt": { "type": "string", "format": "date-time" },
+                "contentHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                "provenance": { "$ref": "#/components/schemas/CatalogProvenance" }
+              }
+            }
+          },
+          "relatedGames": { "type": "array", "items": { "type": "object" } }
+        }
+      },
+      "ProductConfig": {
+        "type": "object",
+        "required": ["dtoVersion", "productVersion", "generatedAt", "features", "limits", "allowlists"],
+        "properties": {
+          "dtoVersion": { "type": "integer", "minimum": 1 },
+          "productVersion": { "type": "string" },
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "featureFlagSource": { "type": "string", "enum": ["database", "environment_defaults"] },
+          "features": {
+            "type": "object",
+            "description": "Independent kill switches. Each feature can be disabled without affecting the others or any pre-existing endpoint.",
+            "required": [
+              "openCatalog",
+              "aiQuickAdd",
+              "playlog",
+              "playCompass",
+              "gameDNA",
+              "monthlyReplay",
+              "todayFeed",
+              "magazine"
+            ],
+            "properties": {
+              "openCatalog": { "type": "boolean" },
+              "aiQuickAdd": { "type": "boolean" },
+              "playlog": { "type": "boolean" },
+              "playCompass": { "type": "boolean" },
+              "gameDNA": { "type": "boolean" },
+              "monthlyReplay": { "type": "boolean" },
+              "todayFeed": { "type": "boolean" },
+              "magazine": { "type": "boolean" }
+            }
+          },
+          "limits": { "type": "object" },
+          "allowlists": { "type": "object" }
+        }
+      },
+      "ProductEventBatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["events"],
+        "properties": {
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["eventId", "eventCode", "occurredAt"],
+              "properties": {
+                "eventId": {
+                  "type": "string",
+                  "minLength": 8,
+                  "maxLength": 120,
+                  "description": "Unique per event. A retried batch is idempotent and cannot double count."
+                },
+                "eventCode": {
+                  "type": "string",
+                  "enum": [
+                    "quick_add_preview",
+                    "quick_add_confirm",
+                    "play_compass_submit",
+                    "play_compass_select",
+                    "play_session_create",
+                    "game_dna_view",
+                    "replay_view",
+                    "replay_share",
+                    "article_impression",
+                    "article_action"
+                  ]
+                },
+                "occurredAt": { "type": "string", "format": "date-time" },
+                "properties": {
+                  "type": "object",
+                  "description": "Allowlisted, shape-checked properties only. Raw queries, Playlog notes, URL query strings, provider bodies and prompts are dropped before the row is written."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "No valid bearer access token was supplied.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "Forbidden": {
+        "description": "The account does not hold a required role. Editor and admin capability is resolved from the database, never from a JWT claim.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "NotFound": {
+        "description": "The resource does not exist, or belongs to another account and is therefore not disclosed.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "ValidationError": {
+        "description": "Request validation failed.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "Conflict": {
+        "description": "The request conflicts with the current state.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "TooManyRequests": {
+        "description": "The shared per-user daily AI budget is exhausted.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      },
+      "FeatureDisabled": {
+        "description": "The feature's kill switch is off. Other features and every pre-existing endpoint keep working.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+      }
+    }
+  },
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/api/v1/catalog/games/search": {
+      "get": {
+        "tags": ["catalog"],
+        "operationId": "searchCatalogGames",
+        "summary": "Search the canonical game catalog",
+        "description": "Deterministic ranking: score descending, then normalized title, then id. Only PUBLISHED games and the caller's own private registrations are visible.",
+        "parameters": [
+          { "name": "query", "in": "query", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 200 } },
+          { "name": "locale", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "regionCode", "in": "query", "required": false, "schema": { "type": "string", "minLength": 2, "maxLength": 2 } },
+          { "name": "platform", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 } },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ranked catalog games.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": ["games", "meta"],
+                          "properties": {
+                            "games": { "type": "array", "items": { "$ref": "#/components/schemas/CatalogGameSummary" } },
+                            "meta": { "type": "object" }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/catalog/games/{catalogGameId}": {
+      "get": {
+        "tags": ["catalog"],
+        "operationId": "getCatalogGame",
+        "summary": "Read one canonical game",
+        "description": "A merged (tombstoned) id resolves to the surviving canonical game and reports resolvedFromMerge.",
+        "parameters": [
+          { "name": "catalogGameId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Canonical game detail with identities, localizations, regional releases, assets and per-field provenance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/CatalogGameDetail" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/catalog/submissions/preview": {
+      "post": {
+        "tags": ["quick-add"],
+        "operationId": "previewCatalogSubmission",
+        "summary": "Preview an AI-assisted game submission",
+        "description": "Runs deterministic URL/app-id/package-id parsing, provider identity matching, locale alias and normalized title matching, then fuzzy ranking, and only reaches the LLM when those cannot answer. Nothing is written to the public catalog and nothing is merged.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionPreviewRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Preview with up to three existing candidates and a new-game draft.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/SubmissionPreviewResponse" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/TooManyRequests" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/catalog/submissions/{submissionId}/confirm": {
+      "post": {
+        "tags": ["quick-add"],
+        "operationId": "confirmCatalogSubmission",
+        "summary": "Confirm a previewed submission",
+        "description": "Writes only after explicit user confirmation. Creates a PRIVATE canonical game owned by the submitter, or links an existing candidate. requestPublicReview moves the submission to PENDING_REVIEW and never to PUBLISHED.",
+        "parameters": [
+          { "name": "submissionId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionConfirmRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Existing candidate linked, or an idempotent replay of an earlier confirmation.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "201": {
+            "description": "A new PRIVATE canonical game was created.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/catalog/submissions/{submissionId}": {
+      "get": {
+        "tags": ["quick-add"],
+        "operationId": "getCatalogSubmission",
+        "summary": "Read one of the caller's own submissions",
+        "description": "Another account's submission is reported as 404 rather than 403, so submission ids are not enumerable.",
+        "parameters": [
+          { "name": "submissionId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Submission state.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/catalog/games/{catalogGameId}/corrections": {
+      "post": {
+        "tags": ["catalog"],
+        "operationId": "submitCatalogCorrections",
+        "summary": "Report corrections for a canonical game",
+        "description": "A correction is recorded as field evidence with USER_CONFIRMED or OFFICIAL_SOURCE provenance. Nothing is published by this call, and the server never fetches the supplied source URL.",
+        "parameters": [
+          { "name": "catalogGameId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["corrections"],
+                "properties": {
+                  "corrections": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["fieldPath", "proposedValue"],
+                      "properties": {
+                        "fieldPath": { "type": "string" },
+                        "proposedValue": {},
+                        "sourceUrl": { "type": ["string", "null"] }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Corrections queued for review.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/catalog/games/{catalogGameId}/follow": {
+      "put": {
+        "tags": ["catalog"],
+        "operationId": "followCatalogGame",
+        "summary": "Follow a canonical game",
+        "description": "Idempotent: repeating the call updates the regional scope without creating a duplicate follow.",
+        "parameters": [
+          { "name": "catalogGameId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "regionalReleaseId": { "type": ["string", "null"], "format": "uuid" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The caller now follows the game.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      },
+      "delete": {
+        "tags": ["catalog"],
+        "operationId": "unfollowCatalogGame",
+        "summary": "Unfollow a canonical game",
+        "parameters": [
+          { "name": "catalogGameId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller no longer follows the game. Idempotent.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/users/me/play-sessions": {
+      "get": {
+        "tags": ["playlog"],
+        "operationId": "listPlaySessions",
+        "summary": "List the caller's play sessions",
+        "description": "Keyset pagination on (playedAt desc, id desc), which is a unique total order, so a page can never skip or repeat a row.",
+        "parameters": [
+          { "name": "catalogGameId", "in": "query", "required": false, "schema": { "type": "string", "format": "uuid" } },
+          { "name": "from", "in": "query", "required": false, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "to", "in": "query", "required": false, "schema": { "type": "string", "format": "date-time" } },
+          { "name": "outcome", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/PlaySessionOutcome" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 } },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's own sessions only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": ["playSessions", "meta"],
+                          "properties": {
+                            "playSessions": { "type": "array", "items": { "$ref": "#/components/schemas/PlaySession" } },
+                            "meta": { "type": "object" }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      },
+      "post": {
+        "tags": ["playlog"],
+        "operationId": "createPlaySession",
+        "summary": "Record a play session",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatePlaySessionRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "A retried clientMutationId returned the original record instead of creating a duplicate.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "201": {
+            "description": "The session was created.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/users/me/play-sessions/{id}": {
+      "patch": {
+        "tags": ["playlog"],
+        "operationId": "updatePlaySession",
+        "summary": "Update one of the caller's play sessions",
+        "description": "Ownership is part of the lookup, so another account's id resolves to 404.",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "catalogGameId": { "type": "string", "format": "uuid" },
+                  "regionalReleaseId": { "type": ["string", "null"], "format": "uuid" },
+                  "playedAt": { "type": "string", "format": "date-time" },
+                  "durationMinutes": { "type": ["integer", "null"] },
+                  "progressPercent": { "type": ["integer", "null"] },
+                  "mood": { "type": ["string", "null"] },
+                  "note": { "type": ["string", "null"] },
+                  "outcome": { "$ref": "#/components/schemas/PlaySessionOutcome" },
+                  "visibility": { "type": "string", "enum": ["PRIVATE", "FRIENDS", "PUBLIC"] },
+                  "clientMutationId": { "type": "string", "minLength": 8, "maxLength": 120 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated session, or an idempotent replay.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      },
+      "delete": {
+        "tags": ["playlog"],
+        "operationId": "deletePlaySession",
+        "summary": "Delete one of the caller's play sessions",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "clientMutationId": { "type": "string", "minLength": 8, "maxLength": 120 } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Deleted, or an idempotent replay of an earlier delete.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/users/me/play-sessions/calendar": {
+      "get": {
+        "tags": ["playlog"],
+        "operationId": "getPlayCalendar",
+        "summary": "Per-local-day play aggregates for one month",
+        "description": "Day buckets are resolved in the supplied timezone. Note bodies are never returned.",
+        "parameters": [
+          { "name": "month", "in": "query", "required": true, "schema": { "type": "string", "pattern": "^\\d{4}-\\d{2}$" } },
+          { "name": "timezone", "in": "query", "required": false, "schema": { "type": "string", "default": "UTC" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Calendar aggregates.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/users/me/game-dna": {
+      "get": {
+        "tags": ["play-intelligence"],
+        "operationId": "getGameDna",
+        "summary": "Deterministic play-preference profile",
+        "description": "Computed from ratings, library status, completion and drop outcomes, playtime, genres, Steam tags, recent play and Playlog outcome states. Playlog note bodies are never analysed.",
+        "responses": {
+          "200": {
+            "description": "Game DNA.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/GameDna" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/users/me/play-compass": {
+      "post": {
+        "tags": ["play-intelligence"],
+        "operationId": "recommendPlayCompass",
+        "summary": "Recommend at most three owned games to play now",
+        "description": "Deterministic ranker with no model involvement. Candidates come only from owned PLAYING/BACKLOG library entries.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlayCompassRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "At most three recommendations with score components, reason codes, confidence, data freshness and ownership evidence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/PlayCompassResponse" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/users/me/play-compass/events": {
+      "post": {
+        "tags": ["play-intelligence"],
+        "operationId": "recordPlayCompassEvent",
+        "summary": "Record allowlisted Play Compass feedback",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlayCompassEventRequest" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Feedback recorded.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/users/me/replays/monthly": {
+      "get": {
+        "tags": ["play-intelligence"],
+        "operationId": "getMonthlyReplay",
+        "summary": "Monthly play retrospective",
+        "parameters": [
+          { "name": "month", "in": "query", "required": true, "schema": { "type": "string", "pattern": "^\\d{4}-\\d{2}$" } },
+          { "name": "timezone", "in": "query", "required": false, "schema": { "type": "string", "default": "UTC" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Monthly replay, including an explicit empty-month state and structured notes for anything the response could not account for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/MonthlyReplay" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/users/me/today": {
+      "get": {
+        "tags": ["feed"],
+        "operationId": "getTodayFeed",
+        "summary": "Composed Today feed",
+        "description": "Sections are settled independently: one failing section is reported as unavailable while every other section still renders. Section order and in-section ordering are deterministic.",
+        "parameters": [
+          { "name": "locale", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "timezone", "in": "query", "required": false, "schema": { "type": "string", "default": "UTC" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 8, "default": 8 } },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Today feed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/TodayFeed" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/articles/{slug}": {
+      "get": {
+        "tags": ["feed"],
+        "operationId": "getArticle",
+        "summary": "Read a published article",
+        "description": "Only PUBLISHED and CORRECTED articles are readable. A hero image whose rights status is unresolved is withheld with a reason instead of being served.",
+        "parameters": [{ "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "Article.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": ["article"],
+                          "properties": { "article": { "$ref": "#/components/schemas/Article" } }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/editorial/articles": {
+      "get": {
+        "tags": ["feed"],
+        "operationId": "listEditorialArticles",
+        "summary": "List articles for an editor",
+        "parameters": [
+          { "name": "status", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "locale", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Articles, newest update first with a deterministic slug tie-break.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      },
+      "post": {
+        "tags": ["feed"],
+        "operationId": "createEditorialArticle",
+        "summary": "Create an article draft",
+        "description": "Always created as DRAFT. An AI-assisted draft may only ever be DRAFT.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Draft created.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/editorial/articles/{slug}": {
+      "patch": {
+        "tags": ["feed"],
+        "operationId": "updateEditorialArticle",
+        "summary": "Update an article and advance its workflow state",
+        "description": "Transitions follow DRAFT -> FACT_CHECK -> RIGHTS_REVIEW -> SCHEDULED. PUBLISHED and RETRACTED are only reachable through their dedicated endpoints, which re-check the actor's role in the database.",
+        "parameters": [{ "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated article.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/editorial/articles/{slug}/publish": {
+      "post": {
+        "tags": ["feed"],
+        "operationId": "publishEditorialArticle",
+        "summary": "Publish a scheduled article",
+        "description": "Re-reads the actor's EDITOR/ADMIN role from user_role_assignments, and refuses when a hero image has an unresolved rights status.",
+        "parameters": [{ "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": {
+            "description": "Published.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/editorial/articles/{slug}/retract": {
+      "post": {
+        "tags": ["feed"],
+        "operationId": "retractEditorialArticle",
+        "summary": "Retract a published article",
+        "parameters": [{ "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["reasonCode"],
+                "properties": {
+                  "reasonCode": {
+                    "type": "string",
+                    "enum": ["factual_error", "rights_issue", "duplicate", "source_retracted", "editorial_decision"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Retracted.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/FeatureDisabled" }
+        }
+      }
+    },
+    "/api/v1/product-config": {
+      "get": {
+        "tags": ["product"],
+        "operationId": "getProductConfig",
+        "summary": "Versioned product configuration and kill-switch state",
+        "description": "Intentionally not behind a feature flag: the client needs this response to learn which features are disabled.",
+        "responses": {
+          "200": {
+            "description": "Product configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessEnvelope" },
+                    { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/ProductConfig" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/product-events": {
+      "post": {
+        "tags": ["product"],
+        "operationId": "submitProductEvents",
+        "summary": "Submit an allowlisted analytics batch",
+        "description": "Event codes and property keys are both allowlisted, and every property is shape-checked. eventId gives idempotency. Intentionally not behind a feature flag so intake keeps working while a feature is disabled.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProductEventBatchRequest" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Batch accepted. Duplicates are reported rather than counted twice, and dropped property keys are echoed by name only.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SuccessEnvelope" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    }
+  }
+}

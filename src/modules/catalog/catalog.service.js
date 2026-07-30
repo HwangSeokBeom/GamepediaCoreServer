@@ -86,7 +86,7 @@ async function searchCatalogGames({
     where: {
       normalizedTitle: { startsWith: normalizedQuery },
       ...(locale ? { OR: [{ languageCode: locale }, { languageCode: 'und' }] } : {}),
-      ...(regionCode ? { OR: [{ regionCode }, { regionCode: null }] } : {}),
+      ...(regionCode ? { regionCode: { in: [regionCode, 'GLOBAL'] } } : {}),
       catalogGame: visibility
     },
     select: { catalogGameId: true, kind: true },

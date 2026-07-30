@@ -800,7 +800,10 @@ model GameLocalization {
   catalogGameId   String                  @map("catalog_game_id") @db.Uuid
   kind            CatalogLocalizationKind
   languageCode    String                  @map("language_code") @db.VarChar(16)
-  regionCode      String?                 @map("region_code") @db.VarChar(8)
+  /// 'GLOBAL' when the title is not region scoped. Never null: a NULL inside the
+  /// compound unique key would let PostgreSQL store unlimited duplicates,
+  /// because NULL is never equal to NULL.
+  regionCode      String                  @default("GLOBAL") @map("region_code") @db.VarChar(8)
   title           String                  @db.VarChar(300)
   normalizedTitle String                  @map("normalized_title") @db.VarChar(300)
   provenance      CatalogProvenance       @default(UNKNOWN)

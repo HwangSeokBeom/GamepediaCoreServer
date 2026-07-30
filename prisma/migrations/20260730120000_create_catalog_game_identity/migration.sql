@@ -97,7 +97,9 @@ CREATE TABLE "game_localizations" (
     "catalog_game_id" UUID NOT NULL,
     "kind" "CatalogLocalizationKind" NOT NULL,
     "language_code" VARCHAR(16) NOT NULL,
-    "region_code" VARCHAR(8),
+    -- NOT NULL with a sentinel: a NULL inside the compound unique key below
+    -- would allow unlimited duplicates, because NULL is never equal to NULL.
+    "region_code" VARCHAR(8) NOT NULL DEFAULT 'GLOBAL',
     "title" VARCHAR(300) NOT NULL,
     "normalized_title" VARCHAR(300) NOT NULL,
     "provenance" "CatalogProvenance" NOT NULL DEFAULT 'UNKNOWN',
@@ -459,7 +461,7 @@ SELECT
     "catalog_game_id",
     'ORIGINAL_TITLE'::"CatalogLocalizationKind",
     'und',
-    NULL,
+    'GLOBAL',
     left("title", 300),
     left(btrim(regexp_replace(lower("title"), '[^a-z0-9가-힣ぁ-んァ-ヶ一-龯]+', ' ', 'g')), 300),
     "title_provenance",

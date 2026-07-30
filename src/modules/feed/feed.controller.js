@@ -1,8 +1,11 @@
 const { successResponse } = require('../../utils/api-response');
 const { asyncHandler } = require('../../utils/async-handler');
 const { assertSupportedTimeZone } = require('../play/play-time.util');
-const { getProductConfig } = require('../product/product-config.service');
-const { recordProductEvents } = require('../product/product-event.service');
+// Services are referenced through their module object rather than destructured,
+// matching the other controllers in this repository so a test can substitute an
+// implementation without patching every call site.
+const productConfigService = require('../product/product-config.service');
+const productEventService = require('../product/product-event.service');
 const articleService = require('./article.service');
 const todayService = require('./today.service');
 
@@ -75,13 +78,13 @@ const retractArticle = asyncHandler(async (req, res) => {
 });
 
 const getProductConfiguration = asyncHandler(async (req, res) => {
-  const result = await getProductConfig();
+  const result = await productConfigService.getProductConfig();
 
   res.status(200).json(successResponse(result));
 });
 
 const submitProductEvents = asyncHandler(async (req, res) => {
-  const result = await recordProductEvents({
+  const result = await productEventService.recordProductEvents({
     userId: req.auth.userId,
     events: req.body.events
   });

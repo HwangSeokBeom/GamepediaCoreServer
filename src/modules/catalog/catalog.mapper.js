@@ -36,7 +36,7 @@ function mapLocalization(localization) {
   return {
     kind: localization.kind,
     languageCode: localization.languageCode,
-    regionCode: localization.regionCode ?? null,
+    regionCode: localization.regionCode,
     title: localization.title,
     provenance: localization.provenance
   };

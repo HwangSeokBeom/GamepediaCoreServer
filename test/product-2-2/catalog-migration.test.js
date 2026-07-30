@@ -224,3 +224,64 @@ test('the Prisma schema declares catalogGameId on all four legacy models', () =>
   const catalogFieldCount = (schema.match(/catalogGameId\s+String\?\s+@map\("catalog_game_id"\)/g) ?? []).length;
   assert.ok(catalogFieldCount >= 4, `expected at least 4 nullable catalogGameId fields, found ${catalogFieldCount}`);
 });
+
+test('no compound unique key contains a nullable column', () => {
+  // PostgreSQL treats every NULL as distinct, so a nullable column inside a
+  // UNIQUE constraint silently permits unlimited duplicates. Every compound
+  // unique key added by Product 2.2 must therefore be entirely NOT NULL.
+  const migrations = [CATALOG_MIGRATION, QUICK_ADD_MIGRATION, PLAY_MIGRATION, EDITORIAL_MIGRATION]
+    .map((name) => readMigration(name))
+    .join('\n');
+
+  const tableDefinitions = new Map();
+  const tablePattern = /CREATE TABLE "([a-z_]+)" \(([\s\S]*?)\n\);/g;
+  let tableMatch;
+
+  while ((tableMatch = tablePattern.exec(migrations)) !== null) {
+    const columns = new Map();
+    const columnPattern = /^\s*"([a-z_]+)"\s+([^,]+?),?\s*$/gm;
+    let columnMatch;
+
+    while ((columnMatch = columnPattern.exec(tableMatch[2])) !== null) {
+      columns.set(columnMatch[1], /NOT NULL/.test(columnMatch[2]));
+    }
+
+    tableDefinitions.set(tableMatch[1], columns);
+  }
+
+  assert.ok(tableDefinitions.size >= 15, `expected the Product 2.2 tables, found ${tableDefinitions.size}`);
+
+  const violations = [];
+  const uniquePattern = /CREATE UNIQUE INDEX "[a-z_]+"\s*\n?\s*ON "([a-z_]+)"\(([^)]+)\)/g;
+  let uniqueMatch;
+
+  while ((uniqueMatch = uniquePattern.exec(migrations)) !== null) {
+    const table = uniqueMatch[1];
+    const columns = uniqueMatch[2].split(',').map((column) => column.trim().replace(/"/g, ''));
+
+    if (columns.length < 2) {
+      continue;
+    }
+
+    for (const column of columns) {
+      const isNotNull = tableDefinitions.get(table)?.get(column);
+
+      if (isNotNull === false) {
+        violations.push(`${table}.${column}`);
+      }
+    }
+  }
+
+  assert.deepEqual(violations, [],
+    `nullable columns inside a compound UNIQUE key would permit duplicates: ${violations.join(', ')}`);
+});
+
+test('game_localizations region_code is NOT NULL with a GLOBAL sentinel', () => {
+  const sql = readMigration(CATALOG_MIGRATION);
+  const schema = fs.readFileSync(path.resolve(process.cwd(), 'prisma/schema.prisma'), 'utf8');
+
+  assert.match(sql, /"region_code" VARCHAR\(8\) NOT NULL DEFAULT 'GLOBAL'/);
+  assert.match(schema, /regionCode\s+String\s+@default\("GLOBAL"\) @map\("region_code"\) @db\.VarChar\(8\)/);
+  // The backfill must write the sentinel, not a NULL.
+  assert.doesNotMatch(sql, /'ORIGINAL_TITLE'::"CatalogLocalizationKind",\s*\n\s*'und',\s*\n\s*NULL,/);
+});
