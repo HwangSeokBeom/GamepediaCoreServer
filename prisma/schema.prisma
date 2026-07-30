@@ -762,6 +762,9 @@ model CatalogGame {
   supportsSinglePlayer    Boolean?                 @map("supports_single_player")
   supportsMultiplayer     Boolean?                 @map("supports_multiplayer")
   typicalSessionMinutes   Int?                     @map("typical_session_minutes")
+  /// A PUBLISHED game must have verified `titleProvenance`. Enforced in the database
+  /// by catalog_games_published_requires_verified_title_check, which Prisma cannot
+  /// express, as well as by assertPublicationTrust at the write boundary.
   publicationStatus       CatalogPublicationStatus @default(PRIVATE) @map("publication_status")
   titleProvenance         CatalogProvenance        @default(UNKNOWN) @map("title_provenance")
   /// Audit-only: the account that first registered this work. Kept as a plain
@@ -864,12 +867,18 @@ model GameExternalIdentity {
   regionKey          String                  @default("GLOBAL") @map("region_key") @db.VarChar(16)
   provenance         CatalogProvenance       @default(UNKNOWN)
   confidence         Float                   @default(0)
-  /// Set only when a real server-side provider response or an editor established
-  /// this key. Null means the row exists but is not trusted: it is not returned by
-  /// a verified lookup, and a later real provider response promotes it in place
-  /// rather than being blocked by it.
-  verifiedAt         DateTime?               @map("verified_at")
-  verificationSource String?                 @map("verification_source") @db.VarChar(60)
+  /// This table is verified-only. A row may exist only when a real server-side
+  /// provider response or an editor established the key, so both columns are
+  /// required. CHECK constraints in
+  /// prisma/migrations/20260730140000_product_2_2_review_fixes_round_2 additionally
+  /// restrict `provenance` to the verified set and require a non-blank
+  /// `verificationSource`, which Prisma cannot express.
+  ///
+  /// A provider key a user merely asserted lives in GameIdentityClaim instead;
+  /// letting one sit here is what allowed a chosen appid to capture another
+  /// account's real provider sync.
+  verifiedAt         DateTime                @map("verified_at")
+  verificationSource String                  @map("verification_source") @db.VarChar(60)
   createdAt          DateTime                @default(now()) @map("created_at")
   updatedAt          DateTime                @updatedAt @map("updated_at")
   catalogGame        CatalogGame             @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
@@ -899,6 +908,8 @@ model GameIdentityClaim {
   provider        CatalogIdentityProvider
   externalId      String                  @map("external_id") @db.VarChar(200)
   regionKey       String                  @default("GLOBAL") @map("region_key") @db.VarChar(16)
+  /// Never a verified value. Enforced in the database by
+  /// game_identity_claims_unverified_provenance_check.
   provenance      CatalogProvenance       @default(USER_CONFIRMED)
   claimSource     String                  @map("claim_source") @db.VarChar(60)
   createdAt       DateTime                @default(now()) @map("created_at")

@@ -2,7 +2,7 @@ const { Prisma } = require('@prisma/client');
 const { prisma } = require('../../config/prisma');
 const { AppError } = require('../../utils/error-response');
 const { logger } = require('../../utils/logger');
-const { normalizeTitle } = require('./catalog-title.util');
+const { clampTitle, normalizeTitle } = require('./catalog-title.util');
 const {
   GLOBAL_REGION_KEY,
   IDENTITY_VERIFICATION_SOURCES,
@@ -136,11 +136,12 @@ async function findCanonicalGameByLegacyIdentity(
   );
 }
 
-/// Attaches a provider key to a canonical game in the global identity table.
+/// Attaches a verified provider key to a canonical game.
 ///
-/// This is a trusted operation: `verificationSource` is mandatory and must name a
-/// real provider response or an editor decision, and `provenance` must be a
-/// verified value. Unverified claims must use recordIdentityClaim instead.
+/// Trusted operation: provenance must be a verified value and verificationSource
+/// must name a real provider response or an editor decision. Unverified claims use
+/// recordIdentityClaim. Conflict-safe, so it never aborts a surrounding
+/// transaction, and it never repoints or adopts another canonical game.
 async function attachVerifiedIdentity({
   client = prisma,
   catalogGameId,
@@ -165,61 +166,47 @@ async function attachVerifiedIdentity({
 
   const normalizedExternalId = String(externalId).trim();
 
-  try {
-    const created = await client.gameExternalIdentity.create({
-      data: {
-        catalogGameId,
-        regionalReleaseId,
-        provider,
-        externalId: normalizedExternalId,
-        regionKey,
-        provenance,
-        confidence,
-        verifiedAt,
-        verificationSource
-      },
-      select: { id: true, catalogGameId: true, verifiedAt: true }
-    });
+  const inserted = await client.$queryRaw`
+    INSERT INTO "game_external_identities"
+      ("id", "catalog_game_id", "regional_release_id", "provider", "external_id",
+       "region_key", "provenance", "confidence", "verified_at", "verification_source",
+       "created_at", "updated_at")
+    VALUES (
+      gen_random_uuid(),
+      ${catalogGameId}::uuid,
+      ${regionalReleaseId}::uuid,
+      ${provider}::"CatalogIdentityProvider",
+      ${normalizedExternalId},
+      ${regionKey},
+      ${provenance}::"CatalogProvenance",
+      ${confidence},
+      ${verifiedAt},
+      ${verificationSource},
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP
+    )
+    ON CONFLICT ("provider", "external_id", "region_key") DO NOTHING
+    RETURNING "id"
+  `;
 
-    return { identity: created, created: true, conflict: false, promoted: false };
-  } catch (error) {
-    if (!isUniqueViolation(error)) {
-      throw error;
-    }
-
-    const existing = await client.gameExternalIdentity.findUnique({
-      where: {
-        provider_externalId_regionKey: { provider, externalId: normalizedExternalId, regionKey }
-      },
-      select: { id: true, catalogGameId: true, verifiedAt: true, provenance: true }
-    });
-
-    if (!existing) {
-      throw error;
-    }
-
-    // The key already resolves to this same canonical game but was never
-    // verified (a legacy backfill row). A real provider response is exactly what
-    // is needed to promote it, so an unverified row must not block verification.
-    if (existing.catalogGameId === catalogGameId && existing.verifiedAt === null) {
-      const promoted = await client.gameExternalIdentity.update({
-        where: { id: existing.id },
-        data: { provenance, confidence, verifiedAt, verificationSource },
-        select: { id: true, catalogGameId: true, verifiedAt: true }
-      });
-
-      return { identity: promoted, created: false, conflict: false, promoted: true };
-    }
-
-    return {
-      identity: existing,
-      created: false,
-      // A provider key already bound to a *different* canonical game is a merge
-      // decision, never an automatic overwrite.
-      conflict: existing.catalogGameId !== catalogGameId,
-      promoted: false
-    };
+  if (Array.isArray(inserted) && inserted.length === 1) {
+    return { identity: { id: inserted[0].id, catalogGameId }, created: true, conflict: false };
   }
+
+  const existing = await client.gameExternalIdentity.findUnique({
+    where: {
+      provider_externalId_regionKey: { provider, externalId: normalizedExternalId, regionKey }
+    },
+    select: { id: true, catalogGameId: true, verifiedAt: true, provenance: true }
+  });
+
+  return {
+    identity: existing,
+    created: false,
+    // A provider key already bound to a *different* canonical game is a merge
+    // decision for an editor, never an automatic overwrite.
+    conflict: Boolean(existing) && existing.catalogGameId !== catalogGameId
+  };
 }
 
 /// Records an unverified provider-key claim against a catalog game.
@@ -288,11 +275,27 @@ async function recordIdentityClaim({
   return { claim: existing, created: false };
 }
 
-/// Creates the canonical game for a provider key that has never been verified.
+/// Establishes the verified canonical game for a provider key.
 ///
-/// Every trust-bearing field is mandatory: there is no default publication status
-/// and no default provenance, because the previous defaults (PUBLISHED /
-/// PROVIDER_VERIFIED) silently promoted whatever a caller happened to pass.
+/// TRUST. The lookup is verified-only. An unverified row can no longer exist in
+/// game_external_identities at all (the successor migration moved every one into
+/// game_identity_claims and a CHECK constraint blocks new ones), so there is
+/// nothing here to "promote". The previous revision looked up with
+/// requireVerified: false and promoted whatever it found, which meant a real Steam
+/// sync adopted an attacker's legacy catalog game: their title stayed as the public
+/// originalTitle, their PUBLISHED status and UNKNOWN provenance survived, and only
+/// the identity row was upgraded. A user-chosen appid therefore captured another
+/// account's provider sync.
+///
+/// ATOMICITY. The catalog game and its verified identity are created in one
+/// transaction. Previously they were two independent statements, so an identity
+/// failure that was not P2002 left a published orphan game behind and a retry
+/// added another. The caller may pass its own transaction client to widen the unit
+/// of work — linkVerifiedSteamOwnership does, so the library row update joins it.
+///
+/// A conflict-safe INSERT ... ON CONFLICT DO NOTHING is used rather than catching
+/// P2002, because a raised constraint error aborts the surrounding PostgreSQL
+/// transaction (SQLSTATE 25P02) and nothing after the catch could run.
 async function ensureVerifiedCanonicalGameForIdentity({
   client = prisma,
   provider,
@@ -308,43 +311,72 @@ async function ensureVerifiedCanonicalGameForIdentity({
 }) {
   assertPublicationTrust({ publicationStatus, titleProvenance, identityProvenance });
 
+  if (!isVerifiedProvenance(identityProvenance)) {
+    throw new AppError(500, 'IDENTITY_PROVENANCE_NOT_VERIFIABLE',
+      `A global identity cannot be established with ${identityProvenance} provenance`);
+  }
+
   if (!IDENTITY_VERIFICATION_SOURCES.includes(verificationSource)) {
     throw new AppError(500, 'IDENTITY_VERIFICATION_SOURCE_INVALID',
       'Creating a canonical game for a provider key requires a recognised verification source');
   }
 
-  const existing = await findCanonicalGameByIdentity(
+  const normalizedExternalId = String(externalId).trim();
+
+  const runInTransaction = (tx) => establishVerifiedIdentity({
+    tx,
+    provider,
+    externalId: normalizedExternalId,
+    regionKey,
+    title,
+    publicationStatus,
+    titleProvenance,
+    identityProvenance,
+    verificationSource,
+    platforms,
+    verifiedAt
+  });
+
+  // Reuse the caller's transaction when one was supplied, so a wider unit of work
+  // (game + identity + library linkage) commits or rolls back together.
+  return client === prisma
+    ? prisma.$transaction(runInTransaction)
+    : runInTransaction(client);
+}
+
+async function establishVerifiedIdentity({
+  tx,
+  provider,
+  externalId,
+  regionKey,
+  title,
+  publicationStatus,
+  titleProvenance,
+  identityProvenance,
+  verificationSource,
+  platforms,
+  verifiedAt
+}) {
+  // Verified-only. An unverified claim never satisfies this and never yields its
+  // catalog game, its title, or its localizations.
+  const verified = await findCanonicalGameByIdentity(
     { provider, externalId, regionKey },
-    { client, requireVerified: false }
+    { client: tx, requireVerified: true }
   );
 
-  if (existing) {
-    // The key is already bound. Promote the row when this call carries real
-    // verification, then reuse the canonical game either way.
-    if (!existing.verified) {
-      await attachVerifiedIdentity({
-        client,
-        catalogGameId: existing.catalogGameId,
-        provider,
-        externalId,
-        regionKey,
-        provenance: identityProvenance,
-        verificationSource,
-        verifiedAt
-      });
-    }
-
-    return { catalogGameId: existing.catalogGameId, created: false, promoted: !existing.verified };
+  if (verified) {
+    return { catalogGameId: verified.catalogGameId, created: false, promoted: false };
   }
 
   const hasRealTitle = typeof title === 'string' && title.trim().length > 0;
-  const resolvedTitle = hasRealTitle ? title.trim().slice(0, 300) : `${provider}:${externalId}`;
+  // clampTitle counts code points, matching varchar(300).
+  const resolvedTitle = hasRealTitle ? clampTitle(title) : `${provider}:${externalId}`;
   // A synthetic placeholder title carries no verified information, so it can
   // never be published even when the identity itself is verified.
   const resolvedTitleProvenance = hasRealTitle ? titleProvenance : 'UNKNOWN';
   const resolvedPublicationStatus = hasRealTitle ? publicationStatus : 'PENDING_REVIEW';
 
-  const game = await client.catalogGame.create({
+  const game = await tx.catalogGame.create({
     data: {
       originalTitle: resolvedTitle,
       normalizedTitle: normalizeTitle(resolvedTitle),
@@ -358,28 +390,74 @@ async function ensureVerifiedCanonicalGameForIdentity({
     select: { id: true }
   });
 
-  const attached = await attachVerifiedIdentity({
-    client,
-    catalogGameId: game.id,
-    provider,
-    externalId,
-    regionKey,
-    provenance: identityProvenance,
-    verificationSource,
-    verifiedAt
+  // The provider title is also recorded as the original-title localization, with
+  // the same verified provenance the identity carries.
+  await tx.gameLocalization.create({
+    data: {
+      catalogGameId: game.id,
+      kind: 'ORIGINAL_TITLE',
+      languageCode: 'und',
+      regionCode: GLOBAL_REGION_KEY,
+      title: resolvedTitle,
+      normalizedTitle: normalizeTitle(resolvedTitle),
+      provenance: resolvedTitleProvenance
+    },
+    select: { id: true }
   });
 
-  // Lost the race: another request already bound this provider key. Drop the row
-  // this request just created and use the winner so the key stays single-valued.
-  if (!attached.created && !attached.promoted && attached.identity) {
-    await client.catalogGame.delete({ where: { id: game.id } }).catch(() => null);
+  const inserted = await tx.$queryRaw`
+    INSERT INTO "game_external_identities"
+      ("id", "catalog_game_id", "regional_release_id", "provider", "external_id",
+       "region_key", "provenance", "confidence", "verified_at", "verification_source",
+       "created_at", "updated_at")
+    VALUES (
+      gen_random_uuid(),
+      ${game.id}::uuid,
+      NULL,
+      ${provider}::"CatalogIdentityProvider",
+      ${externalId},
+      ${regionKey},
+      ${identityProvenance}::"CatalogProvenance",
+      1,
+      ${verifiedAt},
+      ${verificationSource},
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP
+    )
+    ON CONFLICT ("provider", "external_id", "region_key") DO NOTHING
+    RETURNING "id"
+  `;
 
-    const canonicalId = await resolveCanonicalGameId(attached.identity.catalogGameId, { client });
-
-    return { catalogGameId: canonicalId, created: false, promoted: false };
+  if (Array.isArray(inserted) && inserted.length === 1) {
+    return { catalogGameId: game.id, created: true, promoted: false };
   }
 
-  return { catalogGameId: game.id, created: true, promoted: false };
+  // Lost the race. The occupant can only be a verified identity, because the CHECK
+  // constraint forbids an unverified row in this table. Drop the game this
+  // transaction just created and adopt the winner.
+  const occupant = await tx.gameExternalIdentity.findUnique({
+    where: { provider_externalId_regionKey: { provider, externalId, regionKey } },
+    select: { catalogGameId: true, provenance: true, verifiedAt: true }
+  });
+
+  if (!occupant) {
+    throw new AppError(500, 'IDENTITY_CONFLICT_UNRESOLVABLE',
+      'The provider key conflicted but no identity row could be read');
+  }
+
+  if (occupant.verifiedAt === null || !isVerifiedProvenance(occupant.provenance)) {
+    // Defence in depth: should be unreachable while the CHECK constraint holds.
+    // Refuse rather than inherit an unverified row's canonical game.
+    throw new AppError(409, 'IDENTITY_UNVERIFIED_OCCUPANT',
+      'The provider key is held by an unverified identity and needs editor review');
+  }
+
+  await tx.gameLocalization.deleteMany({ where: { catalogGameId: game.id } });
+  await tx.catalogGame.delete({ where: { id: game.id } });
+
+  const canonicalId = await resolveCanonicalGameId(occupant.catalogGameId, { client: tx });
+
+  return { catalogGameId: canonicalId, created: false, promoted: false };
 }
 
 /// Runtime invariant: a publicly visible catalog game must be backed by verified

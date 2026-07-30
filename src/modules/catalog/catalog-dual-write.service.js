@@ -1,4 +1,5 @@
 const { prisma } = require('../../config/prisma');
+const { AppError } = require('../../utils/error-response');
 const { logger } = require('../../utils/logger');
 const catalogIdentityService = require('./catalog-identity.service');
 const { GLOBAL_REGION_KEY, OWNERSHIP_PROVENANCE } = require('./catalog.constants');
@@ -136,10 +137,19 @@ async function linkResolvedActivityEvent({ activityEventId, gameSource, external
 /// Steam owned-games response, so the appid and name are provider facts and may
 /// establish a verified identity and a PUBLISHED canonical game.
 ///
-/// Returns per-entry outcomes plus counters. Idempotent: repeating a sync reuses
-/// the same canonical game, and a row whose catalogGameId is still null from an
-/// earlier failure is recovered on the next sync. Never throws — the caller
-/// reports a degraded result instead of claiming a link it does not have.
+/// ATOMICITY. Each entry runs in its own PostgreSQL transaction covering the
+/// catalog game, its verified identity and the library row update. Either the row
+/// becomes canonically usable or nothing about it changed — there is no state where
+/// a published orphan game exists without an identity, and a retry cannot add a
+/// duplicate.
+///
+/// A failure is reported, never swallowed: the caller receives
+/// canonicalLinkStatus linked / partial / unavailable with counts and reason codes,
+/// so a sync can never report success while leaving rows invisible to Play Compass
+/// and Today.
+///
+/// Idempotent: repeating a sync reuses the same canonical game, and a row whose
+/// catalogGameId is still null from an earlier failure is recovered here.
 async function linkVerifiedSteamOwnership({ entries, now = new Date() }) {
   let linkedCount = 0;
   let pendingCount = 0;
@@ -155,33 +165,38 @@ async function linkVerifiedSteamOwnership({ entries, now = new Date() }) {
     }
 
     try {
-      const { catalogGameId } = await catalogIdentityService.ensureVerifiedCanonicalGameForIdentity({
-        provider: 'STEAM',
-        externalId: externalGameId,
-        regionKey: GLOBAL_REGION_KEY,
-        title: entry.gameName,
-        // A real Steam owned-games response is a provider fact.
-        publicationStatus: 'PUBLISHED',
-        titleProvenance: 'PROVIDER_VERIFIED',
-        identityProvenance: 'PROVIDER_VERIFIED',
-        verificationSource: 'steam_owned_games_sync',
-        platforms: ['STEAM'],
-        verifiedAt: now
-      });
+      await prisma.$transaction(async (tx) => {
+        const { catalogGameId } = await catalogIdentityService.ensureVerifiedCanonicalGameForIdentity({
+          client: tx,
+          provider: 'STEAM',
+          externalId: externalGameId,
+          regionKey: GLOBAL_REGION_KEY,
+          title: entry.gameName,
+          // A real Steam owned-games response is a provider fact.
+          publicationStatus: 'PUBLISHED',
+          titleProvenance: 'PROVIDER_VERIFIED',
+          identityProvenance: 'PROVIDER_VERIFIED',
+          verificationSource: 'steam_owned_games_sync',
+          platforms: ['STEAM'],
+          verifiedAt: now
+        });
 
-      if (!catalogGameId) {
-        pendingCount += 1;
-        failureReasons.add('canonical_game_unresolved');
-        continue;
-      }
+        if (!catalogGameId) {
+          throw new AppError(500, 'CANONICAL_GAME_UNRESOLVED',
+            'The canonical game for this provider key could not be resolved');
+        }
 
-      await prisma.userGameLibrary.update({
-        where: { id: entry.libraryEntryId },
-        data: {
-          catalogGameId,
-          ownershipProvenance: OWNERSHIP_PROVENANCE.PROVIDER_VERIFIED
-        },
-        select: { id: true }
+        // Only the account whose own sync produced this row gets provider-verified
+        // ownership. An attacker's legacy row for the same appid keeps whatever
+        // honest provenance it already had.
+        await tx.userGameLibrary.update({
+          where: { id: entry.libraryEntryId },
+          data: {
+            catalogGameId,
+            ownershipProvenance: OWNERSHIP_PROVENANCE.PROVIDER_VERIFIED
+          },
+          select: { id: true }
+        });
       });
 
       linkedCount += 1;

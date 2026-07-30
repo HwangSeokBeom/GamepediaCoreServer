@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { countCodePoints, truncateCodePoints } = require('../../utils/unicode-text');
 
 // Unicode-safe title normalization.
 //
@@ -12,8 +13,14 @@ const crypto = require('node:crypto');
 //
 //   strip trademark/copyright symbols -> NFKC -> lowercase -> replace every run
 //   of characters that is neither a Unicode letter, nor a Unicode number, nor a
-//   retained combining mark with a single space -> trim -> clamp to 300
-//   characters.
+//   retained combining mark with a single space -> trim -> clamp to 300 *code
+//   points*.
+//
+// The clamp counts code points, not UTF-16 units. `slice(0, 300)` cut
+// 'a' + '\u{20BB7}'.repeat(200) to 151 code points and left an unpaired high
+// surrogate, while PostgreSQL varchar(300)/left(...,300) counts characters and kept
+// all 201. Both sides now cap at 300 code points, which is exactly what
+// varchar(300) accepts.
 //
 // NFKC folds compatibility forms first, so fullwidth "Ｐｏｒｔａｌ ２" and
 // "Ⅷ" and "½" reduce to their ASCII equivalents before anything is stripped.
@@ -89,19 +96,30 @@ const RETAINED_MARK_CLASS = buildRetainedMarkClass();
 const SEPARATOR_RUN = new RegExp(`[^\\p{L}\\p{N}${RETAINED_MARK_CLASS}]+`, 'gu');
 const MAX_TITLE_LENGTH = 300;
 const MAX_SLUG_LENGTH = 320;
+const MAX_SLUG_DISCRIMINATOR_LENGTH = 12;
+
+/// Clamps a provider- or user-supplied title to what `varchar(300)` accepts,
+/// measured in code points. Every write path that stores an originalTitle or a
+/// localization title must go through this rather than `slice`.
+function clampTitle(value) {
+  return typeof value === 'string' ? truncateCodePoints(value.trim(), MAX_TITLE_LENGTH) : '';
+}
 
 function normalizeTitle(value) {
   if (typeof value !== 'string') {
     return '';
   }
 
-  return value
+  const normalized = value
     .replace(STRIPPED_LEGAL_SYMBOLS_PATTERN, '')
     .normalize('NFKC')
     .toLowerCase()
     .replace(SEPARATOR_RUN, ' ')
-    .trim()
-    .slice(0, MAX_TITLE_LENGTH);
+    .trim();
+
+  // Truncating can leave a trailing separator space; trim again so the result is
+  // stable regardless of where the boundary fell.
+  return truncateCodePoints(normalized, MAX_TITLE_LENGTH).trim();
 }
 
 /// Compact form used for "same title, different spacing" comparisons.
@@ -115,7 +133,7 @@ function compactTitle(value) {
 function buildSlug(title, discriminator) {
   const base = normalizeTitle(title).replace(/\s+/g, '-');
   const normalizedDiscriminator = typeof discriminator === 'string' && discriminator.length > 0
-    ? normalizeTitle(discriminator).replace(/\s+/g, '').slice(0, 12)
+    ? truncateCodePoints(normalizeTitle(discriminator).replace(/\s+/g, ''), MAX_SLUG_DISCRIMINATOR_LENGTH)
     : '';
   const suffix = normalizedDiscriminator.length > 0 ? `-${normalizedDiscriminator}` : '';
 
@@ -123,7 +141,16 @@ function buildSlug(title, discriminator) {
     return suffix.length > 0 ? suffix.slice(1) : null;
   }
 
-  return `${base.slice(0, MAX_SLUG_LENGTH - suffix.length)}${suffix}`;
+  // Both the base and the suffix are measured in code points, so the slug fits
+  // varchar(320) no matter which scripts it contains.
+  const suffixCodePoints = countCodePoints(suffix);
+  const baseBudget = MAX_SLUG_LENGTH - suffixCodePoints;
+
+  if (baseBudget <= 0) {
+    return truncateCodePoints(suffix.slice(1), MAX_SLUG_LENGTH);
+  }
+
+  return `${truncateCodePoints(base, baseBudget)}${suffix}`;
 }
 
 /// SHA-256 fingerprint of a normalized natural-language input. Stored instead of
@@ -179,8 +206,10 @@ function titleSimilarity(left, right) {
 }
 
 module.exports = {
+  MAX_SLUG_DISCRIMINATOR_LENGTH,
   MAX_SLUG_LENGTH,
   MAX_TITLE_LENGTH,
+  clampTitle,
   RETAINED_MARK_CLASS,
   RETAINED_MARK_RANGES,
   STRIPPED_LEGAL_SYMBOLS,

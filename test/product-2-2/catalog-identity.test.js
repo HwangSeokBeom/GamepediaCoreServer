@@ -4,7 +4,9 @@ const {
   CATALOG_GAME_A,
   CATALOG_GAME_B,
   prisma,
-  stubPrisma
+  stubPrisma,
+  stubQueryRaw,
+  stubTransaction
 } = require('./helpers/test-env');
 
 const {
@@ -339,16 +341,12 @@ test('a verified identity attachment requires verified provenance and a real sou
 });
 
 test('attachVerifiedIdentity reports a cross-game conflict instead of repointing a key', async () => {
-  const { Prisma } = require('@prisma/client');
+  // The insert is ON CONFLICT DO NOTHING rather than a caught P2002, because a
+  // raised constraint error would abort the surrounding transaction (25P02). Zero
+  // returned rows therefore means "the key is already taken".
+  const restoreQueryRaw = stubQueryRaw(() => []);
   const restore = stubPrisma({
     gameExternalIdentity: {
-      create: async () => {
-        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: 'test',
-          meta: { target: ['provider', 'external_id', 'region_key'] }
-        });
-      },
       findUnique: async () => ({
         id: 'identity-1',
         catalogGameId: CATALOG_GAME_B,
@@ -368,29 +366,26 @@ test('attachVerifiedIdentity reports a cross-game conflict instead of repointing
     });
 
     assert.equal(result.created, false);
-    assert.equal(result.promoted, false);
     // The key already belongs to another canonical game: that is a merge
     // decision, so it is surfaced rather than silently applied.
     assert.equal(result.conflict, true);
     assert.equal(result.identity.catalogGameId, CATALOG_GAME_B);
   } finally {
     restore();
+    restoreQueryRaw();
   }
 });
 
-test('a real provider response promotes an unverified legacy identity in place', async () => {
-  const { Prisma } = require('@prisma/client');
-  const updates = [];
+test('attachVerifiedIdentity never promotes an occupied key in place', async () => {
+  // Round-2 finding A. The previous revision UPDATEd the occupying row to
+  // PROVIDER_VERIFIED whenever it pointed at the same catalog game, which is how a
+  // user-supplied appid got adopted by a later real provider sync. There is now no
+  // promotion path at all: the occupant is reported, never rewritten.
+  const writes = [];
+  const restoreQueryRaw = stubQueryRaw(() => []);
   const restore = stubPrisma({
     gameExternalIdentity: {
-      create: async () => {
-        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: 'test',
-          meta: { target: ['provider', 'external_id', 'region_key'] }
-        });
-      },
-      // Same canonical game, but never verified: a legacy backfill row.
+      // Same canonical game, never verified — the shape a legacy backfill left.
       findUnique: async () => ({
         id: 'identity-1',
         catalogGameId: CATALOG_GAME_A,
@@ -398,8 +393,12 @@ test('a real provider response promotes an unverified legacy identity in place',
         provenance: 'UNKNOWN'
       }),
       update: async ({ data }) => {
-        updates.push(data);
-        return { id: 'identity-1', catalogGameId: CATALOG_GAME_A, verifiedAt: data.verifiedAt };
+        writes.push(data);
+        return { id: 'identity-1' };
+      },
+      upsert: async ({ create }) => {
+        writes.push(create);
+        return { id: 'identity-1' };
       }
     }
   });
@@ -413,14 +412,13 @@ test('a real provider response promotes an unverified legacy identity in place',
       verificationSource: 'steam_owned_games_sync'
     });
 
-    // An unverified row must never block legitimate verification.
-    assert.equal(result.promoted, true);
-    assert.equal(result.conflict, false);
-    assert.equal(updates[0].provenance, 'PROVIDER_VERIFIED');
-    assert.equal(updates[0].verificationSource, 'steam_owned_games_sync');
-    assert.ok(updates[0].verifiedAt instanceof Date);
+    assert.equal(result.created, false);
+    assert.equal(result.conflict, false, 'the same canonical game is not a merge conflict');
+    assert.deepEqual(writes, [], 'an existing identity row must never be rewritten in place');
+    assert.equal(result.promoted, undefined, 'there is no promotion outcome to report');
   } finally {
     restore();
+    restoreQueryRaw();
   }
 });
 
@@ -571,9 +569,12 @@ test('a manual legacy write can only link an already verified identity, never cr
 });
 
 test('losing the create race drops the duplicate row and returns the winner', async () => {
-  const { Prisma } = require('@prisma/client');
   const deleted = [];
+  const deletedLocalizations = [];
   let identityLookups = 0;
+  const restoreTransaction = stubTransaction();
+  // Zero rows: another transaction inserted the same provider key first.
+  const restoreQueryRaw = stubQueryRaw(() => []);
   const restore = stubPrisma({
     gameExternalIdentity: {
       findUnique: async () => {
@@ -590,13 +591,13 @@ test('losing the create race drops the duplicate row and returns the winner', as
             confidence: 1,
             verificationSource: 'steam_owned_games_sync'
           };
-      },
-      create: async () => {
-        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: 'test',
-          meta: { target: ['provider', 'external_id', 'region_key'] }
-        });
+      }
+    },
+    gameLocalization: {
+      create: async () => ({ id: 'localization-1' }),
+      deleteMany: async ({ where }) => {
+        deletedLocalizations.push(where.catalogGameId);
+        return { count: 1 };
       }
     },
     catalogGame: {
@@ -623,17 +624,75 @@ test('losing the create race drops the duplicate row and returns the winner', as
     assert.equal(result.created, false);
     assert.equal(result.catalogGameId, CATALOG_GAME_B);
     assert.deepEqual(deleted, [CATALOG_GAME_A], 'the losing row must not be left behind');
+    assert.deepEqual(deletedLocalizations, [CATALOG_GAME_A],
+      'the losing row\'s localizations must go with it, or the delete would violate the FK');
   } finally {
     restore();
+    restoreQueryRaw();
+    restoreTransaction();
+  }
+});
+
+test('a verified provider key reuses its canonical game instead of creating a second one', async () => {
+  // Round-2 finding B: the game and its identity are now created in one
+  // transaction, and an already verified key short-circuits before any create.
+  let gameCreates = 0;
+  const restoreTransaction = stubTransaction();
+  const restoreQueryRaw = stubQueryRaw(() => {
+    throw new Error('the identity insert must not run when a verified key already exists');
+  });
+  const restore = stubPrisma({
+    gameExternalIdentity: {
+      findUnique: async () => ({
+        catalogGameId: CATALOG_GAME_B,
+        provenance: 'PROVIDER_VERIFIED',
+        confidence: 1,
+        verifiedAt: new Date('2026-07-01T00:00:00.000Z'),
+        verificationSource: 'steam_owned_games_sync'
+      })
+    },
+    catalogGame: {
+      create: async () => {
+        gameCreates += 1;
+        return { id: CATALOG_GAME_A };
+      },
+      findUnique: async ({ where }) => ({ id: where.id, mergedIntoCatalogGameId: null })
+    }
+  });
+
+  try {
+    const result = await catalogIdentityService.ensureVerifiedCanonicalGameForIdentity({
+      provider: 'STEAM',
+      externalId: '367520',
+      title: 'Hollow Knight',
+      publicationStatus: 'PUBLISHED',
+      titleProvenance: 'PROVIDER_VERIFIED',
+      identityProvenance: 'PROVIDER_VERIFIED',
+      verificationSource: 'steam_owned_games_sync'
+    });
+
+    assert.equal(result.catalogGameId, CATALOG_GAME_B);
+    assert.equal(result.created, false);
+    assert.equal(gameCreates, 0, 'a repeated sync must not mint a duplicate catalog game');
+  } finally {
+    restore();
+    restoreQueryRaw();
+    restoreTransaction();
   }
 });
 
 test('a provider key with no title is never published and keeps UNKNOWN provenance', async () => {
   let createdData = null;
+  let localizationData = null;
+  const restoreTransaction = stubTransaction();
+  const restoreQueryRaw = stubQueryRaw(() => [{ id: 'identity-1' }]);
   const restore = stubPrisma({
-    gameExternalIdentity: {
-      findUnique: async () => null,
-      create: async () => ({ id: 'identity-1', catalogGameId: CATALOG_GAME_A, verifiedAt: new Date() })
+    gameExternalIdentity: { findUnique: async () => null },
+    gameLocalization: {
+      create: async ({ data }) => {
+        localizationData = data;
+        return { id: 'localization-1' };
+      }
     },
     catalogGame: {
       create: async ({ data }) => {
@@ -660,8 +719,13 @@ test('a provider key with no title is never published and keeps UNKNOWN provenan
     // identity cannot make it publicly searchable.
     assert.equal(createdData.publicationStatus, 'PENDING_REVIEW');
     assert.equal(createdData.normalizedTitle, 'igdb 7777');
+    // The localization inherits the demoted provenance, not the caller's claim:
+    // round-2 finding A included a backfill that left PROVIDER_VERIFIED here.
+    assert.equal(localizationData.provenance, 'UNKNOWN');
   } finally {
     restore();
+    restoreQueryRaw();
+    restoreTransaction();
   }
 });
 

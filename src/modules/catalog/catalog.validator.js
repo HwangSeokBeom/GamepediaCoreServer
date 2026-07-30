@@ -1,6 +1,7 @@
 const { z } = require('zod');
 const { AppError } = require('../../utils/error-response');
 const { CORRECTABLE_FIELD_PATHS } = require('./catalog.constants');
+const { boundedText } = require('./catalog-submission.schema');
 
 const uuidSchema = z.string().trim().uuid();
 const localeSchema = z.string().trim().regex(/^[a-z]{2}(?:-[A-Za-z0-9]{2,8})?$/, 'Expected a BCP-47 style locale');
@@ -8,7 +9,7 @@ const regionCodeSchema = z.string().trim().length(2).regex(/^[A-Za-z]{2}$/).tran
 const platformSchema = z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9_-]+$/).transform((value) => value.toUpperCase());
 
 const catalogSearchQuerySchema = z.object({
-  query: z.string().trim().min(1).max(200),
+  query: boundedText(200),
   locale: localeSchema.optional(),
   regionCode: regionCodeSchema.optional(),
   platform: platformSchema.optional(),
@@ -35,9 +36,9 @@ const previewSubmissionSchema = z.object({
 }).strict();
 
 const confirmedFieldsSchema = z.object({
-  originalTitle: z.string().trim().min(1).max(300).optional(),
-  developerName: z.string().trim().min(1).max(200).nullish(),
-  publisherName: z.string().trim().min(1).max(200).nullish(),
+  originalTitle: boundedText(300).optional(),
+  developerName: boundedText(200).nullish(),
+  publisherName: boundedText(200).nullish(),
   firstReleaseDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
   genres: z.array(z.string().trim().min(1).max(60)).max(12).optional(),
   platforms: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
@@ -75,7 +76,7 @@ const correctionSchema = z.object({
   // A short structured claim, plus an optional official source URL. The server
   // never fetches the URL; it is stored as evidence for an editor to check.
   proposedValue: z.union([
-    z.string().trim().min(1).max(300),
+    boundedText(300),
     z.number(),
     z.boolean(),
     z.array(z.string().trim().min(1).max(60)).max(12)

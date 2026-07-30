@@ -2,7 +2,7 @@ const { prisma } = require('../../config/prisma');
 const { env } = require('../../config/env');
 const { AppError } = require('../../utils/error-response');
 const { logger } = require('../../utils/logger');
-const { compactTitle, fingerprintInput, normalizeTitle, titleSimilarity } = require('./catalog-title.util');
+const { clampTitle, compactTitle, fingerprintInput, normalizeTitle, titleSimilarity } = require('./catalog-title.util');
 const { parseProviderIdentity } = require('./catalog-input.parser');
 const catalogAiExtractor = require('./catalog-ai.extractor');
 const catalogIdentityService = require('./catalog-identity.service');
@@ -698,7 +698,8 @@ async function confirmSubmission({
 
     const createdGame = await tx.catalogGame.create({
       data: {
-        originalTitle: game.originalTitle,
+        // clampTitle counts code points, matching varchar(300).
+        originalTitle: clampTitle(game.originalTitle),
         normalizedTitle: normalizeTitle(game.originalTitle),
         developerName: game.developerName ?? null,
         publisherName: game.publisherName ?? null,
@@ -728,7 +729,7 @@ async function confirmSubmission({
           // The AI contract allows a null regionCode; storage normalizes it to
           // the GLOBAL sentinel so the unique key always applies.
           regionCode: localization.regionCode ?? 'GLOBAL',
-          title: localization.title,
+          title: clampTitle(localization.title),
           normalizedTitle: normalizeTitle(localization.title),
           provenance: 'AI_INFERRED'
         },
