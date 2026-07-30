@@ -180,6 +180,9 @@ env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" node --test test/product
 echo "Running the round-2 attack tests (identity capture, atomicity, editorial races, Unicode parity)."
 env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" node --test test/product-2-2/round-2-attacks.postgres.test.js
 
+echo "Running the round-3 real-database regressions (canonical corrections and Unicode storage boundary)."
+env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" node --test test/product-2-2/round-3-regressions.postgres.test.js
+
 # ---------------------------------------------------------------------------
 # Phase B: legacy schema, then the Product 2.2 migrations on top
 # ---------------------------------------------------------------------------
@@ -273,6 +276,10 @@ docker exec -i "$CONTAINER_NAME" psql \
   --username "$POSTGRES_USER" \
   --dbname "$UPGRADE_DATABASE" \
   --set ON_ERROR_STOP=1 < scripts/test/verify-product-2-2-backfill.sql
+
+echo "Running the upgraded-database victim-sync attack proof."
+env "${base_env[@]}" "DATABASE_URL=$UPGRADE_DATABASE_URL" \
+  node --test test/product-2-2/legacy-upgrade.postgres.test.js
 
 echo "Re-running the migrations to confirm they are idempotent (no pending work)."
 (

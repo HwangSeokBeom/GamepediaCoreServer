@@ -1,7 +1,11 @@
 const { z } = require('zod');
 const { AppError } = require('../../utils/error-response');
 const { PRODUCT_EVENT_CODES } = require('../product/product.constants');
-const { countCodePoints } = require('../../utils/unicode-text');
+const {
+  countCodePoints,
+  isWellFormedUnicode,
+  UNPAIRED_SURROGATE_MESSAGE
+} = require('../../utils/unicode-text');
 const { validateArticleMarkdown } = require('./article-markdown.validator');
 
 const uuidSchema = z.string().trim().uuid();
@@ -12,8 +16,13 @@ const timezoneSchema = z.string().trim().min(1).max(64).regex(
 );
 const slugSchema = z.string().trim().min(1).max(200).regex(/^[a-z0-9][a-z0-9-]*$/, 'slug must be lowercase kebab-case');
 const httpsUrlSchema = z.string().trim().url().max(2000)
+  .refine(isWellFormedUnicode, UNPAIRED_SURROGATE_MESSAGE)
   .refine((value) => value.startsWith('https://'), 'Only https URLs are accepted');
 const sha256Schema = z.string().trim().regex(/^[0-9a-f]{64}$/, 'Expected a SHA-256 hex digest');
+
+function persistedText(schema) {
+  return schema.refine(isWellFormedUnicode, UNPAIRED_SURROGATE_MESSAGE);
+}
 
 const todayQuerySchema = z.object({
   locale: localeSchema.optional(),
@@ -30,9 +39,9 @@ const articleSlugParamsSchema = z.object({
 /// and a hash. There is no field for the full original text.
 const articleSourceInputSchema = z.object({
   sourceType: z.enum(['OFFICIAL_RSS', 'STEAM_NEWS', 'OFFICIAL_SITE', 'EDITOR_MANUAL']),
-  publisherKey: z.string().trim().min(1).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/),
-  headline: z.string().trim().min(1).max(300),
-  excerpt: z.string().trim().max(400).nullish(),
+  publisherKey: persistedText(z.string().trim().min(1).max(80).regex(/^[a-z0-9][a-z0-9._-]*$/)),
+  headline: persistedText(z.string().trim().min(1).max(300)),
+  excerpt: persistedText(z.string().trim().max(400)).nullish(),
   sourceUrl: httpsUrlSchema,
   publishedAt: z.string().trim().datetime({ offset: true }).nullish(),
   fetchedAt: z.string().trim().datetime({ offset: true }),
@@ -43,7 +52,7 @@ const articleAssetInputSchema = z.object({
   kind: z.enum(['COVER', 'HERO', 'SCREENSHOT', 'LOGO']),
   url: httpsUrlSchema,
   rightsStatus: z.enum(['UNKNOWN', 'PROVIDER_LICENSED', 'OFFICIAL_PRESS_KIT', 'USER_SUBMITTED', 'CLEARED', 'RESTRICTED']),
-  attribution: z.string().trim().max(300).nullish(),
+  attribution: persistedText(z.string().trim().max(300)).nullish(),
   isHero: z.boolean().default(false)
 }).strict();
 
@@ -62,6 +71,7 @@ const bodyMarkdownSchema = z.string().trim()
   // Length is bounded in code points so the check agrees with the stored column.
   .refine((value) => countCodePoints(value) <= 40000,
     'bodyMarkdown must be at most 40000 Unicode code points')
+  .refine(isWellFormedUnicode, UNPAIRED_SURROGATE_MESSAGE)
   .superRefine((value, ctx) => {
     const { valid, violations } = validateArticleMarkdown(value);
 
@@ -81,8 +91,8 @@ const bodyMarkdownSchema = z.string().trim()
 const createArticleSchema = z.object({
   slug: slugSchema,
   locale: localeSchema,
-  headline: z.string().trim().min(1).max(200),
-  excerpt: z.string().trim().min(1).max(600),
+  headline: persistedText(z.string().trim().min(1).max(200)),
+  excerpt: persistedText(z.string().trim().min(1).max(600)),
   bodyMarkdown: bodyMarkdownSchema.nullish(),
   aiDraftUsed: z.boolean().default(false),
   sources: z.array(articleSourceInputSchema).max(10).default([]),
@@ -96,15 +106,17 @@ const updateArticleSchema = z.object({
   // overwriting whatever another editor just committed.
   expectedRevisionNumber: z.number().int().min(1).optional(),
   locale: localeSchema.optional(),
-  headline: z.string().trim().min(1).max(200).optional(),
-  excerpt: z.string().trim().min(1).max(600).optional(),
+  headline: persistedText(z.string().trim().min(1).max(200)).optional(),
+  excerpt: persistedText(z.string().trim().min(1).max(600)).optional(),
   // Omitted means "unchanged": the service carries the previous body forward.
   // An explicit null clears it.
   bodyMarkdown: bodyMarkdownSchema.nullish(),
   // A correction note is required when the transition is CORRECTED; the service
   // enforces that, and this bound keeps it storable.
-  changeNote: z.string().trim().min(1).refine((value) => countCodePoints(value) <= 300,
-    'changeNote must be at most 300 Unicode code points').nullish(),
+  changeNote: persistedText(
+    z.string().trim().min(1).refine((value) => countCodePoints(value) <= 300,
+      'changeNote must be at most 300 Unicode code points')
+  ).nullish(),
   // PUBLISHED / RETRACTED are reached through the dedicated endpoints so the
   // database role re-check cannot be bypassed by a status patch.
   status: z.enum(['DRAFT', 'FACT_CHECK', 'RIGHTS_REVIEW', 'SCHEDULED', 'CORRECTED']).optional(),
@@ -148,6 +160,14 @@ const productEventBatchSchema = z.object({
 
 function buildFeedValidationError(error) {
   const issueFields = new Set(error.issues.map((issue) => issue.path.join('.')));
+
+  if (error.issues.some((issue) => issue.message === UNPAIRED_SURROGATE_MESSAGE)) {
+    return new AppError(400, 'INVALID_UNICODE_TEXT',
+      'Persisted text must not contain an unpaired UTF-16 surrogate',
+      error.issues
+        .filter((issue) => issue.message === UNPAIRED_SURROGATE_MESSAGE)
+        .map((issue) => ({ field: issue.path.join('.'), message: 'unpaired_surrogate' })));
+  }
 
   if (issueFields.has('slug')) {
     return new AppError(400, 'INVALID_ARTICLE_SLUG', 'slug must be lowercase kebab-case and at most 200 characters');

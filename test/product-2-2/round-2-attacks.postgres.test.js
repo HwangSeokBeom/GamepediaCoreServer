@@ -302,47 +302,60 @@ test('a failed identity insert leaves no orphan game, and the retry does not dup
   const { prisma } = require('../../src/config/prisma');
   const catalogIdentityService = require('../../src/modules/catalog/catalog-identity.service');
 
-  const externalId = `atomic-${uniqueSuffix()}`;
+  const externalId = `atomic-fail-${uniqueSuffix()}`;
   const title = `Atomicity Probe ${uniqueSuffix()}`;
+  const triggerName = 'product_2_2_round_3_reject_atomic_identity';
+  const functionName = 'product_2_2_round_3_reject_atomic_identity';
 
   const gamesWithTitle = () => prisma.catalogGame.count({ where: { originalTitle: title } });
 
-  // Failure injection that is not a unique violation: an unrecognised verification
-  // source is caught before any write, so instead the failure is injected after the
-  // game is created, by giving the identity insert a regional_release_id that
-  // violates its foreign key.
-  const injectedFailure = await prisma.$transaction(async (tx) => {
-    const game = await tx.catalogGame.create({
-      data: {
-        originalTitle: title,
-        normalizedTitle: title.toLowerCase(),
-        genres: [],
-        steamTags: [],
-        platforms: ['STEAM'],
-        publicationStatus: 'PUBLISHED',
-        titleProvenance: 'PROVIDER_VERIFIED'
-      },
-      select: { id: true }
-    });
-
-    await tx.$executeRawUnsafe(`
-      INSERT INTO "game_external_identities"
-        ("id", "catalog_game_id", "regional_release_id", "provider", "external_id", "region_key",
-         "provenance", "confidence", "verified_at", "verification_source", "created_at", "updated_at")
-      VALUES (gen_random_uuid(), '${game.id}'::uuid, '${crypto.randomUUID()}'::uuid, 'STEAM',
-              '${externalId}', 'GLOBAL', 'PROVIDER_VERIFIED'::"CatalogProvenance", 1,
-              CURRENT_TIMESTAMP, 'steam_owned_games_sync', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  try {
+    // Failure injection lives in the disposable database, not production code.
+    // It fires only for this test's prefix and only after the actual service has
+    // created its game and localization in the same transaction.
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION ${functionName}()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $$
+      BEGIN
+        IF NEW.external_id LIKE 'atomic-fail-%' THEN
+          RAISE EXCEPTION 'round-3 deterministic identity insert failure'
+            USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER ${triggerName}
+      BEFORE INSERT ON "game_external_identities"
+      FOR EACH ROW EXECUTE FUNCTION ${functionName}()
     `);
 
-    return game.id;
-  }).then(() => null, (caught) => caught);
+    const injectedFailure = await catalogIdentityService.ensureVerifiedCanonicalGameForIdentity({
+      provider: 'STEAM',
+      externalId,
+      title,
+      publicationStatus: 'PUBLISHED',
+      titleProvenance: 'PROVIDER_VERIFIED',
+      identityProvenance: 'PROVIDER_VERIFIED',
+      verificationSource: 'steam_owned_games_sync',
+      platforms: ['STEAM'],
+      verifiedAt: new Date()
+    }).then(() => null, (caught) => caught);
 
-  assert.ok(injectedFailure, 'the injected identity failure must abort the transaction');
+    assert.ok(injectedFailure, 'the actual service call must reach the injected identity failure');
+    assert.equal(sqlStateOf(injectedFailure), CHECK_VIOLATION);
 
-  try {
     // The pre-fix code left the published game behind here, with no identity.
     assert.equal(await gamesWithTitle(), 0, 'a rolled-back create must leave no orphan catalog game');
     assert.equal(await prisma.gameExternalIdentity.count({ where: { provider: 'STEAM', externalId } }), 0);
+
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS ${triggerName} ON "game_external_identities"`
+    );
+    await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
 
     // The retry: exactly one game, exactly one identity.
     const first = await catalogIdentityService.ensureVerifiedCanonicalGameForIdentity({
@@ -380,6 +393,10 @@ test('a failed identity insert leaves no orphan game, and the retry does not dup
     const games = await prisma.catalogGame.findMany({ where: { originalTitle: title }, select: { id: true } });
     const ids = games.map((game) => game.id);
 
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS ${triggerName} ON "game_external_identities"`
+    );
+    await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
     await prisma.gameExternalIdentity.deleteMany({ where: { provider: 'STEAM', externalId } });
     await prisma.gameLocalization.deleteMany({ where: { catalogGameId: { in: ids } } });
     await prisma.catalogGame.deleteMany({ where: { id: { in: ids } } });
@@ -511,44 +528,37 @@ test('an edit that races a real concurrent publish cannot silently change the li
       select: { status: true, headline: true, correctedAt: true }
     });
 
-    if (publishResult.status === 'fulfilled' && editResult.status === 'fulfilled') {
-      // Only legal if the edit committed first, while the article was still
-      // SCHEDULED. A published article cannot have been edited without a
-      // correction, so its headline must be the published one.
+    // Publishing a valid scheduled article has no legal losing outcome. In
+    // particular, asserting only the final row used to let "both failed" pass.
+    assert.equal(publishResult.status, 'fulfilled',
+      `publish must succeed; rejected with ${publishResult.reason?.code ?? publishResult.reason?.name ?? 'unknown'}`);
+    assert.equal(article.status, 'PUBLISHED');
+    assert.equal(article.correctedAt, null);
+
+    if (editResult.status === 'fulfilled') {
+      // The edit acquired the lock first while the row was SCHEDULED; publish then
+      // appended the next revision.
       assert.equal(article.status, 'PUBLISHED');
       assert.equal(article.headline, 'Quietly changed',
-        'both succeeded, so the edit must have committed before the publish');
-    }
-
-    if (editResult.status === 'rejected') {
-      // The finding's exact shape: the edit lost the race and was refused.
+        'a successful edit must have committed before publish');
+    } else {
+      // Publish acquired the lock first. The edit must re-read PUBLISHED under the
+      // lock and enforce the correction contract; no other rejection is legal.
       assert.equal(editResult.reason.statusCode, 409);
-      assert.ok(
-        ['ARTICLE_CORRECTION_REQUIRED', 'ARTICLE_CONCURRENT_MODIFICATION'].includes(editResult.reason.code),
-        `unexpected rejection code ${editResult.reason.code}`
-      );
+      assert.equal(editResult.reason.code, 'ARTICLE_CORRECTION_REQUIRED');
       assert.equal(article.headline, 'Scheduled headline', 'a refused edit must not have been applied');
     }
 
-    // Whatever the interleaving, a published article edited without a correction is
-    // the state this finding was about, and it must not exist.
-    if (article.status === 'PUBLISHED') {
-      assert.equal(article.headline === 'Quietly changed' && article.correctedAt !== null, false);
-      assert.notEqual(
-        article.headline === 'Quietly changed' && editResult.status === 'rejected',
-        true,
-        'a refused edit must never appear in the published article'
-      );
-    }
-
-    // Revision history must stay consistent: no duplicate revision numbers.
+    // The only legal histories are edit→publish (1,2,3) or publish→refused edit
+    // (1,2). This asserts both completeness and uniqueness.
     const revisions = await prisma.articleRevision.findMany({
       where: { articleId },
-      select: { revisionNumber: true }
+      select: { revisionNumber: true },
+      orderBy: { revisionNumber: 'asc' }
     });
     const numbers = revisions.map((revision) => revision.revisionNumber);
 
-    assert.equal(new Set(numbers).size, numbers.length, 'revision numbers must stay unique');
+    assert.deepEqual(numbers, editResult.status === 'fulfilled' ? [1, 2, 3] : [1, 2]);
   } finally {
     await prisma.editorialArticle.update({ where: { id: articleId }, data: { currentRevisionId: null } });
     await prisma.articleRevision.deleteMany({ where: { articleId } });
@@ -558,30 +568,100 @@ test('an edit that races a real concurrent publish cannot silently change the li
 });
 
 test('a hero asset added mid-request cannot be published on a stale rights check', { skip: !enabled }, async () => {
+  const { PrismaClient } = require('@prisma/client');
   const { prisma } = require('../../src/config/prisma');
   const articleService = require('../../src/modules/feed/article.service');
 
   const editor = await createEditor(prisma, 'editor-rights');
   const slug = `rights-article-${uniqueSuffix()}`;
   const { articleId } = await createScheduledArticle(prisma, { editorUserId: editor.id, slug });
+  const assetClient = new PrismaClient();
+  const observerClient = new PrismaClient();
+  let allowAssetInsert = null;
+  let assetTransaction = null;
 
-  try {
-    // An unresolved hero asset is committed by another connection before publish
-    // takes its lock. The publish reads the assets inside the lock, so it sees it.
-    await prisma.articleAsset.create({
-      data: {
-        articleId,
-        kind: 'HERO',
-        url: `https://cdn.example.invalid/${uniqueSuffix()}.png`,
-        rightsStatus: 'USER_SUBMITTED',
-        isHero: true
-      }
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
     });
 
-    await assert.rejects(
-      articleService.publishArticle({ actorUserId: editor.id, slug }),
-      (error) => error.statusCode === 409 && error.code === 'ARTICLE_HERO_RIGHTS_UNRESOLVED'
-    );
+    return { promise, resolve, reject };
+  }
+
+  async function waitForPublishBlockedBy(blockerPid) {
+    const deadline = Date.now() + 10000;
+
+    while (Date.now() < deadline) {
+      const [state] = await observerClient.$queryRaw`
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_stat_activity AS activity
+          WHERE activity.datname = current_database()
+            AND ${blockerPid}::int = ANY(pg_blocking_pids(activity.pid))
+        ) AS blocked
+      `;
+
+      if (state?.blocked === true) {
+        return;
+      }
+
+      // Yield to the two database clients without relying on a timing guess.
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    assert.fail('publish never reached the row lock held by the asset transaction');
+  }
+
+  try {
+    const lockReady = deferred();
+    allowAssetInsert = deferred();
+    const assetUrl = `https://cdn.example.invalid/${uniqueSuffix()}.png`;
+
+    // Connection A owns the article row lock. Connection B (the real production
+    // service client) is then observed waiting on that exact backend pid. Only
+    // after this explicit barrier does A insert the unresolved asset and commit.
+    assetTransaction = assetClient.$transaction(async (tx) => {
+      const [backend] = await tx.$queryRaw`SELECT pg_backend_pid()::int AS pid`;
+
+      await tx.$queryRaw`
+        SELECT "id" FROM "editorial_articles"
+        WHERE "id" = ${articleId}::uuid
+        FOR UPDATE
+      `;
+      lockReady.resolve(Number(backend.pid));
+      await allowAssetInsert.promise;
+
+      await tx.articleAsset.create({
+        data: {
+          articleId,
+          kind: 'HERO',
+          url: assetUrl,
+          rightsStatus: 'USER_SUBMITTED',
+          isHero: true
+        }
+      });
+    }, {
+      timeout: 15000
+    });
+    assetTransaction.catch((error) => lockReady.reject(error));
+
+    const blockerPid = await lockReady.promise;
+    const publishOutcome = articleService.publishArticle({ actorUserId: editor.id, slug })
+      .then((value) => ({ status: 'fulfilled', value }))
+      .catch((reason) => ({ status: 'rejected', reason }));
+
+    await waitForPublishBlockedBy(blockerPid);
+    allowAssetInsert.resolve();
+    await assetTransaction;
+
+    const publishResult = await publishOutcome;
+
+    assert.equal(publishResult.status, 'rejected');
+    assert.equal(publishResult.reason?.statusCode, 409);
+    assert.equal(publishResult.reason?.code, 'ARTICLE_HERO_RIGHTS_UNRESOLVED');
 
     const article = await prisma.editorialArticle.findUnique({
       where: { id: articleId },
@@ -591,6 +671,12 @@ test('a hero asset added mid-request cannot be published on a stale rights check
     assert.equal(article.status, 'SCHEDULED', 'the refused publish must not have moved the status');
     assert.equal(article.publishedAt, null);
   } finally {
+    // Unblock a failed setup before waiting for or disconnecting its client.
+    allowAssetInsert?.resolve();
+    if (assetTransaction) {
+      await Promise.allSettled([assetTransaction]);
+    }
+    await Promise.allSettled([assetClient.$disconnect(), observerClient.$disconnect()]);
     await prisma.articleAsset.deleteMany({ where: { articleId } });
     await prisma.editorialArticle.update({ where: { id: articleId }, data: { currentRevisionId: null } });
     await prisma.articleRevision.deleteMany({ where: { articleId } });

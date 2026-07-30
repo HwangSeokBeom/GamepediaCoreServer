@@ -386,3 +386,78 @@ technical roadmap.
 - Verification impact: the corpus is stored in a real `varchar(300)` column, and
   `char_length` is compared with `countCodePoints` and `left(value, 300)` with
   `clampTitle(value)` for every entry.
+
+## 2026-07-30 — A correction is based on canonical public meaning
+
+- Status: accepted
+- Context: field presence is not a public change. Re-sending the same headline,
+  a body that differs only by contract trimming, or the same source/asset/game
+  upserts in another order could incorrectly create a `CORRECTED` audit entry.
+- Decision: after acquiring the article row lock, compare the current public
+  representation with the representation the request's exact upsert semantics
+  would produce. Scalars and body use their stored trimming semantics; sources,
+  assets and related games are keyed by their database uniqueness keys and
+  stably sorted, with the last duplicate request winning just as it does in the
+  transaction.
+- Consequences: `CORRECTED` with no real delta is
+  `ARTICLE_CORRECTION_EMPTY`; a real delta without `CORRECTED` remains
+  `ARTICLE_CORRECTION_REQUIRED`. Order has no editorial meaning because it is
+  neither stored nor exposed as one.
+- Verification impact: the fresh PostgreSQL gate covers identical scalars,
+  trim-equivalent body text, reordered and duplicate relation upserts, a refused
+  real change, and one successful correction while asserting revision counts.
+
+## 2026-07-30 — Malformed UTF-16 is rejected rather than repaired
+
+- Status: accepted
+- Context: JavaScript strings can contain a lone high or low surrogate. Passing
+  one to normalization or a database driver can either fail inconsistently or
+  silently introduce U+FFFD, so replacing it during storage would hide which
+  input was accepted.
+- Decision: every persisted bounded-text request schema in the Product 2.2
+  catalog, AI parse, Playlog and editorial paths rejects unpaired surrogates with
+  the stable 400 code `INVALID_UNICODE_TEXT`. Trusted catalog identity service
+  methods repeat the invariant at their own public boundary before opening a
+  write transaction. Valid astral pairs remain supported.
+- Alternatives: replacing malformed units with U+FFFD (rejected: the stored fact
+  would differ silently from the submitted fact).
+- Verification impact: real-socket HTTP tests cover high, low and mixed input;
+  the real-database gate proves zero writes for malformed values and exact
+  round-trip for emoji and astral CJK. The documented NFKC Unicode-version risk
+  is unchanged.
+
+## 2026-07-30 — Development provider identifiers remain unverified claims
+
+- Status: accepted
+- Context: the verified-only identity constraint correctly made the old seed
+  invalid. A development fixture is not evidence that a made-up Steam or store
+  identifier was verified by that provider.
+- Decision: fixture provider identifiers use `game_identity_claims` with
+  `UNKNOWN` provenance and `development_fixture_unverified` source. Synthetic
+  public titles and localizations are explicitly `EDITOR_VERIFIED`, and the
+  article's reusable revision is always linked through `currentRevisionId`.
+- Consequences: local catalog search and UI fixtures still work, while provider
+  ownership and identity resolution cannot mistake fixture data for a provider
+  response.
+- Verification impact: a fresh PostgreSQL 16 gate applies all 39 migrations,
+  runs `npm run seed:product-2-2:dev` twice, and requires an identical snapshot
+  with 3 games, 4 claims, 0 verified identities and 1 linked article revision.
+
+## 2026-07-30 — Today exposes a typed editorial section
+
+- Status: accepted
+- Context: `TodayFeed.sections[].data` was an opaque `object|null`, so an OpenAPI
+  client generator could not discover `ArticleSummary` from the Today operation
+  even though the runtime returned those cards.
+- Decision: `TodaySection` is a key-discriminated union. The
+  `editorialCuration` success branch has a concrete data schema whose
+  `articles.items` references `ArticleSummary`; disabled and unavailable
+  branches have `data: null`. Other sections retain their current generic data
+  contract until their runtime payloads are separately fixed as generated-client
+  promises.
+- Consequences: generated clients can model editorial cards without inventing
+  fields for unrelated sections, and the legacy `Article` component remains
+  available for already generated clients.
+- Verification impact: the contract test walks references starting at the
+  actual Today 200 response and must reach `ArticleSummary`; JSON parse, local
+  reference resolution and an OpenAPI 3.1 validator are also required.

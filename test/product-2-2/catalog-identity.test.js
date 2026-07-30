@@ -340,6 +340,40 @@ test('a verified identity attachment requires verified provenance and a real sou
   );
 });
 
+test('the identity service rejects unpaired surrogates before opening a transaction', async () => {
+  for (const [field, value] of [
+    ['title', '\ud800'],
+    ['title', `valid 😀 then \udfff`],
+    ['externalId', `367520\ud800`],
+    ['regionKey', `GLOBAL\udfff`],
+    ['platforms', `STEAM\ud800`]
+  ]) {
+    const input = {
+      provider: 'STEAM',
+      externalId: '367520',
+      regionKey: 'GLOBAL',
+      title: 'Provider title',
+      publicationStatus: 'PUBLISHED',
+      titleProvenance: 'PROVIDER_VERIFIED',
+      identityProvenance: 'PROVIDER_VERIFIED',
+      verificationSource: 'steam_owned_games_sync',
+      platforms: ['STEAM'],
+      verifiedAt: new Date('2026-07-30T00:00:00.000Z')
+    };
+
+    if (field === 'platforms') {
+      input.platforms = [value];
+    } else {
+      input[field] = value;
+    }
+
+    await assert.rejects(
+      catalogIdentityService.ensureVerifiedCanonicalGameForIdentity(input),
+      (error) => error.statusCode === 400 && error.code === 'INVALID_UNICODE_TEXT'
+    );
+  }
+});
+
 test('attachVerifiedIdentity reports a cross-game conflict instead of repointing a key', async () => {
   // The insert is ON CONFLICT DO NOTHING rather than a caught P2002, because a
   // raised constraint error would abort the surrounding transaction (25P02). Zero

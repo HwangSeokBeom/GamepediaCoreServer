@@ -215,7 +215,25 @@ result is enough to refuse. An empty allowlist means nothing is fetchable.
 
 Development fixtures come from `scripts/seed/product-2-2-dev-seed.js`, which is
 idempotent and refuses to run unless `NODE_ENV` is `development` or `test`. There
-is no automatic seeding anywhere in the server bootstrap.
+is no automatic seeding anywhere in the server bootstrap. Run it explicitly:
+
+```
+NODE_ENV=development npm run seed:product-2-2:dev
+```
+
+The three synthetic public titles and their localizations are marked
+`EDITOR_VERIFIED`: that describes the fixture author's explicit local assertion,
+not provider verification. The made-up Steam and Google Play identifiers are
+stored only as `game_identity_claims` with
+`claim_source = development_fixture_unverified`; the seed creates zero
+`game_external_identities`. Its fixture article remains `DRAFT`, reuses revision
+1, and sets `editorial_articles.current_revision_id` to that revision on every
+run. The disposable verification gate applies all migrations, runs the documented
+command twice consecutively, and compares the complete fixture snapshot:
+
+```
+npm run test:postgres:product-2-2:seed
+```
 
 ## Feature flags and analytics
 

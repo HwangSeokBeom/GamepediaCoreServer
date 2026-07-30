@@ -242,6 +242,58 @@
         "description": "Deprecated alias retained so an already generated client keeps resolving. Use PublicArticle for GET /api/v1/articles/{slug}, EditorArticle for the editorial endpoints, and ArticleSummary for the Today feed. Its bodyMarkdown and revision are nullable, which the split types replace with the guarantee each caller actually has.",
         "deprecated": true
       },
+      "ArticleHeroImage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "rightsStatus",
+          "attribution"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "rightsStatus": {
+            "type": "string",
+            "enum": [
+              "PROVIDER_LICENSED",
+              "OFFICIAL_PRESS_KIT",
+              "CLEARED"
+            ]
+          },
+          "attribution": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 300
+          }
+        }
+      },
+      "ArticleRelatedGame": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "catalogGameId",
+          "relation"
+        ],
+        "properties": {
+          "catalogGameId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "SUBJECT",
+              "MENTIONED",
+              "RELATED"
+            ]
+          }
+        }
+      },
       "ArticleSummary": {
         "type": "object",
         "description": "Card-sized summary used by the Today feed. Carries no bodyMarkdown at all: a Today response can hold several articles, and shipping multiple 40 KB bodies to a mobile client for cards it may never open wastes the reader's data. Fetch GET /api/v1/articles/{slug} for the body.",
@@ -251,6 +303,10 @@
           "locale",
           "headline",
           "excerpt",
+          "publishedAt",
+          "correctedAt",
+          "heroImage",
+          "heroImageWithheldReason",
           "relatedGames",
           "sourceCount"
         ],
@@ -291,9 +347,13 @@
             "format": "date-time"
           },
           "heroImage": {
-            "type": [
-              "object",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ArticleHeroImage"
+              },
+              {
+                "type": "null"
+              }
             ],
             "description": "Null unless the hero asset has a resolved rights status. An image with an unknown or restricted rights status is never offered as a public hero."
           },
@@ -306,7 +366,7 @@
           "relatedGames": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/ArticleRelatedGame"
             }
           },
           "sourceCount": {
@@ -2226,10 +2286,160 @@
           }
         }
       },
+      "TodayEditorialCurationData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "articles",
+          "emptyReason"
+        ],
+        "properties": {
+          "articles": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/ArticleSummary"
+            }
+          },
+          "emptyReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "no_published_articles when the section has no cards; otherwise null."
+          }
+        }
+      },
+      "TodayEditorialCurationSection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "editorialCuration"
+              },
+              "status": {
+                "const": "ok"
+              },
+              "reasonCode": {
+                "type": "null"
+              },
+              "data": {
+                "$ref": "#/components/schemas/TodayEditorialCurationData"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "editorialCuration"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "disabled",
+                  "unavailable"
+                ]
+              },
+              "reasonCode": {
+                "type": "string"
+              },
+              "data": {
+                "type": "null"
+              }
+            }
+          }
+        ]
+      },
+      "TodayOtherSection": {
+        "type": "object",
+        "required": [
+          "key",
+          "status",
+          "reasonCode",
+          "data"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "playCompass",
+              "gameDNA",
+              "gameBriefing",
+              "backlogRescue",
+              "spoilerFreeStartGuide",
+              "monthlyReplay",
+              "friendActivity"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "disabled",
+              "unavailable"
+            ],
+            "description": "A failing section is reported as unavailable while every other section still renders."
+          },
+          "reasonCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The runtime payload for the named non-editorial section. No fields beyond the current server response are promised here."
+          }
+        }
+      },
+      "TodaySection": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TodayEditorialCurationSection"
+          },
+          {
+            "$ref": "#/components/schemas/TodayOtherSection"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "key",
+          "mapping": {
+            "editorialCuration": "#/components/schemas/TodayEditorialCurationSection",
+            "playCompass": "#/components/schemas/TodayOtherSection",
+            "gameDNA": "#/components/schemas/TodayOtherSection",
+            "gameBriefing": "#/components/schemas/TodayOtherSection",
+            "backlogRescue": "#/components/schemas/TodayOtherSection",
+            "spoilerFreeStartGuide": "#/components/schemas/TodayOtherSection",
+            "monthlyReplay": "#/components/schemas/TodayOtherSection",
+            "friendActivity": "#/components/schemas/TodayOtherSection"
+          }
+        }
+      },
       "TodayFeed": {
         "type": "object",
         "required": [
           "generatedAt",
+          "timezone",
+          "locale",
           "sections",
           "meta"
         ],
@@ -2250,53 +2460,14 @@
           "sections": {
             "type": "array",
             "items": {
-              "type": "object",
-              "required": [
-                "key",
-                "status"
-              ],
-              "properties": {
-                "key": {
-                  "type": "string",
-                  "enum": [
-                    "playCompass",
-                    "gameDNA",
-                    "gameBriefing",
-                    "backlogRescue",
-                    "spoilerFreeStartGuide",
-                    "editorialCuration",
-                    "monthlyReplay",
-                    "friendActivity"
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "ok",
-                    "disabled",
-                    "unavailable"
-                  ],
-                  "description": "A failing section is reported as unavailable while every other section still renders."
-                },
-                "reasonCode": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "data": {
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                }
-              }
+              "$ref": "#/components/schemas/TodaySection"
             }
           },
           "meta": {
             "type": "object",
             "required": [
               "sectionOrder",
+              "limit",
               "nextCursor",
               "partialFailure"
             ],
@@ -2356,7 +2527,7 @@
         }
       },
       "ValidationError": {
-        "description": "Request validation failed. ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED is returned when a submitted bodyMarkdown contains an image node, raw HTML or a non-https link destination; its details carry reason codes only, never the offending destination.",
+        "description": "Request validation failed. INVALID_UNICODE_TEXT is returned when persisted text contains an unpaired UTF-16 surrogate. ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED is returned when a submitted bodyMarkdown contains an image node, raw HTML or a non-https link destination; its details carry reason codes only, never the offending destination.",
         "content": {
           "application/json": {
             "schema": {

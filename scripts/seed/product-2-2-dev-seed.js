@@ -13,9 +13,10 @@
 //
 //   NODE_ENV=development node scripts/seed/product-2-2-dev-seed.js
 
-const crypto = require('node:crypto');
 const { env } = require('../../src/config/env');
 const { prisma } = require('../../src/config/prisma');
+const catalogIdentityService = require('../../src/modules/catalog/catalog-identity.service');
+const { clampTitle, normalizeTitle } = require('../../src/modules/catalog/catalog-title.util');
 
 const ALLOWED_ENVIRONMENTS = new Set(['development', 'test']);
 
@@ -112,14 +113,6 @@ const FIXTURE_ARTICLE = {
   ].join('\n')
 };
 
-function normalizeTitle(value) {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9가-힣ぁ-んァ-ヶ一-龯]+/g, ' ')
-    .trim()
-    .slice(0, 300);
-}
-
 function toDate(value) {
   return value ? new Date(`${value}T00:00:00.000Z`) : null;
 }
@@ -130,13 +123,14 @@ async function seedCatalogGames() {
 
   for (const fixture of FIXTURE_GAMES) {
     const existing = await prisma.catalogGame.findUnique({ where: { id: fixture.id }, select: { id: true } });
+    const originalTitle = clampTitle(fixture.originalTitle);
 
     await prisma.catalogGame.upsert({
       where: { id: fixture.id },
       create: {
         id: fixture.id,
-        originalTitle: fixture.originalTitle,
-        normalizedTitle: normalizeTitle(fixture.originalTitle),
+        originalTitle,
+        normalizedTitle: normalizeTitle(originalTitle),
         slug: fixture.slug,
         developerName: fixture.developerName,
         publisherName: fixture.publisherName,
@@ -147,18 +141,24 @@ async function seedCatalogGames() {
         supportsMultiplayer: fixture.supportsMultiplayer,
         typicalSessionMinutes: fixture.typicalSessionMinutes,
         publicationStatus: 'PUBLISHED',
-        // A fixture is not a provider-verified fact.
-        titleProvenance: 'UNKNOWN'
+        // These are synthetic titles deliberately asserted by this local fixture,
+        // not facts verified against Steam, Google Play or another provider.
+        titleProvenance: 'EDITOR_VERIFIED'
       },
       update: {
-        originalTitle: fixture.originalTitle,
-        normalizedTitle: normalizeTitle(fixture.originalTitle),
+        originalTitle,
+        normalizedTitle: normalizeTitle(originalTitle),
+        slug: fixture.slug,
+        developerName: fixture.developerName,
+        publisherName: fixture.publisherName,
         genres: fixture.genres,
         steamTags: fixture.steamTags,
         platforms: fixture.platforms,
         supportsSinglePlayer: fixture.supportsSinglePlayer,
         supportsMultiplayer: fixture.supportsMultiplayer,
-        typicalSessionMinutes: fixture.typicalSessionMinutes
+        typicalSessionMinutes: fixture.typicalSessionMinutes,
+        publicationStatus: 'PUBLISHED',
+        titleProvenance: 'EDITOR_VERIFIED'
       },
       select: { id: true }
     });
@@ -170,28 +170,22 @@ async function seedCatalogGames() {
     }
 
     for (const identity of fixture.identities) {
-      await prisma.gameExternalIdentity.upsert({
-        where: {
-          provider_externalId_regionKey: {
-            provider: identity.provider,
-            externalId: identity.externalId,
-            regionKey: identity.regionKey
-          }
-        },
-        create: {
-          catalogGameId: fixture.id,
-          provider: identity.provider,
-          externalId: identity.externalId,
-          regionKey: identity.regionKey,
-          provenance: 'UNKNOWN',
-          confidence: 0.5
-        },
-        update: { catalogGameId: fixture.id },
-        select: { id: true }
+      // A made-up development provider id proves no provider relationship. Keep
+      // it in the non-global claim/review flow so it cannot occupy a verified key.
+      await catalogIdentityService.recordIdentityClaim({
+        client: prisma,
+        catalogGameId: fixture.id,
+        provider: identity.provider,
+        externalId: identity.externalId,
+        regionKey: identity.regionKey,
+        provenance: 'UNKNOWN',
+        claimSource: 'development_fixture_unverified'
       });
     }
 
     for (const localization of fixture.localizations) {
+      const title = clampTitle(localization.title);
+
       await prisma.gameLocalization.upsert({
         where: {
           catalogGameId_kind_languageCode_regionCode_normalizedTitle: {
@@ -199,7 +193,7 @@ async function seedCatalogGames() {
             kind: localization.kind,
             languageCode: localization.languageCode,
             regionCode: localization.regionCode,
-            normalizedTitle: normalizeTitle(localization.title)
+            normalizedTitle: normalizeTitle(title)
           }
         },
         create: {
@@ -207,11 +201,11 @@ async function seedCatalogGames() {
           kind: localization.kind,
           languageCode: localization.languageCode,
           regionCode: localization.regionCode,
-          title: localization.title,
-          normalizedTitle: normalizeTitle(localization.title),
-          provenance: 'UNKNOWN'
+          title,
+          normalizedTitle: normalizeTitle(title),
+          provenance: 'EDITOR_VERIFIED'
         },
-        update: { title: localization.title },
+        update: { title, provenance: 'EDITOR_VERIFIED' },
         select: { id: true }
       });
     }
@@ -254,11 +248,6 @@ async function seedCatalogGames() {
 }
 
 async function seedEditorialArticle() {
-  const contentHash = crypto
-    .createHash('sha256')
-    .update(`${FIXTURE_ARTICLE.slug}|development-fixture`)
-    .digest('hex');
-
   const article = await prisma.editorialArticle.upsert({
     where: { slug: FIXTURE_ARTICLE.slug },
     create: {
@@ -278,26 +267,42 @@ async function seedEditorialArticle() {
     select: { id: true }
   });
 
-  const existingRevision = await prisma.articleRevision.findUnique({
+  const revision = await prisma.articleRevision.upsert({
     where: { articleId_revisionNumber: { articleId: article.id, revisionNumber: 1 } },
+    create: {
+      articleId: article.id,
+      revisionNumber: 1,
+      status: 'DRAFT',
+      headline: FIXTURE_ARTICLE.headline,
+      excerpt: FIXTURE_ARTICLE.excerpt,
+      bodyMarkdown: FIXTURE_ARTICLE.bodyMarkdown,
+      changeNote: 'development fixture',
+      aiDraft: false
+    },
+    update: {
+      status: 'DRAFT',
+      headline: FIXTURE_ARTICLE.headline,
+      excerpt: FIXTURE_ARTICLE.excerpt,
+      bodyMarkdown: FIXTURE_ARTICLE.bodyMarkdown,
+      changeNote: 'development fixture',
+      aiDraft: false
+    },
     select: { id: true }
   });
 
-  if (!existingRevision) {
-    await prisma.articleRevision.create({
-      data: {
-        articleId: article.id,
-        revisionNumber: 1,
-        status: 'DRAFT',
-        headline: FIXTURE_ARTICLE.headline,
-        excerpt: FIXTURE_ARTICLE.excerpt,
-        bodyMarkdown: FIXTURE_ARTICLE.bodyMarkdown,
-        changeNote: 'development fixture',
-        aiDraft: false
-      },
-      select: { id: true }
-    });
-  }
+  // Creating or reusing a revision is not enough: the public/editor DTO reads the
+  // body through currentRevisionId, so keep the pointer exact on every run.
+  await prisma.editorialArticle.update({
+    where: { id: article.id },
+    data: {
+      currentRevisionId: revision.id,
+      status: 'DRAFT',
+      locale: FIXTURE_ARTICLE.locale,
+      headline: FIXTURE_ARTICLE.headline,
+      excerpt: FIXTURE_ARTICLE.excerpt
+    },
+    select: { id: true }
+  });
 
   await prisma.articleGameLink.upsert({
     where: { articleId_catalogGameId: { articleId: article.id, catalogGameId: FIXTURE_GAMES[0].id } },
@@ -306,7 +311,7 @@ async function seedEditorialArticle() {
     select: { id: true }
   });
 
-  return { articleId: article.id, contentHash };
+  return { articleId: article.id };
 }
 
 async function main() {
@@ -345,5 +350,6 @@ module.exports = {
   ALLOWED_ENVIRONMENTS,
   FIXTURE_ARTICLE,
   FIXTURE_GAMES,
+  clampTitle,
   normalizeTitle
 };

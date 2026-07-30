@@ -1,5 +1,10 @@
 const crypto = require('node:crypto');
-const { countCodePoints, truncateCodePoints } = require('../../utils/unicode-text');
+const {
+  countCodePoints,
+  isWellFormedUnicode,
+  truncateCodePoints,
+  UNPAIRED_SURROGATE_MESSAGE
+} = require('../../utils/unicode-text');
 
 // Unicode-safe title normalization.
 //
@@ -98,10 +103,18 @@ const MAX_TITLE_LENGTH = 300;
 const MAX_SLUG_LENGTH = 320;
 const MAX_SLUG_DISCRIMINATOR_LENGTH = 12;
 
+function assertWellFormedTitle(value) {
+  if (typeof value === 'string' && !isWellFormedUnicode(value)) {
+    throw new TypeError(`title ${UNPAIRED_SURROGATE_MESSAGE}`);
+  }
+}
+
 /// Clamps a provider- or user-supplied title to what `varchar(300)` accepts,
 /// measured in code points. Every write path that stores an originalTitle or a
 /// localization title must go through this rather than `slice`.
 function clampTitle(value) {
+  assertWellFormedTitle(value);
+
   return typeof value === 'string' ? truncateCodePoints(value.trim(), MAX_TITLE_LENGTH) : '';
 }
 
@@ -109,6 +122,8 @@ function normalizeTitle(value) {
   if (typeof value !== 'string') {
     return '';
   }
+
+  assertWellFormedTitle(value);
 
   const normalized = value
     .replace(STRIPPED_LEGAL_SYMBOLS_PATTERN, '')
@@ -209,6 +224,7 @@ module.exports = {
   MAX_SLUG_DISCRIMINATOR_LENGTH,
   MAX_SLUG_LENGTH,
   MAX_TITLE_LENGTH,
+  assertWellFormedTitle,
   clampTitle,
   RETAINED_MARK_CLASS,
   RETAINED_MARK_RANGES,

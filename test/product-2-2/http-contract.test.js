@@ -513,6 +513,89 @@ test('validation failures return 400 with the shared error envelope', async () =
   }
 });
 
+test('HTTP write boundaries reject unpaired surrogates before any service call', async () => {
+  authState.authenticated = true;
+  authState.userId = USER_A;
+
+  const restore = allFeaturesEnabledStub();
+  const originals = {
+    previewSubmission: catalogSubmissionService.previewSubmission,
+    createPlaySession: playlogService.createPlaySession,
+    createArticle: articleService.createArticle
+  };
+  const calls = { catalog: 0, playlog: 0, article: 0 };
+
+  catalogSubmissionService.previewSubmission = async (...args) => {
+    calls.catalog += 1;
+    return originals.previewSubmission(...args);
+  };
+  playlogService.createPlaySession = async (...args) => {
+    calls.playlog += 1;
+    return originals.createPlaySession(...args);
+  };
+  articleService.createArticle = async (...args) => {
+    calls.article += 1;
+    return originals.createArticle(...args);
+  };
+
+  const server = await listen();
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  try {
+    for (const input of ['\ud800', '\udfff', `normal 😀 text \ud800 tail`]) {
+      const { status, payload } = await request(
+        baseUrl,
+        'post',
+        '/api/v1/catalog/submissions/preview',
+        { inputType: 'TEXT', input, locale: 'ko', regionCode: 'KR' }
+      );
+
+      assert.equal(status, 400);
+      assert.equal(payload.error.code, 'INVALID_UNICODE_TEXT');
+      assert.deepEqual(payload.error.details, [{ field: 'input', message: 'unpaired_surrogate' }]);
+    }
+
+    const playlog = await request(baseUrl, 'post', '/api/v1/users/me/play-sessions', {
+      catalogGameId: CATALOG_GAME_A,
+      playedAt: '2026-07-15T10:00:00.000Z',
+      note: `private note \udfff`,
+      outcome: 'CONTINUE',
+      clientMutationId: CLIENT_MUTATION_ID
+    });
+
+    assert.equal(playlog.status, 400);
+    assert.equal(playlog.payload.error.code, 'INVALID_UNICODE_TEXT');
+
+    const article = await request(baseUrl, 'post', '/api/v1/editorial/articles', {
+      slug: 'surrogate-probe',
+      locale: 'ko',
+      headline: `headline \ud800`,
+      excerpt: 'valid excerpt'
+    });
+
+    assert.equal(article.status, 400);
+    assert.equal(article.payload.error.code, 'INVALID_UNICODE_TEXT');
+    assert.deepEqual(calls, { catalog: 0, playlog: 0, article: 0 },
+      'invalid text must be stopped before the service layer');
+
+    const valid = await request(
+      baseUrl,
+      'post',
+      '/api/v1/catalog/submissions/preview',
+      { inputType: 'TEXT', input: '정상 astral 😀 𠮷', locale: 'ko', regionCode: 'KR' }
+    );
+
+    assert.equal(valid.status, 200);
+    assert.equal(calls.catalog, 1, 'well-formed astral Unicode must still reach the service');
+  } finally {
+    catalogSubmissionService.previewSubmission = originals.previewSubmission;
+    playlogService.createPlaySession = originals.createPlaySession;
+    articleService.createArticle = originals.createArticle;
+    server.close();
+    restore();
+  }
+});
+
 test('an invalid timezone is rejected before any query runs', async () => {
   authState.authenticated = true;
   const restore = allFeaturesEnabledStub();

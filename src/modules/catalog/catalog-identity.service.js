@@ -2,6 +2,7 @@ const { Prisma } = require('@prisma/client');
 const { prisma } = require('../../config/prisma');
 const { AppError } = require('../../utils/error-response');
 const { logger } = require('../../utils/logger');
+const { isWellFormedUnicode } = require('../../utils/unicode-text');
 const { clampTitle, normalizeTitle } = require('./catalog-title.util');
 const {
   GLOBAL_REGION_KEY,
@@ -32,6 +33,18 @@ const MAX_MERGE_CHAIN_DEPTH = 8;
 
 function isUniqueViolation(error) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+function assertWellFormedPersistedText(fields) {
+  const invalidFields = fields
+    .filter(([, value]) => typeof value === 'string' && !isWellFormedUnicode(value))
+    .map(([field]) => field);
+
+  if (invalidFields.length > 0) {
+    throw new AppError(400, 'INVALID_UNICODE_TEXT',
+      'Persisted text must not contain an unpaired UTF-16 surrogate',
+      invalidFields.map((field) => ({ field, message: 'unpaired_surrogate' })));
+  }
 }
 
 /// Follows merged_into_catalog_game_id to the surviving canonical game. Bounded
@@ -154,6 +167,12 @@ async function attachVerifiedIdentity({
   confidence = 1,
   verifiedAt = new Date()
 }) {
+  assertWellFormedPersistedText([
+    ['externalId', externalId],
+    ['regionKey', regionKey],
+    ['verificationSource', verificationSource]
+  ]);
+
   if (!isVerifiedProvenance(provenance)) {
     throw new AppError(500, 'IDENTITY_PROVENANCE_NOT_VERIFIABLE',
       `A global identity cannot be attached with ${provenance} provenance`);
@@ -225,6 +244,12 @@ async function recordIdentityClaim({
   provenance = 'USER_CONFIRMED',
   claimSource = 'quick_add_syntax_parse'
 }) {
+  assertWellFormedPersistedText([
+    ['externalId', externalId],
+    ['regionKey', regionKey],
+    ['claimSource', claimSource]
+  ]);
+
   if (isVerifiedProvenance(provenance)) {
     throw new AppError(500, 'IDENTITY_CLAIM_PROVENANCE_INVALID',
       'An identity claim cannot assert verified provenance');
@@ -309,6 +334,14 @@ async function ensureVerifiedCanonicalGameForIdentity({
   platforms = [],
   verifiedAt = new Date()
 }) {
+  assertWellFormedPersistedText([
+    ['externalId', externalId],
+    ['regionKey', regionKey],
+    ['title', title],
+    ['verificationSource', verificationSource],
+    ...platforms.map((platform, index) => [`platforms.${index}`, platform])
+  ]);
+
   assertPublicationTrust({ publicationStatus, titleProvenance, identityProvenance });
 
   if (!isVerifiedProvenance(identityProvenance)) {

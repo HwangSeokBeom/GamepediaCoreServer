@@ -16,6 +16,10 @@ const aiClient = require('../../src/modules/ai/ai.client');
 const catalogAiExtractor = require('../../src/modules/catalog/catalog-ai.extractor');
 const catalogSubmissionService = require('../../src/modules/catalog/catalog-submission.service');
 const { aiExtractionResponseSchema, persistedDraftSchema } = require('../../src/modules/catalog/catalog-submission.schema');
+const {
+  buildCatalogValidationError,
+  submitCorrectionsSchema
+} = require('../../src/modules/catalog/catalog.validator');
 const { AppError } = require('../../src/utils/error-response');
 
 const SUBMISSION_ID = '00000000-0000-4000-8000-0000000000f1';
@@ -53,6 +57,88 @@ test('the AI response schema rejects extra keys, bad enums and out-of-range conf
       `must reject ${JSON.stringify(payload).slice(0, 80)}`
     );
   }
+});
+
+test('catalog and AI bounded text reject every unpaired-surrogate shape', async () => {
+  const invalidValues = [
+    '\ud800',
+    '\udfff',
+    `normal 😀 text \ud800 tail`,
+    `head \udfff normal 😀 text`
+  ];
+
+  for (const value of invalidValues) {
+    assert.equal(
+      aiExtractionResponseSchema.safeParse({ originalTitle: value }).success,
+      false,
+      'AI parsed output must reject an unpaired surrogate'
+    );
+    assert.equal(
+      persistedDraftSchema.safeParse({
+        version: 2,
+        game: {
+          originalTitle: 'Valid title',
+          genres: [value],
+          platforms: [],
+          localizations: [],
+          regionalReleases: [],
+          identities: [],
+          fieldProvenance: [],
+          requiresTitleConfirmation: false
+        },
+        parsedIdentityClaim: null,
+        aiUsed: true,
+        aiFallbackUsed: false,
+        degradedToManual: false
+      }).success,
+      false,
+      'persisted structured draft text must reject an unpaired surrogate'
+    );
+
+    const restore = stubAiCompletion({
+      content: JSON.stringify({ originalTitle: value }),
+      skipped: false,
+      model: 'surrogate-probe'
+    });
+
+    try {
+      const result = await catalogAiExtractor.extractGameDraft({
+        input: 'valid caller input',
+        locale: 'ko',
+        regionCode: 'KR'
+      });
+
+      assert.equal(result.extracted, null);
+      assert.equal(result.aiFallbackUsed, true);
+      assert.equal(result.degradeReason, 'schema_rejected');
+    } finally {
+      restore();
+    }
+  }
+
+  assert.equal(
+    aiExtractionResponseSchema.safeParse({ originalTitle: '정상 astral 😀 𠮷' }).success,
+    true,
+    'well-formed astral Unicode must remain supported'
+  );
+
+  const malformedEvidenceUrl = submitCorrectionsSchema.safeParse({
+    corrections: [{
+      fieldPath: 'originalTitle',
+      proposedValue: 'Corrected title',
+      sourceUrl: 'https://example.invalid/\ud800'
+    }]
+  });
+
+  assert.equal(malformedEvidenceUrl.success, false);
+  const validationError = buildCatalogValidationError(malformedEvidenceUrl.error);
+
+  assert.equal(validationError.statusCode, 400);
+  assert.equal(validationError.code, 'INVALID_UNICODE_TEXT');
+  assert.deepEqual(validationError.details, [{
+    field: 'corrections.0.sourceUrl',
+    message: 'unpaired_surrogate'
+  }]);
 });
 
 test('malformed AI output degrades to a manual draft instead of failing', async () => {

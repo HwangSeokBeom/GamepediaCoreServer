@@ -10,6 +10,8 @@
     "test": "node scripts/test/run-canonical-tests.js",
     "test:postgres": "bash scripts/test/run-auth-postgres-gate.sh",
     "test:postgres:product-2-2": "bash scripts/test/run-product-2-2-postgres-gate.sh",
+    "test:postgres:product-2-2:seed": "bash scripts/test/run-product-2-2-seed-postgres-gate.sh",
+    "seed:product-2-2:dev": "node scripts/seed/product-2-2-dev-seed.js",
     "deploy:production": "bash ./deploy.sh",
     "deploy:staging": "bash ./deploy-staging.sh",
     "deploy:validate:production": "NODE_ENV=production node ./scripts/server/validate-deploy-env.js production",

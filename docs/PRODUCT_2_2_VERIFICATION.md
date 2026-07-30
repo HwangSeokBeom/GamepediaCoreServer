@@ -28,17 +28,21 @@ export NODE_ENV=test APP_ENV=test MAIL_MODE=log \
 | Syntax | `find src scripts test -name '*.js' ! -name '* 2.js' ! -name '* 3.js' -exec node --check {} \;` | VERIFIED, 0 failures |
 | Schema format | `npx prisma format` | VERIFIED |
 | Schema validity | `npx prisma validate` | VERIFIED |
-| Canonical tests | `npm test` | VERIFIED — 493 tests, 436 pass, 0 fail, 57 skipped |
-| PostgreSQL gate | `npm run test:postgres:product-2-2` | VERIFIED — exit 0, 39 migrations, 26/26 + 10/10 real-database tests |
+| OpenAPI JSON | `node -e "JSON.parse(require('node:fs').readFileSync('openapi/product-2.2.openapi.json', 'utf8'))"` | VERIFIED |
+| OpenAPI 3.1 | `npx --yes @redocly/cli@latest lint openapi/product-2.2.openapi.json --extends=minimal` | VERIFIED — 0 errors, 2 unused-component warnings |
+| Canonical tests | `npm test` | VERIFIED — 500 tests, 440 pass, 0 fail, 60 skipped |
+| PostgreSQL gate | `npm run test:postgres:product-2-2` | VERIFIED — exit 0, 39 fresh migrations, 33 legacy + 6 Product 2.2 upgrade migrations, 48/48 real-database tests |
+| Seed-twice PostgreSQL gate | `npm run test:postgres:product-2-2:seed` | VERIFIED — exit 0, 39 migrations, two consecutive documented seed runs, stable 3-game/4-claim/0-identity/1-linked-revision snapshot |
 | Pre-existing auth gate | `npm run test:postgres` | VERIFIED — exit 0, 39 migrations applied, 6/6 tests pass |
 | Whitespace | `git diff --check` | VERIFIED, clean |
 
 There is no `test:canonical` script in this repository. `npm test` **is** the
 canonical runner (`node scripts/test/run-canonical-tests.js`), which discovers
 files ending exactly `.test.js` and excludes the user-owned ` 2.js` / ` 3.js`
-duplicates. The 57 skipped tests are the PostgreSQL-gated suites, which run only
-with `RUN_POSTGRES_INTEGRATION=1`; they are not skipped in the gate, where all 36
-of the Product 2.2 ones execute against a real database.
+duplicates. The 60 skipped tests are the PostgreSQL-gated suites, which run only
+with `RUN_POSTGRES_INTEGRATION=1`; they are not weakened or disabled. The Product
+2.2 gate executes 47 of them on a fresh database and one legacy-upgrade test on
+the upgraded database.
 
 ### Focused Product 2.2 suites
 
@@ -46,18 +50,20 @@ Counts are per file, each run on its own with `node --test <file>`:
 
 | File | tests | pass | fail | skipped |
 |---|---|---|---|---|
-| `catalog-identity.test.js` | 27 | 27 | 0 | 0 |
+| `catalog-identity.test.js` | 28 | 28 | 0 | 0 |
 | `catalog-migration.test.js` | 16 | 16 | 0 | 0 |
-| `catalog-submission.test.js` | 21 | 21 | 0 | 0 |
+| `catalog-submission.test.js` | 22 | 22 | 0 | 0 |
 | `playlog.test.js` | 12 | 12 | 0 | 0 |
 | `play-intelligence.test.js` | 24 | 24 | 0 | 0 |
 | `feed-and-product.test.js` | 41 | 41 | 0 | 0 |
-| `http-contract.test.js` | 12 | 12 | 0 | 0 |
-| `privacy-and-openapi.test.js` | 13 | 13 | 0 | 0 |
+| `http-contract.test.js` | 13 | 13 | 0 | 0 |
+| `privacy-and-openapi.test.js` | 14 | 14 | 0 | 0 |
 | `review-fixes.test.js` | 30 | 30 | 0 | 0 |
 | `round-2-unit.test.js` | 12 | 12 | 0 | 0 |
 | `product-2-2.postgres.test.js` | 26 | 26 | 0 | 0 in the gate (26 skipped without `RUN_POSTGRES_INTEGRATION=1`) |
 | `round-2-attacks.postgres.test.js` | 10 | 10 | 0 | 0 in the gate (10 skipped without `RUN_POSTGRES_INTEGRATION=1`) |
+| `round-3-regressions.postgres.test.js` | 11 | 11 | 0 | 0 in the gate (2 parent tests skipped without `RUN_POSTGRES_INTEGRATION=1`) |
+| `legacy-upgrade.postgres.test.js` | 1 | 1 | 0 | 0 in the upgraded-database gate (1 skipped without `RUN_POSTGRES_INTEGRATION=1`) |
 
 ## PostgreSQL gate
 
@@ -84,8 +90,9 @@ reads it rather than hard-coding it);
 `prisma migrate diff --from-url … --to-schema-datamodel prisma/schema.prisma`
 must produce an empty migration (schema/migration drift is a hard failure);
 `npx prisma generate` runs inside the gate; then the 26 real-database
-integration tests in `test/product-2-2/product-2-2.postgres.test.js` and the 10
-round-2 attack tests in `test/product-2-2/round-2-attacks.postgres.test.js`.
+integration tests in `test/product-2-2/product-2-2.postgres.test.js`, the 10
+round-2 attack tests in `test/product-2-2/round-2-attacks.postgres.test.js`, and
+the 11 TAP-counted tests in `test/product-2-2/round-3-regressions.postgres.test.js`.
 
 **Phase B — legacy upgrade.** A second database receives only the 33 pre-Product-2.2
 migrations (baseline schema read from the merge base with `origin/main`), is
@@ -127,7 +134,10 @@ then asserts, raising on any violation:
     `verification_source` are both NOT NULL
 
 Finally `migrate deploy` is re-run to prove idempotency, and the backfill
-assertions are re-checked afterwards.
+assertions are re-checked afterwards. The upgraded database then runs
+`legacy-upgrade.postgres.test.js`, which starts from the pre-2.2 malicious
+identity fixture and invokes the real trusted Steam ownership sync after the
+actual migrations.
 
 Last run:
 
@@ -139,15 +149,33 @@ Running the Product 2.2 real-database integration tests.
 ℹ tests 26  ℹ pass 26  ℹ fail 0  ℹ skipped 0
 Running the round-2 attack tests (identity capture, atomicity, editorial races, Unicode parity).
 ℹ tests 10  ℹ pass 10  ℹ fail 0  ℹ skipped 0
+Running the round-3 regression tests (correction deltas and Unicode storage boundaries).
+ℹ tests 11  ℹ pass 11  ℹ fail 0  ℹ skipped 0
 === Phase B: legacy schema (33 migrations) upgraded with 6 Product 2.2 migrations ===
 Confirmed upgrade target database via SELECT current_database(): gamepedia_product_2_2_upgrade_…
 NOTICE:  Product 2.2 backfill, review-fix and round-2 assertions passed.
+ℹ tests 1  ℹ pass 1  ℹ fail 0  ℹ skipped 0
 Re-running the migrations to confirm they are idempotent (no pending work).
 NOTICE:  Product 2.2 backfill, review-fix and round-2 assertions passed.
 Product 2.2 PostgreSQL gate passed.
   fresh database:   gamepedia_product_2_2_fresh_… (39 migrations)
   upgraded database: gamepedia_product_2_2_upgrade_… (33 legacy + 6 Product 2.2)
 ```
+
+## Seed-twice PostgreSQL gate
+
+```
+npm run test:postgres:product-2-2:seed
+```
+
+The gate creates a separate disposable PostgreSQL 16 database, probes its exact
+name, runs `npx prisma generate`, applies all 39 migrations, and executes the
+documented `npm run seed:product-2-2:dev` command twice. The verifier requires
+both snapshots to match: 3 catalog games, 4 unverified identity claims, zero
+verified external identities, and one editorial revision whose id is exactly
+the article's `currentRevisionId`. Development provider ids are claims, not
+fabricated verification; published fixture titles explicitly use
+`EDITOR_VERIFIED` provenance.
 
 ## Required test coverage
 
@@ -167,6 +195,9 @@ Product 2.2 PostgreSQL gate passed.
 | Article permissions | `feed-and-product.test.js` + `http-contract.test.js` (403 without a DB role) |
 | Source allowlist / SSRF | `feed-and-product.test.js` — 10 refusals, 20 blocked addresses, split-horizon DNS, redirect, size, timeout |
 | Feed ordering / partial failure | `feed-and-product.test.js` — fixed order, one failing section degrades alone, cursor |
+| Canonical correction delta | `round-3-regressions.postgres.test.js` — equal scalars, trim-equivalent body, relation reordering/duplicate upserts, and a real delta inside the locked transaction |
+| Today generated-client reachability | `privacy-and-openapi.test.js` — graph traversal from the Today 200 response reaches `ArticleSummary`, including the editorial articles item `$ref` |
+| Unpaired-surrogate refusal | `catalog-identity.test.js`, `catalog-submission.test.js`, `http-contract.test.js`, and `round-3-regressions.postgres.test.js` — high/low/mixed lone surrogates fail before storage; valid astral Unicode round-trips |
 | Raw data log leak | `privacy-and-openapi.test.js` — repository scan plus planted-leak self-test |
 
 ## Review-fix coverage
@@ -207,8 +238,8 @@ transaction rollback, or a genuine race between connections.
 | Round-2 finding | Evidence |
 |---|---|
 | A legacy Steam identity capture (P1) | `round-2-attacks.postgres.test.js` — the attack is performed: an attacker's claim on an appid, then the victim's real sync. The sync returns a different canonical game, keeps `Real Provider Title`/`PUBLISHED`/`PROVIDER_VERIFIED`, and the attacker's game stays `PENDING_REVIEW`/`USER_CONFIRMED` and unmerged. Plus: the database refuses all five unverified global-identity shapes with SQLSTATE 23514/23502, the migration demoted realistic legacy titles and their localizations, and all four CHECK constraints exist. Unit: `catalog-identity.test.js` — no promotion path remains |
-| B catalog creation atomicity (P2) | `round-2-attacks.postgres.test.js` — a failure injected after the game create rolls the whole transaction back, leaving zero orphan games; the retry produces exactly one game and one identity, and a second retry adds nothing. Ten concurrent syncs of one appid converge on one canonical game and one identity with no leftovers. Unit: `review-fixes.test.js` — a rolled-back entry leaves no linked library row |
-| C editorial TOCTOU (P1) | `round-2-attacks.postgres.test.js` — a real edit-versus-publish race across two connections, asserting on the committed row afterwards; and a hero asset committed by another connection mid-request blocks the publish. Unit: `feed-and-product.test.js` and `review-fixes.test.js` — the lock is taken before anything is read, a stale `expectedRevisionNumber` is a 409, and a role revoked mid-request is refused |
+| B catalog creation atomicity (P2) | `round-2-attacks.postgres.test.js` — a disposable PostgreSQL trigger fails the identity insert during the real `ensureVerifiedCanonicalGameForIdentity` call, proving the service transaction rolls back game, localization, and identity together; retry and replay remain idempotent. Ten concurrent syncs of one appid converge on one canonical game and one identity with no leftovers. Unit: `review-fixes.test.js` — a rolled-back entry leaves no linked library row |
+| C editorial TOCTOU (P1) | `round-2-attacks.postgres.test.js` — a real edit-versus-publish race asserts the exact allowed outcomes and cannot pass if both operations fail. The hero race uses two connections, an article row lock, and a `pg_blocking_pids` barrier so the asset commits while publish is blocked, with no arbitrary sleep. Unit: `feed-and-product.test.js` and `review-fixes.test.js` — the lock is taken before anything is read, a stale `expectedRevisionNumber` is a 409, and a role revoked mid-request is refused |
 | D magazine publication contract (P1/P2) | `round-2-attacks.postgres.test.js` — a null body cannot be published, a status-only `CORRECTED` is refused, a noteless correction is refused, a proper correction succeeds, and a SQL sweep confirms no publicly readable article in the database has an empty body or a noteless correction. Unit: `review-fixes.test.js` DTO split; `privacy-and-openapi.test.js` — the contract's non-null promises match what the server enforces |
 | E Markdown rights/privacy bypass (P1) | `round-2-attacks.postgres.test.js` — four image forms refused at the write boundary, and a body written directly to the table is still refused at publish, with the rejection carrying reason codes and not the tracking URL. Unit: `round-2-unit.test.js` — twelve image syntaxes, seven raw-HTML positions, eleven refused link destinations, one accepted ordinary body, and a planted-leak check over the error and the logs |
 | F Unicode JS/SQL parity (P2) | `round-2-attacks.postgres.test.js` — a seven-title corpus stored in `varchar(300)`, asserting `char_length` equals the JavaScript code-point count and `left(value, 300)` equals `clampTitle(value)`. Unit: `round-2-unit.test.js` — the exact defect (`'a' + '\u{20BB7}'.repeat(200)`), boundary-straddling surrogate pairs, nine-script corpus, slug budget |

@@ -78,6 +78,15 @@ function hasUnpairedSurrogate(value) {
   return false;
 }
 
+const UNPAIRED_SURROGATE_MESSAGE = 'must not contain an unpaired UTF-16 surrogate';
+
+/// Zod-compatible refinement predicate. Keep this separate from normalization:
+/// replacing a lone surrogate with U+FFFD would silently persist different text
+/// from what the caller supplied.
+function isWellFormedUnicode(value) {
+  return typeof value !== 'string' || !hasUnpairedSurrogate(value);
+}
+
 /// Zod refinement factory: bounds a string by code points rather than by UTF-16
 /// units, so API validation and the `varchar(n)` column agree.
 function codePointMax(maxLength, label = 'value') {
@@ -91,5 +100,7 @@ module.exports = {
   codePointMax,
   countCodePoints,
   hasUnpairedSurrogate,
+  isWellFormedUnicode,
+  UNPAIRED_SURROGATE_MESSAGE,
   truncateCodePoints
 };

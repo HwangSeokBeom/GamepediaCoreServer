@@ -1,5 +1,9 @@
 const { z } = require('zod');
 const { AppError } = require('../../utils/error-response');
+const {
+  isWellFormedUnicode,
+  UNPAIRED_SURROGATE_MESSAGE
+} = require('../../utils/unicode-text');
 const { CORRECTABLE_FIELD_PATHS } = require('./catalog.constants');
 const { boundedText } = require('./catalog-submission.schema');
 
@@ -29,7 +33,7 @@ const previewSubmissionSchema = z.object({
   inputType: z.enum(['TEXT', 'URL', 'PROVIDER_ID']),
   // The raw value is used to resolve candidates and is then discarded: only its
   // SHA-256 fingerprint plus confirmed structured fields are ever persisted.
-  input: z.string().trim().min(1).max(2000),
+  input: boundedText(2000),
   locale: localeSchema,
   regionCode: regionCodeSchema,
   platformHint: platformSchema.nullish()
@@ -40,8 +44,8 @@ const confirmedFieldsSchema = z.object({
   developerName: boundedText(200).nullish(),
   publisherName: boundedText(200).nullish(),
   firstReleaseDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
-  genres: z.array(z.string().trim().min(1).max(60)).max(12).optional(),
-  platforms: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
+  genres: z.array(boundedText(60)).max(12).optional(),
+  platforms: z.array(boundedText(40)).max(12).optional(),
   supportsSinglePlayer: z.boolean().nullish(),
   supportsMultiplayer: z.boolean().nullish(),
   typicalSessionMinutes: z.number().int().min(1).max(1440).nullish()
@@ -79,9 +83,10 @@ const correctionSchema = z.object({
     boundedText(300),
     z.number(),
     z.boolean(),
-    z.array(z.string().trim().min(1).max(60)).max(12)
+    z.array(boundedText(60)).max(12)
   ]),
   sourceUrl: z.string().trim().url().max(2000)
+    .refine(isWellFormedUnicode, UNPAIRED_SURROGATE_MESSAGE)
     .refine((value) => value.startsWith('https://'), 'Only https source URLs are accepted')
     .nullish()
 }).strict();
@@ -96,6 +101,14 @@ const followGameSchema = z.object({
 
 function buildCatalogValidationError(error) {
   const issueFields = new Set(error.issues.map((issue) => issue.path.join('.')));
+
+  if (error.issues.some((issue) => issue.message === UNPAIRED_SURROGATE_MESSAGE)) {
+    return new AppError(400, 'INVALID_UNICODE_TEXT',
+      'Persisted text must not contain an unpaired UTF-16 surrogate',
+      error.issues
+        .filter((issue) => issue.message === UNPAIRED_SURROGATE_MESSAGE)
+        .map((issue) => ({ field: issue.path.join('.'), message: 'unpaired_surrogate' })));
+  }
 
   if (issueFields.has('input')) {
     return new AppError(400, 'INVALID_SUBMISSION_INPUT', 'Submission input is required and must be at most 2000 characters');

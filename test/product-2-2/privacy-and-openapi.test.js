@@ -379,6 +379,24 @@ test('the public article contract promises nothing the server cannot deliver', (
   assert.ok(summary);
   assert.equal(summary.properties.bodyMarkdown, undefined, 'a summary must not carry a body');
   assert.ok(summary.properties.sourceCount);
+  for (const field of [
+    'publishedAt',
+    'correctedAt',
+    'heroImage',
+    'heroImageWithheldReason',
+    'relatedGames',
+    'sourceCount'
+  ]) {
+    assert.ok(summary.required.includes(field), `ArticleSummary must require runtime field ${field}`);
+  }
+  assert.equal(
+    summary.properties.relatedGames.items.$ref,
+    '#/components/schemas/ArticleRelatedGame'
+  );
+  assert.equal(
+    summary.properties.heroImage.oneOf[0].$ref,
+    '#/components/schemas/ArticleHeroImage'
+  );
 
   // The endpoints must reference the right shape for their audience.
   assert.equal(
@@ -396,6 +414,78 @@ test('the public article contract promises nothing the server cannot deliver', (
 
   // The legacy alias stays resolvable for an already generated client.
   assert.equal(schemas.Article.deprecated, true);
+});
+
+test('the Today response reaches ArticleSummary through the editorial section contract', () => {
+  const contract = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
+  const responseSchema = contract.paths['/api/v1/users/me/today'].get
+    .responses['200'].content['application/json'].schema;
+  const reachableRefs = new Set();
+  const visitedRefs = new Set();
+
+  function resolveLocalRef(ref) {
+    return ref
+      .replace(/^#\//, '')
+      .split('/')
+      .reduce((value, segment) => value?.[segment], contract);
+  }
+
+  function walkReachable(node) {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    if (typeof node.$ref === 'string') {
+      reachableRefs.add(node.$ref);
+
+      if (visitedRefs.has(node.$ref)) {
+        return;
+      }
+
+      visitedRefs.add(node.$ref);
+      walkReachable(resolveLocalRef(node.$ref));
+      return;
+    }
+
+    for (const child of Object.values(node)) {
+      walkReachable(child);
+    }
+  }
+
+  walkReachable(responseSchema);
+
+  for (const ref of [
+    '#/components/schemas/TodayFeed',
+    '#/components/schemas/TodaySection',
+    '#/components/schemas/TodayEditorialCurationSection',
+    '#/components/schemas/TodayEditorialCurationData',
+    '#/components/schemas/ArticleSummary'
+  ]) {
+    assert.ok(reachableRefs.has(ref), `Today 200 response must reach ${ref}`);
+  }
+
+  const schemas = contract.components.schemas;
+
+  assert.equal(schemas.TodayFeed.properties.sections.items.$ref, '#/components/schemas/TodaySection');
+  assert.equal(
+    schemas.TodayEditorialCurationData.properties.articles.items.$ref,
+    '#/components/schemas/ArticleSummary'
+  );
+  assert.equal(
+    schemas.TodaySection.discriminator.mapping.editorialCuration,
+    '#/components/schemas/TodayEditorialCurationSection'
+  );
+  assert.equal(
+    schemas.TodayEditorialCurationSection.oneOf[0].properties.key.const,
+    'editorialCuration'
+  );
+  assert.equal(
+    schemas.TodayEditorialCurationSection.oneOf[0].properties.status.const,
+    'ok'
+  );
+  assert.ok(schemas.TodayFeed.required.includes('timezone'));
+  assert.ok(schemas.TodayFeed.required.includes('locale'));
+  assert.ok(schemas.TodayFeed.properties.meta.required.includes('limit'));
 });
 
 test('the contract documents the concurrency check and every editorial conflict code', () => {
@@ -440,6 +530,8 @@ test('the contract documents the concurrency check and every editorial conflict 
   // And the write-time Markdown rejection is documented on the 400 as well.
   assert.match(contract.components.responses.ValidationError.description,
     /ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED/);
+  assert.match(contract.components.responses.ValidationError.description,
+    /INVALID_UNICODE_TEXT/);
   // Whatever else it says, it must promise that the destination is not echoed back.
   assert.match(contract.components.responses.ValidationError.description,
     /reason codes only, never the offending destination/);

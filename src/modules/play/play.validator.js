@@ -1,6 +1,10 @@
 const { z } = require('zod');
 const { AppError } = require('../../utils/error-response');
 const {
+  isWellFormedUnicode,
+  UNPAIRED_SURROGATE_MESSAGE
+} = require('../../utils/unicode-text');
+const {
   PLAY_COMPASS_ACTIONS,
   PLAY_COMPASS_REASON_CODES,
   PLAY_SESSION_MOODS,
@@ -39,7 +43,8 @@ const createPlaySessionSchema = z.object({
   progressPercent: z.number().int().min(0).max(100).nullish(),
   mood: z.enum(PLAY_SESSION_MOODS).nullish(),
   // Private free text. Stored on the row, never logged, never an event property.
-  note: z.string().trim().max(2000).nullish(),
+  note: z.string().trim().max(2000)
+    .refine(isWellFormedUnicode, UNPAIRED_SURROGATE_MESSAGE).nullish(),
   outcome: z.enum(PLAY_SESSION_OUTCOMES),
   visibility: z.enum(PLAY_SESSION_VISIBILITIES).default('PRIVATE'),
   clientMutationId: clientMutationIdSchema
@@ -52,7 +57,8 @@ const updatePlaySessionSchema = z.object({
   durationMinutes: z.number().int().min(1).max(1440).nullish(),
   progressPercent: z.number().int().min(0).max(100).nullish(),
   mood: z.enum(PLAY_SESSION_MOODS).nullish(),
-  note: z.string().trim().max(2000).nullish(),
+  note: z.string().trim().max(2000)
+    .refine(isWellFormedUnicode, UNPAIRED_SURROGATE_MESSAGE).nullish(),
   outcome: z.enum(PLAY_SESSION_OUTCOMES).optional(),
   visibility: z.enum(PLAY_SESSION_VISIBILITIES).optional(),
   clientMutationId: clientMutationIdSchema.optional()
@@ -112,6 +118,14 @@ const playCompassEventSchema = z.object({
 
 function buildPlayValidationError(error) {
   const issueFields = new Set(error.issues.map((issue) => issue.path.join('.')));
+
+  if (error.issues.some((issue) => issue.message === UNPAIRED_SURROGATE_MESSAGE)) {
+    return new AppError(400, 'INVALID_UNICODE_TEXT',
+      'Persisted text must not contain an unpaired UTF-16 surrogate',
+      error.issues
+        .filter((issue) => issue.message === UNPAIRED_SURROGATE_MESSAGE)
+        .map((issue) => ({ field: issue.path.join('.'), message: 'unpaired_surrogate' })));
+  }
 
   if (issueFields.has('clientMutationId')) {
     return new AppError(400, 'INVALID_CLIENT_MUTATION_ID', 'clientMutationId must be an opaque token of 8 to 120 characters');

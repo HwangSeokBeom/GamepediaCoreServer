@@ -361,16 +361,10 @@ async function attachRelations({ tx, articleId, input, now }) {
     });
   }
 
-  for (const link of input.relatedGames ?? []) {
-    const canonicalId = await catalogIdentityService.resolveCanonicalGameId(link.catalogGameId, { client: tx });
-
-    if (!canonicalId) {
-      throw new AppError(400, 'CATALOG_GAME_NOT_FOUND', 'A related catalog game could not be found');
-    }
-
+  for (const link of input.resolvedRelatedGames ?? []) {
     await tx.articleGameLink.upsert({
-      where: { articleId_catalogGameId: { articleId, catalogGameId: canonicalId } },
-      create: { articleId, catalogGameId: canonicalId, relation: link.relation },
+      where: { articleId_catalogGameId: { articleId, catalogGameId: link.catalogGameId } },
+      create: { articleId, catalogGameId: link.catalogGameId, relation: link.relation },
       update: { relation: link.relation },
       select: { id: true }
     });
@@ -396,6 +390,187 @@ async function attachRelations({ tx, articleId, input, now }) {
       select: { id: true }
     });
   }
+}
+
+/// Resolves every related-game id once, under the article transaction. The
+/// resolved list is used both by the public-delta comparison and by the writes,
+/// so a merge tombstone cannot be compared as one id and persisted as another.
+async function resolveRelatedGameInputs({ tx, relatedGames }) {
+  const resolved = [];
+
+  for (const link of relatedGames ?? []) {
+    const canonicalId = await catalogIdentityService.resolveCanonicalGameId(link.catalogGameId, { client: tx });
+
+    if (!canonicalId) {
+      throw new AppError(400, 'CATALOG_GAME_NOT_FOUND', 'A related catalog game could not be found');
+    }
+
+    resolved.push({ catalogGameId: canonicalId, relation: link.relation });
+  }
+
+  return resolved;
+}
+
+function canonicalText(value) {
+  return typeof value === 'string' ? value.trim() : value ?? null;
+}
+
+function canonicalDate(value) {
+  return value ? new Date(value).toISOString() : null;
+}
+
+function canonicalSources(sources) {
+  return [...sources]
+    .map((source) => ({
+      sourceType: source.sourceType,
+      publisherKey: canonicalText(source.publisherKey),
+      headline: canonicalText(source.headline),
+      excerpt: canonicalText(source.excerpt),
+      sourceUrl: canonicalText(source.sourceUrl),
+      publishedAt: canonicalDate(source.publishedAt),
+      fetchedAt: canonicalDate(source.fetchedAt),
+      contentHash: source.contentHash,
+      provenance: source.provenance
+    }))
+    .sort((left, right) => left.contentHash.localeCompare(right.contentHash));
+}
+
+function canonicalAssets(assets) {
+  return [...assets]
+    .map((asset) => ({
+      kind: asset.kind,
+      url: canonicalText(asset.url),
+      rightsStatus: asset.rightsStatus,
+      attribution: canonicalText(asset.attribution),
+      isHero: asset.isHero === true
+    }))
+    .sort((left, right) => left.url.localeCompare(right.url));
+}
+
+function canonicalRelatedGames(gameLinks) {
+  return [...gameLinks]
+    .map((link) => ({
+      catalogGameId: link.catalogGameId,
+      relation: link.relation
+    }))
+    .sort((left, right) => left.catalogGameId.localeCompare(right.catalogGameId));
+}
+
+/// Applies the exact upsert semantics used by attachRelations to an in-memory
+/// canonical representation. Arrays are maps keyed by their database uniqueness
+/// key, so input order and duplicate entries are irrelevant; when a duplicate
+/// appears in one request, the last upsert wins just as it does in PostgreSQL.
+function applySourceUpserts({ current, requested, now }) {
+  const byContentHash = new Map(canonicalSources(current).map((source) => [source.contentHash, source]));
+
+  for (const source of requested ?? []) {
+    const existing = byContentHash.get(source.contentHash);
+
+    if (existing) {
+      byContentHash.set(source.contentHash, {
+        ...existing,
+        headline: canonicalText(source.headline),
+        excerpt: canonicalText(source.excerpt)
+      });
+      continue;
+    }
+
+    byContentHash.set(source.contentHash, {
+      sourceType: source.sourceType,
+      publisherKey: canonicalText(source.publisherKey),
+      headline: canonicalText(source.headline),
+      excerpt: canonicalText(source.excerpt),
+      sourceUrl: canonicalText(source.sourceUrl),
+      publishedAt: canonicalDate(source.publishedAt),
+      fetchedAt: canonicalDate(source.fetchedAt ?? now),
+      contentHash: source.contentHash,
+      provenance: 'OFFICIAL_SOURCE'
+    });
+  }
+
+  return canonicalSources([...byContentHash.values()]);
+}
+
+function applyAssetUpserts({ current, requested }) {
+  const byUrl = new Map(canonicalAssets(current).map((asset) => [asset.url, asset]));
+
+  for (const asset of requested ?? []) {
+    const url = canonicalText(asset.url);
+
+    byUrl.set(url, {
+      kind: asset.kind,
+      url,
+      rightsStatus: asset.rightsStatus,
+      attribution: canonicalText(asset.attribution),
+      isHero: asset.isHero === true
+    });
+  }
+
+  return canonicalAssets([...byUrl.values()]);
+}
+
+function applyRelatedGameUpserts({ current, requested }) {
+  const byCatalogGameId = new Map(
+    canonicalRelatedGames(current).map((link) => [link.catalogGameId, link])
+  );
+
+  for (const link of requested ?? []) {
+    byCatalogGameId.set(link.catalogGameId, {
+      catalogGameId: link.catalogGameId,
+      relation: link.relation
+    });
+  }
+
+  return canonicalRelatedGames([...byCatalogGameId.values()]);
+}
+
+/// Canonical public meaning before and after this request.
+///
+/// This deliberately does not look at whether a field was present. It compares
+/// the value a reader has now with the value the existing update/upsert semantics
+/// would leave behind. Outer body whitespace is ignored because the HTTP contract
+/// trims it, and relation arrays are key-sorted sets because request ordering is
+/// not persisted or exposed as editorial meaning.
+function publicRepresentationsForUpdate({ article, input, resolvedRelatedGames, now }) {
+  const current = {
+    headline: canonicalText(article.headline),
+    excerpt: canonicalText(article.excerpt),
+    locale: canonicalText(article.locale),
+    bodyMarkdown: canonicalText(article.currentRevision?.bodyMarkdown),
+    sources: canonicalSources(article.sources ?? []),
+    relatedGames: canonicalRelatedGames(article.gameLinks ?? []),
+    assets: canonicalAssets(article.assets ?? [])
+  };
+
+  const after = {
+    headline: input.headline === undefined ? current.headline : canonicalText(input.headline),
+    excerpt: input.excerpt === undefined ? current.excerpt : canonicalText(input.excerpt),
+    locale: input.locale === undefined ? current.locale : canonicalText(input.locale),
+    bodyMarkdown: input.bodyMarkdown === undefined
+      ? current.bodyMarkdown
+      : canonicalText(input.bodyMarkdown),
+    sources: applySourceUpserts({
+      current: article.sources ?? [],
+      requested: input.sources,
+      now
+    }),
+    relatedGames: applyRelatedGameUpserts({
+      current: article.gameLinks ?? [],
+      requested: resolvedRelatedGames
+    }),
+    assets: applyAssetUpserts({
+      current: article.assets ?? [],
+      requested: input.assets
+    })
+  };
+
+  return { current, after };
+}
+
+function hasPublicRepresentationDelta(context) {
+  const { current, after } = publicRepresentationsForUpdate(context);
+
+  return JSON.stringify(current) !== JSON.stringify(after);
 }
 
 /// Locks the article row for the duration of the transaction and returns it with
@@ -528,7 +703,17 @@ async function createArticle({ actorUserId, input, now = new Date() }) {
         editorUserId: actorUserId
       });
 
-      await attachRelations({ tx, articleId: created.id, input, now });
+      const resolvedRelatedGames = await resolveRelatedGameInputs({
+        tx,
+        relatedGames: input.relatedGames
+      });
+
+      await attachRelations({
+        tx,
+        articleId: created.id,
+        input: { ...input, resolvedRelatedGames },
+        now
+      });
 
       return tx.editorialArticle.findUnique({ where: { id: created.id }, select: ARTICLE_SELECT });
     });
@@ -550,18 +735,6 @@ async function createArticle({ actorUserId, input, now = new Date() }) {
   }
 }
 
-/// Fields whose change is visible to a reader. Touching any of them on an already
-/// public article is a correction, not an edit.
-function describesPublicChange(input) {
-  return input.headline !== undefined
-    || input.excerpt !== undefined
-    || input.locale !== undefined
-    || input.bodyMarkdown !== undefined
-    || (input.assets ?? []).length > 0
-    || (input.sources ?? []).length > 0
-    || (input.relatedGames ?? []).length > 0;
-}
-
 async function updateArticle({ actorUserId, slug, input, now = new Date() }) {
   const article = await prisma.$transaction(async (tx) => {
     const existing = await lockArticleForUpdate({ tx, slug });
@@ -573,14 +746,25 @@ async function updateArticle({ actorUserId, slug, input, now = new Date() }) {
       throw new AppError(409, 'ARTICLE_RETRACTED', 'A retracted article can no longer be edited');
     }
 
-    // Status is re-read under the lock, so a publish that committed while this
-    // request was waiting is visible here and forces the correction path.
-    const alreadyPublic = PUBLICLY_READABLE_STATUSES.includes(existing.status);
-    const changesPublicContent = alreadyPublic && describesPublicChange(input);
-
     if (input.status && input.status !== existing.status) {
       assertTransitionAllowed(existing.status, input.status);
     }
+
+    const resolvedRelatedGames = await resolveRelatedGameInputs({
+      tx,
+      relatedGames: input.relatedGames
+    });
+
+    // Status and the complete public representation are read under the same row
+    // lock. A correction is decided from the actual post-upsert meaning, not from
+    // the mere presence of request fields.
+    const alreadyPublic = PUBLICLY_READABLE_STATUSES.includes(existing.status);
+    const changesPublicContent = alreadyPublic && hasPublicRepresentationDelta({
+      article: existing,
+      input,
+      resolvedRelatedGames,
+      now
+    });
 
     if (changesPublicContent) {
       if (input.status !== 'CORRECTED') {
@@ -650,7 +834,12 @@ async function updateArticle({ actorUserId, slug, input, now = new Date() }) {
       editorUserId: actorUserId
     });
 
-    await attachRelations({ tx, articleId: existing.id, input, now });
+    await attachRelations({
+      tx,
+      articleId: existing.id,
+      input: { ...input, resolvedRelatedGames },
+      now
+    });
 
     return tx.editorialArticle.findUnique({ where: { id: existing.id }, select: ARTICLE_SELECT });
   });
@@ -778,8 +967,8 @@ module.exports = {
   assertPublishableBody,
   assertTransitionAllowed,
   createArticle,
-  describesPublicChange,
   getPublishedArticleBySlug,
+  hasPublicRepresentationDelta,
   listArticlesForEditor,
   listPublishedArticles,
   mapArticleSummary,
