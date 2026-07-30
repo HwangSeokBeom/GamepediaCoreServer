@@ -36,6 +36,10 @@ test('every Product 2.2 migration is a new directory holding a canonical migrati
 test('no pre-existing migration file was modified by this branch', () => {
   // The merge base of this branch against origin/main is the state every earlier
   // migration must still match byte for byte.
+  //
+  // The allowlist is the Product 2.2 date prefix rather than an enumeration of
+  // directories, so adding a successor migration cannot make this assertion go
+  // stale and silently stop protecting the migrations that matter.
   const baseRef = execFileSync('git', ['merge-base', 'HEAD', 'origin/main'], { encoding: 'utf8' }).trim();
   const changedFiles = execFileSync('git', ['diff', '--name-only', `${baseRef}..HEAD`, '--', 'prisma/migrations'], {
     encoding: 'utf8'
@@ -44,12 +48,55 @@ test('no pre-existing migration file was modified by this branch', () => {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const productMigrationDirs = [CATALOG_MIGRATION, QUICK_ADD_MIGRATION, PLAY_MIGRATION, EDITORIAL_MIGRATION];
   const touchedExisting = changedFiles.filter(
-    (file) => !productMigrationDirs.some((dir) => file.startsWith(`prisma/migrations/${dir}/`))
+    (file) => !file.startsWith('prisma/migrations/20260730')
   );
 
-  assert.deepEqual(touchedExisting, [], `existing migrations must not change: ${touchedExisting.join(', ')}`);
+  assert.deepEqual(touchedExisting, [], `pre-Product-2.2 migrations must not change: ${touchedExisting.join(', ')}`);
+
+  // Every Product 2.2 migration this branch touched must be an *addition*, never a
+  // modification of one that a previous commit already published.
+  const addedOnly = execFileSync(
+    'git',
+    ['diff', '--diff-filter=A', '--name-only', `${baseRef}..HEAD`, '--', 'prisma/migrations'],
+    { encoding: 'utf8' }
+  )
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  assert.deepEqual(
+    [...changedFiles].sort(),
+    [...addedOnly].sort(),
+    'every changed migration file must be newly added, not edited'
+  );
+});
+
+test('the successor migration is a new directory alongside the original four', () => {
+  const reviewFixMigration = '20260730130000_product_2_2_review_fixes';
+  const migrationPath = path.join(MIGRATIONS_DIR, reviewFixMigration, 'migration.sql');
+
+  assert.ok(fs.existsSync(migrationPath), `${reviewFixMigration}/migration.sql must exist`);
+  assert.deepEqual(
+    fs.readdirSync(path.join(MIGRATIONS_DIR, reviewFixMigration)),
+    ['migration.sql'],
+    'the successor migration must contain exactly one canonical migration.sql'
+  );
+
+  const sql = fs.readFileSync(migrationPath, 'utf8');
+
+  assert.match(sql, /BEGIN;/);
+  assert.match(sql, /COMMIT;/);
+  // Additive only: it corrects data and adds structure, it never removes either.
+  assert.doesNotMatch(sql, /DROP\s+TABLE/i);
+  assert.doesNotMatch(sql, /DROP\s+COLUMN/i);
+  assert.doesNotMatch(sql, /CREATE\s+EXTENSION/i);
+
+  // The four corrections it must carry.
+  assert.match(sql, /ALTER TABLE "user_game_library"\s*\n\s*ADD COLUMN "ownership_provenance"/);
+  assert.match(sql, /ALTER TABLE "game_external_identities" ADD COLUMN "verified_at" TIMESTAMP\(3\);/);
+  assert.match(sql, /CREATE TABLE "game_identity_claims"/);
+  assert.match(sql, /editorial_articles_current_revision_id_fkey/);
 });
 
 test('the catalog migration is additive and never drops or retypes legacy identity columns', () => {
