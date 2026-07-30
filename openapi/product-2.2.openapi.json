@@ -50,397 +50,269 @@
       }
     },
     "schemas": {
-      "SuccessEnvelope": {
+      "Article": {
         "type": "object",
         "required": [
-          "success",
-          "data"
+          "slug",
+          "status",
+          "locale",
+          "headline",
+          "excerpt",
+          "sources",
+          "relatedGames",
+          "bodyFormat",
+          "bodyMarkdown"
         ],
         "properties": {
-          "success": {
-            "const": true
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "ErrorEnvelope": {
-        "type": "object",
-        "required": [
-          "success",
-          "error"
-        ],
-        "properties": {
-          "success": {
-            "const": false
-          },
-          "error": {
-            "type": "object",
-            "required": [
-              "code",
-              "message"
-            ],
-            "properties": {
-              "code": {
-                "type": "string"
-              },
-              "message": {
-                "type": "string"
-              },
-              "details": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "field": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "CatalogProvenance": {
-        "type": "string",
-        "description": "AI_INFERRED is never a source of truth and can never become a published fact without a human confirmation.",
-        "enum": [
-          "PROVIDER_VERIFIED",
-          "OFFICIAL_SOURCE",
-          "USER_CONFIRMED",
-          "COMMUNITY_CONFIRMED",
-          "EDITOR_VERIFIED",
-          "AI_INFERRED",
-          "UNKNOWN",
-          "DISPUTED"
-        ]
-      },
-      "CatalogIdentityProvider": {
-        "type": "string",
-        "enum": [
-          "IGDB",
-          "STEAM",
-          "APPLE_APP_STORE",
-          "GOOGLE_PLAY",
-          "OFFICIAL_SITE",
-          "COMMUNITY"
-        ]
-      },
-      "CatalogServiceStatus": {
-        "type": "string",
-        "enum": [
-          "ANNOUNCED",
-          "PRE_REGISTRATION",
-          "LIVE",
-          "MAINTENANCE",
-          "SUNSET_ANNOUNCED",
-          "SHUTDOWN"
-        ]
-      },
-      "CatalogPublicationStatus": {
-        "type": "string",
-        "enum": [
-          "PRIVATE",
-          "PENDING_REVIEW",
-          "PUBLISHED",
-          "REJECTED"
-        ]
-      },
-      "GameExternalIdentity": {
-        "type": "object",
-        "required": [
-          "provider",
-          "externalId",
-          "regionKey",
-          "provenance",
-          "confidence"
-        ],
-        "properties": {
-          "provider": {
-            "$ref": "#/components/schemas/CatalogIdentityProvider"
-          },
-          "externalId": {
-            "type": "string",
-            "maxLength": 200
-          },
-          "regionKey": {
-            "type": "string",
-            "maxLength": 16,
-            "description": "GLOBAL when the provider key is not region scoped. (provider, externalId, regionKey) is unique in the database."
-          },
-          "provenance": {
-            "$ref": "#/components/schemas/CatalogProvenance"
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          }
-        }
-      },
-      "GameLocalization": {
-        "type": "object",
-        "required": [
-          "kind",
-          "languageCode",
-          "title",
-          "provenance"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "ORIGINAL_TITLE",
-              "REGIONAL_TITLE",
-              "ALIAS"
-            ]
-          },
-          "languageCode": {
-            "type": "string",
-            "maxLength": 16
-          },
-          "regionCode": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "maxLength": 8
-          },
-          "title": {
-            "type": "string",
-            "maxLength": 300
-          },
-          "provenance": {
-            "$ref": "#/components/schemas/CatalogProvenance"
-          }
-        }
-      },
-      "RegionalRelease": {
-        "type": "object",
-        "description": "One country/language/platform service edition of a game work, with its own operator, availability window, server region and lifecycle status.",
-        "required": [
-          "id",
-          "countryCode",
-          "languageCode",
-          "platform",
-          "serviceStatus",
-          "provenance"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "countryCode": {
-            "type": "string",
-            "maxLength": 8
-          },
-          "languageCode": {
-            "type": "string",
-            "maxLength": 16
-          },
-          "platform": {
-            "type": "string",
-            "maxLength": 40
-          },
-          "operatorName": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "maxLength": 200
-          },
-          "serverRegion": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "maxLength": 60
-          },
-          "releaseDate": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date"
-          },
-          "shutdownDate": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date"
-          },
-          "serviceStatus": {
-            "$ref": "#/components/schemas/CatalogServiceStatus"
-          },
-          "provenance": {
-            "$ref": "#/components/schemas/CatalogProvenance"
-          }
-        }
-      },
-      "GameAsset": {
-        "type": "object",
-        "required": [
-          "kind",
-          "url",
-          "rightsStatus",
-          "provenance",
-          "usableAsPublicHero"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "COVER",
-              "HERO",
-              "SCREENSHOT",
-              "LOGO"
-            ]
-          },
-          "url": {
+          "slug": {
             "type": "string"
           },
-          "rightsStatus": {
+          "status": {
             "type": "string",
             "enum": [
-              "UNKNOWN",
-              "PROVIDER_LICENSED",
-              "OFFICIAL_PRESS_KIT",
-              "USER_SUBMITTED",
-              "CLEARED",
-              "RESTRICTED"
+              "DRAFT",
+              "FACT_CHECK",
+              "RIGHTS_REVIEW",
+              "SCHEDULED",
+              "PUBLISHED",
+              "CORRECTED",
+              "RETRACTED"
             ]
           },
-          "provenance": {
-            "$ref": "#/components/schemas/CatalogProvenance"
+          "locale": {
+            "type": "string"
           },
-          "attribution": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "usableAsPublicHero": {
-            "type": "boolean",
-            "description": "False for UNKNOWN, USER_SUBMITTED and RESTRICTED rights. An image that is not usable as a public hero must not be rendered as one."
-          }
-        }
-      },
-      "GameFieldEvidence": {
-        "type": "object",
-        "required": [
-          "fieldPath",
-          "provenance",
-          "confidence",
-          "sourceType"
-        ],
-        "properties": {
-          "fieldPath": {
+          "headline": {
             "type": "string",
-            "maxLength": 120
+            "maxLength": 200
           },
-          "provenance": {
-            "$ref": "#/components/schemas/CatalogProvenance"
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "sourceType": {
+          "excerpt": {
             "type": "string",
-            "maxLength": 40
+            "maxLength": 600
           },
-          "sourceUrl": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "observedAt": {
+          "publishedAt": {
             "type": [
               "string",
               "null"
             ],
             "format": "date-time"
-          }
-        }
-      },
-      "CatalogGameSummary": {
-        "type": "object",
-        "required": [
-          "catalogGameId",
-          "originalTitle",
-          "publicationStatus",
-          "titleProvenance",
-          "identities"
-        ],
-        "properties": {
-          "catalogGameId": {
-            "type": "string",
-            "format": "uuid"
           },
-          "originalTitle": {
-            "type": "string",
-            "maxLength": 300
-          },
-          "slug": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "developerName": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "publisherName": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "firstReleaseDate": {
+          "correctedAt": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date"
+            "format": "date-time"
           },
-          "genres": {
+          "retractedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "heroImage": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Null unless the hero asset has a resolved rights status. An image with an unknown or restricted rights status is never offered as a public hero."
+          },
+          "heroImageWithheldReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sources": {
             "type": "array",
+            "description": "Third-party references. Only the headline, a short excerpt, the source URL, timestamps and a content hash are stored; the full original text never is.",
             "items": {
-              "type": "string"
+              "type": "object",
+              "required": [
+                "sourceType",
+                "publisherKey",
+                "headline",
+                "sourceUrl",
+                "fetchedAt",
+                "contentHash",
+                "provenance"
+              ],
+              "properties": {
+                "sourceType": {
+                  "type": "string",
+                  "enum": [
+                    "OFFICIAL_RSS",
+                    "STEAM_NEWS",
+                    "OFFICIAL_SITE",
+                    "EDITOR_MANUAL"
+                  ]
+                },
+                "publisherKey": {
+                  "type": "string"
+                },
+                "headline": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "excerpt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 400
+                },
+                "sourceUrl": {
+                  "type": "string"
+                },
+                "publishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "fetchedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "contentHash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "provenance": {
+                  "$ref": "#/components/schemas/CatalogProvenance"
+                }
+              }
             }
           },
-          "platforms": {
+          "relatedGames": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "object"
             }
           },
-          "publicationStatus": {
-            "$ref": "#/components/schemas/CatalogPublicationStatus"
+          "bodyFormat": {
+            "type": "string",
+            "const": "commonmark-no-html",
+            "description": "Render with a CommonMark renderer that has HTML disabled. Raw HTML, script and data: URLs are rejected at write time, so a body never introduces markup or a remote resource of its own. Images come from the rights-reviewed article assets, not from inline Markdown."
           },
-          "titleProvenance": {
-            "$ref": "#/components/schemas/CatalogProvenance"
+          "bodyMarkdown": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The body of the current revision. Non-null for a PUBLISHED or CORRECTED article; null for a reader when the article is not publicly readable. Third-party source text is never reproduced here."
           },
-          "identities": {
+          "revision": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Metadata of the revision whose body is served.",
+            "required": [
+              "revisionNumber",
+              "status"
+            ],
+            "properties": {
+              "revisionNumber": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "status": {
+                "type": "string"
+              },
+              "changeNote": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Required and non-empty for a CORRECTED revision."
+              },
+              "aiDraft": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        "description": "Deprecated alias retained so an already generated client keeps resolving. Use PublicArticle for GET /api/v1/articles/{slug}, EditorArticle for the editorial endpoints, and ArticleSummary for the Today feed. Its bodyMarkdown and revision are nullable, which the split types replace with the guarantee each caller actually has.",
+        "deprecated": true
+      },
+      "ArticleSummary": {
+        "type": "object",
+        "description": "Card-sized summary used by the Today feed. Carries no bodyMarkdown at all: a Today response can hold several articles, and shipping multiple 40 KB bodies to a mobile client for cards it may never open wastes the reader's data. Fetch GET /api/v1/articles/{slug} for the body.",
+        "required": [
+          "slug",
+          "status",
+          "locale",
+          "headline",
+          "excerpt",
+          "relatedGames",
+          "sourceCount"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PUBLISHED",
+              "CORRECTED"
+            ]
+          },
+          "locale": {
+            "type": "string"
+          },
+          "headline": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "excerpt": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "publishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "correctedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "heroImage": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Null unless the hero asset has a resolved rights status. An image with an unknown or restricted rights status is never offered as a public hero."
+          },
+          "heroImageWithheldReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relatedGames": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/GameExternalIdentity"
+              "type": "object"
             }
           },
-          "matchScore": {
-            "type": "number"
+          "sourceCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of attached sources. The sources themselves are on the full article."
           }
         }
       },
@@ -534,329 +406,122 @@
           }
         ]
       },
-      "SubmissionPreviewRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "inputType",
-          "input",
-          "locale",
-          "regionCode"
-        ],
-        "properties": {
-          "inputType": {
-            "type": "string",
-            "enum": [
-              "TEXT",
-              "URL",
-              "PROVIDER_ID"
-            ]
-          },
-          "input": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2000,
-            "description": "Raw user input. It is used to resolve candidates and then discarded: only its SHA-256 fingerprint and the structured fields the user confirms are ever persisted. The server never fetches a submitted URL."
-          },
-          "locale": {
-            "type": "string",
-            "maxLength": 16
-          },
-          "regionCode": {
-            "type": "string",
-            "minLength": 2,
-            "maxLength": 2
-          },
-          "platformHint": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "maxLength": 40
-          }
-        }
-      },
-      "SubmissionPreviewResponse": {
+      "CatalogGameSummary": {
         "type": "object",
         "required": [
-          "submissionId",
-          "existingCandidates",
-          "newGameDraft",
-          "fieldProvenance",
-          "clarifyingQuestions",
-          "resolution",
-          "personalRegistrationAvailable",
-          "publicReviewStatus"
-        ],
-        "properties": {
-          "submissionId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "expiresAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "existingCandidates": {
-            "type": "array",
-            "maxItems": 3,
-            "description": "At most three existing candidates, each with allowlisted match reason codes and a confidence.",
-            "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/CatalogGameSummary"
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "matchReasonCodes",
-                    "matchConfidence"
-                  ],
-                  "properties": {
-                    "matchReasonCodes": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "provider_identity_exact",
-                          "provider_identity_unverified",
-                          "locale_alias_exact",
-                          "normalized_title_exact",
-                          "compact_title_exact",
-                          "fuzzy_title_similar",
-                          "developer_match",
-                          "platform_match",
-                          "region_match"
-                        ]
-                      },
-                      "description": "provider_identity_exact means a verified provider identity already exists. provider_identity_unverified means only an unverified row exists; parsing a store URL is not verification."
-                    },
-                    "matchConfidence": {
-                      "type": "number",
-                      "minimum": 0,
-                      "maximum": 1
-                    }
-                  }
-                }
-              ]
-            }
-          },
-          "newGameDraft": {
-            "type": "object",
-            "required": [
-              "originalTitle",
-              "requiresTitleConfirmation"
-            ],
-            "properties": {
-              "originalTitle": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "Null when no structured title could be derived. The raw natural-language input is never persisted as a fallback title."
-              },
-              "requiresTitleConfirmation": {
-                "type": "boolean",
-                "description": "When true, confirm must supply confirmedFields.originalTitle or the request is rejected with SUBMISSION_TITLE_REQUIRED."
-              }
-            }
-          },
-          "fieldProvenance": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/GameFieldEvidence"
-            }
-          },
-          "clarifyingQuestions": {
-            "type": "array",
-            "maxItems": 1,
-            "description": "At most one clarifying question.",
-            "items": {
-              "type": "string",
-              "maxLength": 300
-            }
-          },
-          "resolution": {
-            "type": "object",
-            "required": [
-              "stage",
-              "aiUsed",
-              "aiFallbackUsed"
-            ],
-            "properties": {
-              "stage": {
-                "type": "string",
-                "enum": [
-                  "provider_identity_exact",
-                  "title_exact",
-                  "fuzzy_title",
-                  "ai_extraction",
-                  "manual_draft"
-                ]
-              },
-              "aiUsed": {
-                "type": "boolean"
-              },
-              "aiFallbackUsed": {
-                "type": "boolean",
-                "description": "True when AI failed, timed out, was over quota or returned a body that failed Zod validation, and the response degraded to a minimal manual draft."
-              },
-              "degradeReason": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            }
-          },
-          "personalRegistrationAvailable": {
-            "type": "boolean",
-            "description": "Personal registration is immediately available."
-          },
-          "publicReviewStatus": {
-            "const": "PENDING_REVIEW",
-            "description": "Public catalog visibility always requires review. AI never publishes and never merges."
-          }
-        }
-      },
-      "SubmissionConfirmRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "selectedCatalogGameId": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "uuid",
-            "description": "Link one of the previewed candidates instead of creating a new game. Mutually exclusive with confirmedFields."
-          },
-          "confirmedFields": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "requestPublicReview": {
-            "type": "boolean",
-            "default": false,
-            "description": "Requests public listing. The submitter's own confirmation is never treated as review approval, and a submission can never produce a PUBLISHED catalog game: the information behind it is USER_CONFIRMED or AI_INFERRED at best. The parsed provider key is stored as an identity *claim*, never as a globally unique verified identity, so a submission cannot capture another account's future real provider sync."
-          }
-        }
-      },
-      "PlaySessionOutcome": {
-        "type": "string",
-        "enum": [
-          "CONTINUE",
-          "PAUSED",
-          "DROPPED",
-          "COMPLETED"
-        ]
-      },
-      "PlaySession": {
-        "type": "object",
-        "required": [
-          "id",
           "catalogGameId",
-          "playedAt",
-          "outcome",
-          "visibility",
-          "provenance",
-          "clientMutationId"
+          "originalTitle",
+          "publicationStatus",
+          "titleProvenance",
+          "identities"
         ],
         "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
           "catalogGameId": {
             "type": "string",
             "format": "uuid"
           },
-          "regionalReleaseId": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "uuid"
-          },
-          "playedAt": {
+          "originalTitle": {
             "type": "string",
-            "format": "date-time"
+            "maxLength": 300
           },
-          "durationMinutes": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 1,
-            "maximum": 1440
-          },
-          "progressPercent": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "maximum": 100
-          },
-          "mood": {
+          "slug": {
             "type": [
               "string",
               "null"
-            ],
-            "enum": [
-              "RELAXED",
-              "FOCUSED",
-              "EXCITED",
-              "BORED",
-              "FRUSTRATED",
-              "NOSTALGIC",
-              null
             ]
           },
-          "note": {
+          "developerName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "publisherName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "firstReleaseDate": {
             "type": [
               "string",
               "null"
             ],
-            "maxLength": 2000,
-            "description": "Private user content. Never logged and never emitted as a Product Event property."
+            "format": "date"
           },
-          "outcome": {
-            "$ref": "#/components/schemas/PlaySessionOutcome"
+          "genres": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
-          "visibility": {
-            "type": "string",
-            "enum": [
-              "PRIVATE",
-              "FRIENDS",
-              "PUBLIC"
-            ],
-            "default": "PRIVATE"
+          "platforms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
-          "provenance": {
+          "publicationStatus": {
+            "$ref": "#/components/schemas/CatalogPublicationStatus"
+          },
+          "titleProvenance": {
             "$ref": "#/components/schemas/CatalogProvenance"
           },
-          "clientMutationId": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 120,
-            "description": "Idempotency key. (userId, clientMutationId) is unique, so a retried create returns the original record instead of a duplicate."
+          "identities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GameExternalIdentity"
+            }
           },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
+          "matchScore": {
+            "type": "number"
           }
         }
+      },
+      "CatalogIdentityProvider": {
+        "type": "string",
+        "enum": [
+          "IGDB",
+          "STEAM",
+          "APPLE_APP_STORE",
+          "GOOGLE_PLAY",
+          "OFFICIAL_SITE",
+          "COMMUNITY"
+        ]
+      },
+      "CatalogProvenance": {
+        "type": "string",
+        "description": "AI_INFERRED is never a source of truth and can never become a published fact without a human confirmation.",
+        "enum": [
+          "PROVIDER_VERIFIED",
+          "OFFICIAL_SOURCE",
+          "USER_CONFIRMED",
+          "COMMUNITY_CONFIRMED",
+          "EDITOR_VERIFIED",
+          "AI_INFERRED",
+          "UNKNOWN",
+          "DISPUTED"
+        ]
+      },
+      "CatalogPublicationStatus": {
+        "type": "string",
+        "enum": [
+          "PRIVATE",
+          "PENDING_REVIEW",
+          "PUBLISHED",
+          "REJECTED"
+        ]
+      },
+      "CatalogServiceStatus": {
+        "type": "string",
+        "enum": [
+          "ANNOUNCED",
+          "PRE_REGISTRATION",
+          "LIVE",
+          "MAINTENANCE",
+          "SUNSET_ANNOUNCED",
+          "SHUTDOWN"
+        ]
       },
       "CreatePlaySessionRequest": {
         "type": "object",
@@ -928,6 +593,330 @@
             "type": "string",
             "minLength": 8,
             "maxLength": 120
+          }
+        }
+      },
+      "EditorArticle": {
+        "type": "object",
+        "description": "An article as an editor sees it. A DRAFT may have no body yet, so bodyMarkdown and revision are nullable here — unlike PublicArticle. Carries the internal workflow metadata a public reader never receives.",
+        "required": [
+          "id",
+          "slug",
+          "status",
+          "locale",
+          "headline",
+          "excerpt",
+          "bodyFormat",
+          "bodyMarkdown",
+          "revision",
+          "sources",
+          "relatedGames",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "FACT_CHECK",
+              "RIGHTS_REVIEW",
+              "SCHEDULED",
+              "PUBLISHED",
+              "CORRECTED",
+              "RETRACTED"
+            ]
+          },
+          "locale": {
+            "type": "string"
+          },
+          "headline": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "excerpt": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "bodyFormat": {
+            "type": "string",
+            "const": "commonmark-no-html",
+            "description": "Render with a CommonMark renderer that has HTML disabled. Raw HTML, script and data: URLs are rejected at write time, so a body never introduces markup or a remote resource of its own. Images come from the rights-reviewed article assets, not from inline Markdown."
+          },
+          "bodyMarkdown": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Null while a draft has no body. A publish is refused until it is non-empty."
+          },
+          "revision": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Null only before the first revision exists.",
+            "required": [
+              "revisionNumber",
+              "status",
+              "aiDraft",
+              "createdAt"
+            ],
+            "properties": {
+              "revisionNumber": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Pass this back as expectedRevisionNumber on a later edit, publish or retract to get a 409 ARTICLE_CONCURRENT_MODIFICATION instead of overwriting a change another editor committed in the meantime."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "DRAFT",
+                  "FACT_CHECK",
+                  "RIGHTS_REVIEW",
+                  "SCHEDULED",
+                  "PUBLISHED",
+                  "CORRECTED",
+                  "RETRACTED"
+                ]
+              },
+              "changeNote": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "aiDraft": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          "authorUserId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "scheduledFor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "publishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "correctedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "retractedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "aiDraftUsed": {
+            "type": "boolean"
+          },
+          "heroImage": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Null unless the hero asset has a resolved rights status. An image with an unknown or restricted rights status is never offered as a public hero."
+          },
+          "heroImageWithheldReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "description": "Third-party references. Only the headline, a short excerpt, the source URL, timestamps and a content hash are stored; the full original text never is.",
+            "items": {
+              "type": "object",
+              "required": [
+                "sourceType",
+                "publisherKey",
+                "headline",
+                "sourceUrl",
+                "fetchedAt",
+                "contentHash",
+                "provenance"
+              ],
+              "properties": {
+                "sourceType": {
+                  "type": "string",
+                  "enum": [
+                    "OFFICIAL_RSS",
+                    "STEAM_NEWS",
+                    "OFFICIAL_SITE",
+                    "EDITOR_MANUAL"
+                  ]
+                },
+                "publisherKey": {
+                  "type": "string"
+                },
+                "headline": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "excerpt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 400
+                },
+                "sourceUrl": {
+                  "type": "string"
+                },
+                "publishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "fetchedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "contentHash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "provenance": {
+                  "$ref": "#/components/schemas/CatalogProvenance"
+                }
+              }
+            }
+          },
+          "relatedGames": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "success",
+          "error"
+        ],
+        "properties": {
+          "success": {
+            "const": false
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "field": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "GameAsset": {
+        "type": "object",
+        "required": [
+          "kind",
+          "url",
+          "rightsStatus",
+          "provenance",
+          "usableAsPublicHero"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "COVER",
+              "HERO",
+              "SCREENSHOT",
+              "LOGO"
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "rightsStatus": {
+            "type": "string",
+            "enum": [
+              "UNKNOWN",
+              "PROVIDER_LICENSED",
+              "OFFICIAL_PRESS_KIT",
+              "USER_SUBMITTED",
+              "CLEARED",
+              "RESTRICTED"
+            ]
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/CatalogProvenance"
+          },
+          "attribution": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usableAsPublicHero": {
+            "type": "boolean",
+            "description": "False for UNKNOWN, USER_SUBMITTED and RESTRICTED rights. An image that is not usable as a public hero must not be rendered as one."
           }
         }
       },
@@ -1011,6 +1000,301 @@
                 "type": "boolean"
               }
             }
+          }
+        }
+      },
+      "GameExternalIdentity": {
+        "type": "object",
+        "required": [
+          "provider",
+          "externalId",
+          "regionKey",
+          "provenance",
+          "confidence"
+        ],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/CatalogIdentityProvider"
+          },
+          "externalId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "regionKey": {
+            "type": "string",
+            "maxLength": 16,
+            "description": "GLOBAL when the provider key is not region scoped. (provider, externalId, regionKey) is unique in the database."
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/CatalogProvenance"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      },
+      "GameFieldEvidence": {
+        "type": "object",
+        "required": [
+          "fieldPath",
+          "provenance",
+          "confidence",
+          "sourceType"
+        ],
+        "properties": {
+          "fieldPath": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/CatalogProvenance"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "sourceType": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "sourceUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "GameLocalization": {
+        "type": "object",
+        "required": [
+          "kind",
+          "languageCode",
+          "title",
+          "provenance"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ORIGINAL_TITLE",
+              "REGIONAL_TITLE",
+              "ALIAS"
+            ]
+          },
+          "languageCode": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "regionCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 8
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/CatalogProvenance"
+          }
+        }
+      },
+      "MonthlyReplay": {
+        "type": "object",
+        "required": [
+          "monthKey",
+          "timezone",
+          "window",
+          "generatedAt",
+          "isEmpty",
+          "playedDates",
+          "totals",
+          "startedGames",
+          "completedGames",
+          "droppedGames",
+          "genreDistribution",
+          "moodDistribution",
+          "provenance",
+          "missingData"
+        ],
+        "properties": {
+          "monthKey": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}$"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "window": {
+            "type": "object",
+            "description": "Half-open UTC window covering the local month. Boundaries are resolved through the timezone, so a DST transition inside the month cannot drop or duplicate an hour.",
+            "required": [
+              "startUtc",
+              "endUtc",
+              "localDayCount"
+            ],
+            "properties": {
+              "startUtc": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "endUtc": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "localDayCount": {
+                "type": "integer",
+                "minimum": 28,
+                "maximum": 31
+              }
+            }
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "isEmpty": {
+            "type": "boolean"
+          },
+          "emptyReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "playedDates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          "totals": {
+            "type": "object"
+          },
+          "startedGames": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "completedGames": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "droppedGames": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "mostPlayedGame": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "surpriseGame": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "genreDistribution": {
+            "type": "object"
+          },
+          "moodDistribution": {
+            "type": "object"
+          },
+          "perGame": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "provenance": {
+            "type": "object"
+          },
+          "missingData": {
+            "type": "array",
+            "description": "Structured explanation of anything the response could not account for.",
+            "items": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "affectedSessionCount": {
+                  "type": "integer"
+                },
+                "affectedGameCount": {
+                  "type": "integer"
+                },
+                "effect": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "PlayCompassEventRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "catalogGameId",
+          "action"
+        ],
+        "properties": {
+          "catalogGameId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "SELECTED",
+              "EXCLUDED",
+              "SNOOZED",
+              "PLAY_CONFIRMED"
+            ],
+            "description": "Only these allowlisted actions can be recorded."
+          },
+          "reasonCodes": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string"
+            }
+          },
+          "requestHash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -1223,478 +1507,115 @@
           }
         }
       },
-      "PlayCompassEventRequest": {
+      "PlaySession": {
         "type": "object",
-        "additionalProperties": false,
         "required": [
+          "id",
           "catalogGameId",
-          "action"
+          "playedAt",
+          "outcome",
+          "visibility",
+          "provenance",
+          "clientMutationId"
         ],
         "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
           "catalogGameId": {
             "type": "string",
             "format": "uuid"
           },
-          "action": {
+          "regionalReleaseId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "playedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "durationMinutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1440
+          },
+          "progressPercent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 100
+          },
+          "mood": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "RELAXED",
+              "FOCUSED",
+              "EXCITED",
+              "BORED",
+              "FRUSTRATED",
+              "NOSTALGIC",
+              null
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "Private user content. Never logged and never emitted as a Product Event property."
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/PlaySessionOutcome"
+          },
+          "visibility": {
             "type": "string",
             "enum": [
-              "SELECTED",
-              "EXCLUDED",
-              "SNOOZED",
-              "PLAY_CONFIRMED"
+              "PRIVATE",
+              "FRIENDS",
+              "PUBLIC"
             ],
-            "description": "Only these allowlisted actions can be recorded."
-          },
-          "reasonCodes": {
-            "type": "array",
-            "maxItems": 12,
-            "items": {
-              "type": "string"
-            }
-          },
-          "requestHash": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "occurredAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "MonthlyReplay": {
-        "type": "object",
-        "required": [
-          "monthKey",
-          "timezone",
-          "window",
-          "generatedAt",
-          "isEmpty",
-          "playedDates",
-          "totals",
-          "startedGames",
-          "completedGames",
-          "droppedGames",
-          "genreDistribution",
-          "moodDistribution",
-          "provenance",
-          "missingData"
-        ],
-        "properties": {
-          "monthKey": {
-            "type": "string",
-            "pattern": "^\\d{4}-\\d{2}$"
-          },
-          "timezone": {
-            "type": "string"
-          },
-          "window": {
-            "type": "object",
-            "description": "Half-open UTC window covering the local month. Boundaries are resolved through the timezone, so a DST transition inside the month cannot drop or duplicate an hour.",
-            "required": [
-              "startUtc",
-              "endUtc",
-              "localDayCount"
-            ],
-            "properties": {
-              "startUtc": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "endUtc": {
-                "type": "string",
-                "format": "date-time"
-              },
-              "localDayCount": {
-                "type": "integer",
-                "minimum": 28,
-                "maximum": 31
-              }
-            }
-          },
-          "generatedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "isEmpty": {
-            "type": "boolean"
-          },
-          "emptyReason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "playedDates": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "format": "date"
-            }
-          },
-          "totals": {
-            "type": "object"
-          },
-          "startedGames": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
-          },
-          "completedGames": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
-          },
-          "droppedGames": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
-          },
-          "mostPlayedGame": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "surpriseGame": {
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "genreDistribution": {
-            "type": "object"
-          },
-          "moodDistribution": {
-            "type": "object"
-          },
-          "perGame": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
+            "default": "PRIVATE"
           },
           "provenance": {
-            "type": "object"
+            "$ref": "#/components/schemas/CatalogProvenance"
           },
-          "missingData": {
-            "type": "array",
-            "description": "Structured explanation of anything the response could not account for.",
-            "items": {
-              "type": "object",
-              "required": [
-                "code"
-              ],
-              "properties": {
-                "code": {
-                  "type": "string"
-                },
-                "affectedSessionCount": {
-                  "type": "integer"
-                },
-                "affectedGameCount": {
-                  "type": "integer"
-                },
-                "effect": {
-                  "type": "string"
-                }
-              }
-            }
+          "clientMutationId": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 120,
+            "description": "Idempotency key. (userId, clientMutationId) is unique, so a retried create returns the original record instead of a duplicate."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
-      "TodayFeed": {
-        "type": "object",
-        "required": [
-          "generatedAt",
-          "sections",
-          "meta"
-        ],
-        "properties": {
-          "generatedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "timezone": {
-            "type": "string"
-          },
-          "locale": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "sections": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": [
-                "key",
-                "status"
-              ],
-              "properties": {
-                "key": {
-                  "type": "string",
-                  "enum": [
-                    "playCompass",
-                    "gameDNA",
-                    "gameBriefing",
-                    "backlogRescue",
-                    "spoilerFreeStartGuide",
-                    "editorialCuration",
-                    "monthlyReplay",
-                    "friendActivity"
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "ok",
-                    "disabled",
-                    "unavailable"
-                  ],
-                  "description": "A failing section is reported as unavailable while every other section still renders."
-                },
-                "reasonCode": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "data": {
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                }
-              }
-            }
-          },
-          "meta": {
-            "type": "object",
-            "required": [
-              "sectionOrder",
-              "nextCursor",
-              "partialFailure"
-            ],
-            "properties": {
-              "sectionOrder": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "limit": {
-                "type": "integer"
-              },
-              "nextCursor": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "partialFailure": {
-                "type": "boolean"
-              }
-            }
-          }
-        }
-      },
-      "Article": {
-        "type": "object",
-        "required": [
-          "slug",
-          "status",
-          "locale",
-          "headline",
-          "excerpt",
-          "sources",
-          "relatedGames",
-          "bodyFormat",
-          "bodyMarkdown"
-        ],
-        "properties": {
-          "slug": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "DRAFT",
-              "FACT_CHECK",
-              "RIGHTS_REVIEW",
-              "SCHEDULED",
-              "PUBLISHED",
-              "CORRECTED",
-              "RETRACTED"
-            ]
-          },
-          "locale": {
-            "type": "string"
-          },
-          "headline": {
-            "type": "string",
-            "maxLength": 200
-          },
-          "excerpt": {
-            "type": "string",
-            "maxLength": 600
-          },
-          "publishedAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "correctedAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "retractedAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "heroImage": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Null unless the hero asset has a resolved rights status. An image with an unknown or restricted rights status is never offered as a public hero."
-          },
-          "heroImageWithheldReason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "sources": {
-            "type": "array",
-            "description": "Third-party references. Only the headline, a short excerpt, the source URL, timestamps and a content hash are stored; the full original text never is.",
-            "items": {
-              "type": "object",
-              "required": [
-                "sourceType",
-                "publisherKey",
-                "headline",
-                "sourceUrl",
-                "fetchedAt",
-                "contentHash",
-                "provenance"
-              ],
-              "properties": {
-                "sourceType": {
-                  "type": "string",
-                  "enum": [
-                    "OFFICIAL_RSS",
-                    "STEAM_NEWS",
-                    "OFFICIAL_SITE",
-                    "EDITOR_MANUAL"
-                  ]
-                },
-                "publisherKey": {
-                  "type": "string"
-                },
-                "headline": {
-                  "type": "string",
-                  "maxLength": 300
-                },
-                "excerpt": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "maxLength": 400
-                },
-                "sourceUrl": {
-                  "type": "string"
-                },
-                "publishedAt": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "format": "date-time"
-                },
-                "fetchedAt": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "contentHash": {
-                  "type": "string",
-                  "pattern": "^[0-9a-f]{64}$"
-                },
-                "provenance": {
-                  "$ref": "#/components/schemas/CatalogProvenance"
-                }
-              }
-            }
-          },
-          "relatedGames": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
-          },
-          "bodyFormat": {
-            "type": "string",
-            "const": "commonmark-no-html",
-            "description": "Render with a CommonMark renderer that has HTML disabled. Raw HTML, script and data: URLs are rejected at write time, so a body never introduces markup or a remote resource of its own. Images come from the rights-reviewed article assets, not from inline Markdown."
-          },
-          "bodyMarkdown": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The body of the current revision. Non-null for a PUBLISHED or CORRECTED article; null for a reader when the article is not publicly readable. Third-party source text is never reproduced here."
-          },
-          "revision": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Metadata of the revision whose body is served.",
-            "required": [
-              "revisionNumber",
-              "status"
-            ],
-            "properties": {
-              "revisionNumber": {
-                "type": "integer",
-                "minimum": 1
-              },
-              "status": {
-                "type": "string"
-              },
-              "changeNote": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "Required and non-empty for a CORRECTED revision."
-              },
-              "aiDraft": {
-                "type": "boolean"
-              },
-              "createdAt": {
-                "type": "string",
-                "format": "date-time"
-              }
-            }
-          }
-        }
+      "PlaySessionOutcome": {
+        "type": "string",
+        "enum": [
+          "CONTINUE",
+          "PAUSED",
+          "DROPPED",
+          "COMPLETED"
+        ]
       },
       "ProductConfig": {
         "type": "object",
@@ -1833,6 +1754,574 @@
             }
           }
         }
+      },
+      "PublicArticle": {
+        "type": "object",
+        "description": "A publicly readable article. Only reachable for PUBLISHED and CORRECTED; any other status is a 404 rather than a partially filled object. Every required field below is non-null: the server refuses to publish an article with no body and refuses to record a correction with no change note, so this contract is enforced rather than merely documented. Internal workflow fields (id, authorUserId, scheduledFor, retractedAt, aiDraftUsed) are deliberately absent.",
+        "required": [
+          "slug",
+          "status",
+          "locale",
+          "headline",
+          "excerpt",
+          "bodyFormat",
+          "bodyMarkdown",
+          "revision",
+          "sources",
+          "relatedGames"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PUBLISHED",
+              "CORRECTED"
+            ]
+          },
+          "locale": {
+            "type": "string"
+          },
+          "headline": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "excerpt": {
+            "type": "string",
+            "maxLength": 600
+          },
+          "bodyFormat": {
+            "type": "string",
+            "const": "commonmark-no-html",
+            "description": "Render with a CommonMark renderer that has HTML disabled. Raw HTML, script and data: URLs are rejected at write time, so a body never introduces markup or a remote resource of its own. Images come from the rights-reviewed article assets, not from inline Markdown."
+          },
+          "bodyMarkdown": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The body of the current revision, always present and never empty. Validated against a real CommonMark AST at write time and again at publish time: image nodes, raw HTML and any non-https link destination are rejected, so an editorial body cannot introduce a remote resource that would report a reader's IP address. Third-party source text is never reproduced here."
+          },
+          "publishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "correctedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revision": {
+            "type": "object",
+            "description": "Metadata of the revision whose body is served.",
+            "required": [
+              "revisionNumber",
+              "status",
+              "createdAt"
+            ],
+            "properties": {
+              "revisionNumber": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "PUBLISHED",
+                  "CORRECTED"
+                ]
+              },
+              "changeNote": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "description": "Non-null and non-empty whenever status is CORRECTED. The server refuses to create a CORRECTED revision without one, and refuses to serve a CORRECTED article that lacks one, so a client never has to render an unexplained change."
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          "heroImage": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Null unless the hero asset has a resolved rights status. An image with an unknown or restricted rights status is never offered as a public hero."
+          },
+          "heroImageWithheldReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "description": "Third-party references. Only the headline, a short excerpt, the source URL, timestamps and a content hash are stored; the full original text never is.",
+            "items": {
+              "type": "object",
+              "required": [
+                "sourceType",
+                "publisherKey",
+                "headline",
+                "sourceUrl",
+                "fetchedAt",
+                "contentHash",
+                "provenance"
+              ],
+              "properties": {
+                "sourceType": {
+                  "type": "string",
+                  "enum": [
+                    "OFFICIAL_RSS",
+                    "STEAM_NEWS",
+                    "OFFICIAL_SITE",
+                    "EDITOR_MANUAL"
+                  ]
+                },
+                "publisherKey": {
+                  "type": "string"
+                },
+                "headline": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "excerpt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 400
+                },
+                "sourceUrl": {
+                  "type": "string"
+                },
+                "publishedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "fetchedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "contentHash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "provenance": {
+                  "$ref": "#/components/schemas/CatalogProvenance"
+                }
+              }
+            }
+          },
+          "relatedGames": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "RegionalRelease": {
+        "type": "object",
+        "description": "One country/language/platform service edition of a game work, with its own operator, availability window, server region and lifecycle status.",
+        "required": [
+          "id",
+          "countryCode",
+          "languageCode",
+          "platform",
+          "serviceStatus",
+          "provenance"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "countryCode": {
+            "type": "string",
+            "maxLength": 8
+          },
+          "languageCode": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "platform": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "operatorName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "serverRegion": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 60
+          },
+          "releaseDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "shutdownDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "serviceStatus": {
+            "$ref": "#/components/schemas/CatalogServiceStatus"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/CatalogProvenance"
+          }
+        }
+      },
+      "SubmissionConfirmRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "selectedCatalogGameId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Link one of the previewed candidates instead of creating a new game. Mutually exclusive with confirmedFields."
+          },
+          "confirmedFields": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "requestPublicReview": {
+            "type": "boolean",
+            "default": false,
+            "description": "Requests public listing. The submitter's own confirmation is never treated as review approval, and a submission can never produce a PUBLISHED catalog game: the information behind it is USER_CONFIRMED or AI_INFERRED at best. The parsed provider key is stored as an identity *claim*, never as a globally unique verified identity, so a submission cannot capture another account's future real provider sync."
+          }
+        }
+      },
+      "SubmissionPreviewRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "inputType",
+          "input",
+          "locale",
+          "regionCode"
+        ],
+        "properties": {
+          "inputType": {
+            "type": "string",
+            "enum": [
+              "TEXT",
+              "URL",
+              "PROVIDER_ID"
+            ]
+          },
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Raw user input. It is used to resolve candidates and then discarded: only its SHA-256 fingerprint and the structured fields the user confirms are ever persisted. The server never fetches a submitted URL."
+          },
+          "locale": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "regionCode": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "platformHint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40
+          }
+        }
+      },
+      "SubmissionPreviewResponse": {
+        "type": "object",
+        "required": [
+          "submissionId",
+          "existingCandidates",
+          "newGameDraft",
+          "fieldProvenance",
+          "clarifyingQuestions",
+          "resolution",
+          "personalRegistrationAvailable",
+          "publicReviewStatus"
+        ],
+        "properties": {
+          "submissionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "existingCandidates": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "At most three existing candidates, each with allowlisted match reason codes and a confidence.",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogGameSummary"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "matchReasonCodes",
+                    "matchConfidence"
+                  ],
+                  "properties": {
+                    "matchReasonCodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "provider_identity_exact",
+                          "provider_identity_unverified",
+                          "locale_alias_exact",
+                          "normalized_title_exact",
+                          "compact_title_exact",
+                          "fuzzy_title_similar",
+                          "developer_match",
+                          "platform_match",
+                          "region_match"
+                        ]
+                      },
+                      "description": "provider_identity_exact means a verified provider identity already exists. provider_identity_unverified means only an unverified row exists; parsing a store URL is not verification."
+                    },
+                    "matchConfidence": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "newGameDraft": {
+            "type": "object",
+            "required": [
+              "originalTitle",
+              "requiresTitleConfirmation"
+            ],
+            "properties": {
+              "originalTitle": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Null when no structured title could be derived. The raw natural-language input is never persisted as a fallback title."
+              },
+              "requiresTitleConfirmation": {
+                "type": "boolean",
+                "description": "When true, confirm must supply confirmedFields.originalTitle or the request is rejected with SUBMISSION_TITLE_REQUIRED."
+              }
+            }
+          },
+          "fieldProvenance": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GameFieldEvidence"
+            }
+          },
+          "clarifyingQuestions": {
+            "type": "array",
+            "maxItems": 1,
+            "description": "At most one clarifying question.",
+            "items": {
+              "type": "string",
+              "maxLength": 300
+            }
+          },
+          "resolution": {
+            "type": "object",
+            "required": [
+              "stage",
+              "aiUsed",
+              "aiFallbackUsed"
+            ],
+            "properties": {
+              "stage": {
+                "type": "string",
+                "enum": [
+                  "provider_identity_exact",
+                  "title_exact",
+                  "fuzzy_title",
+                  "ai_extraction",
+                  "manual_draft"
+                ]
+              },
+              "aiUsed": {
+                "type": "boolean"
+              },
+              "aiFallbackUsed": {
+                "type": "boolean",
+                "description": "True when AI failed, timed out, was over quota or returned a body that failed Zod validation, and the response degraded to a minimal manual draft."
+              },
+              "degradeReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "personalRegistrationAvailable": {
+            "type": "boolean",
+            "description": "Personal registration is immediately available."
+          },
+          "publicReviewStatus": {
+            "const": "PENDING_REVIEW",
+            "description": "Public catalog visibility always requires review. AI never publishes and never merges."
+          }
+        }
+      },
+      "SuccessEnvelope": {
+        "type": "object",
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "TodayFeed": {
+        "type": "object",
+        "required": [
+          "generatedAt",
+          "sections",
+          "meta"
+        ],
+        "properties": {
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "locale": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "status"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "enum": [
+                    "playCompass",
+                    "gameDNA",
+                    "gameBriefing",
+                    "backlogRescue",
+                    "spoilerFreeStartGuide",
+                    "editorialCuration",
+                    "monthlyReplay",
+                    "friendActivity"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "disabled",
+                    "unavailable"
+                  ],
+                  "description": "A failing section is reported as unavailable while every other section still renders."
+                },
+                "reasonCode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "data": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "meta": {
+            "type": "object",
+            "required": [
+              "sectionOrder",
+              "nextCursor",
+              "partialFailure"
+            ],
+            "properties": {
+              "sectionOrder": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "limit": {
+                "type": "integer"
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "partialFailure": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
       }
     },
     "responses": {
@@ -1867,7 +2356,7 @@
         }
       },
       "ValidationError": {
-        "description": "Request validation failed.",
+        "description": "Request validation failed. ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED is returned when a submitted bodyMarkdown contains an image node, raw HTML or a non-https link destination; its details carry reason codes only, never the offending destination.",
         "content": {
           "application/json": {
             "schema": {
@@ -1877,7 +2366,7 @@
         }
       },
       "Conflict": {
-        "description": "The request conflicts with the current state.",
+        "description": "The request conflicts with the current state. Editorial codes: ARTICLE_CONCURRENT_MODIFICATION (expectedRevisionNumber no longer matches), ARTICLE_CORRECTION_REQUIRED (published content cannot change without status CORRECTED), ARTICLE_CORRECTION_NOTE_REQUIRED (a correction needs a non-empty changeNote), ARTICLE_CORRECTION_EMPTY (a correction must change something a reader can see), ARTICLE_BODY_REQUIRED_FOR_PUBLICATION (a public article needs a non-empty body), ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED (the body carries an image, raw HTML or a non-https link), ARTICLE_HERO_RIGHTS_UNRESOLVED, ARTICLE_TRANSITION_NOT_ALLOWED, ARTICLE_RETRACTED, ARTICLE_SLUG_TAKEN. Catalog codes: IDENTITY_UNVERIFIED_OCCUPANT (the provider key is held by an unverified identity and needs editor review).",
         "content": {
           "application/json": {
             "schema": {
@@ -3147,7 +3636,7 @@
         ],
         "operationId": "getArticle",
         "summary": "Read a published article",
-        "description": "Only PUBLISHED and CORRECTED articles are readable. A hero image whose rights status is unresolved is withheld with a reason instead of being served.",
+        "description": "Only PUBLISHED and CORRECTED articles are readable; every other status is 404. The response is a PublicArticle, whose bodyMarkdown, revision and (for a CORRECTED article) revision.changeNote are all non-null. A hero image whose rights status is unresolved is withheld with a reason instead of being served.",
         "parameters": [
           {
             "name": "slug",
@@ -3178,7 +3667,7 @@
                           ],
                           "properties": {
                             "article": {
-                              "$ref": "#/components/schemas/Article"
+                              "$ref": "#/components/schemas/PublicArticle"
                             }
                           }
                         }
@@ -3246,7 +3735,30 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "articles"
+                          ],
+                          "properties": {
+                            "articles": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/EditorArticle"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3288,7 +3800,27 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "article"
+                          ],
+                          "properties": {
+                            "article": {
+                              "$ref": "#/components/schemas/EditorArticle"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3318,7 +3850,7 @@
         ],
         "operationId": "updateEditorialArticle",
         "summary": "Update an article and advance its workflow state",
-        "description": "Update an article and advance its workflow state. Omitting bodyMarkdown keeps the existing body; an explicit null clears it. Transitions follow DRAFT -> FACT_CHECK -> RIGHTS_REVIEW -> SCHEDULED. PUBLISHED and RETRACTED are only reachable through their dedicated endpoints, which re-check the actor's role in the database. Changing content that is already public requires status CORRECTED with a non-empty changeNote, and sets correctedAt.",
+        "description": "Runs as one transaction that opens with a row lock on the article, then re-reads the status, the current revision and the asset rights, then re-checks the actor's role in the database. Changing the content of a PUBLISHED or CORRECTED article requires status CORRECTED with a non-empty changeNote, and a CORRECTED transition must change something a reader can see.",
         "parameters": [
           {
             "name": "slug",
@@ -3334,18 +3866,72 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "type": "object",
+                "properties": {
+                  "expectedRevisionNumber": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional optimistic concurrency check. Supply the revision.revisionNumber the request was based on; if the article has moved on the request is refused with 409 ARTICLE_CONCURRENT_MODIFICATION instead of overwriting another editor's committed change. Omit it to accept whatever the current state is — the server still holds a row lock for the whole mutation, so the decision is never made on a stale read."
+                  },
+                  "bodyMarkdown": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 40000,
+                    "description": "Omitted means unchanged: the previous body is carried forward. An explicit null clears it. Bounded at 40000 Unicode code points, which is what the column stores. Validated against a CommonMark AST: an image node in any syntax, raw HTML, and any non-https link destination are rejected with ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED. The rejection carries reason codes only and never echoes the destination."
+                  },
+                  "changeNote": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 300,
+                    "description": "Required and non-empty when status is CORRECTED."
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "DRAFT",
+                      "FACT_CHECK",
+                      "RIGHTS_REVIEW",
+                      "SCHEDULED",
+                      "CORRECTED"
+                    ],
+                    "description": "PUBLISHED and RETRACTED are reached through their own endpoints."
+                  }
+                }
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Updated article.",
+            "description": "Updated.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "article"
+                          ],
+                          "properties": {
+                            "article": {
+                              "$ref": "#/components/schemas/EditorArticle"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3385,7 +3971,7 @@
         ],
         "operationId": "publishEditorialArticle",
         "summary": "Publish a scheduled article",
-        "description": "Re-reads the actor's EDITOR/ADMIN role from user_role_assignments, and refuses when a hero image has an unresolved rights status.",
+        "description": "Runs as one transaction that opens with a row lock on the article, so the role, the transition, the body and the hero-image rights are all decided on a state no concurrent writer can change underneath it. Refuses when the actor no longer holds EDITOR or ADMIN, when the current revision has no body (ARTICLE_BODY_REQUIRED_FOR_PUBLICATION), when that body fails Markdown validation (ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED — re-checked here so a body stored before a rule tightened cannot slip out later), and when a hero image still has an unresolved rights status (ARTICLE_HERO_RIGHTS_UNRESOLVED).",
         "parameters": [
           {
             "name": "slug",
@@ -3402,7 +3988,27 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "article"
+                          ],
+                          "properties": {
+                            "article": {
+                              "$ref": "#/components/schemas/EditorArticle"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3424,6 +4030,24 @@
           },
           "503": {
             "$ref": "#/components/responses/FeatureDisabled"
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "description": "Optional. A bodyless POST is still accepted.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expectedRevisionNumber": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional optimistic concurrency check. Supply the revision.revisionNumber the request was based on; if the article has moved on the request is refused with 409 ARTICLE_CONCURRENT_MODIFICATION instead of overwriting another editor's committed change. Omit it to accept whatever the current state is — the server still holds a row lock for the whole mutation, so the decision is never made on a stale read."
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -3465,6 +4089,11 @@
                       "source_retracted",
                       "editorial_decision"
                     ]
+                  },
+                  "expectedRevisionNumber": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional optimistic concurrency check. Supply the revision.revisionNumber the request was based on; if the article has moved on the request is refused with 409 ARTICLE_CONCURRENT_MODIFICATION instead of overwriting another editor's committed change. Omit it to accept whatever the current state is — the server still holds a row lock for the whole mutation, so the decision is never made on a stale read."
                   }
                 }
               }
@@ -3477,7 +4106,27 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessEnvelope"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "required": [
+                            "article"
+                          ],
+                          "properties": {
+                            "article": {
+                              "$ref": "#/components/schemas/EditorArticle"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }

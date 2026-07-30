@@ -2,6 +2,13 @@
 --
 -- Every check RAISEs on failure, so psql with ON_ERROR_STOP=1 makes the gate fail
 -- closed. Nothing here is a "warning": a violated invariant aborts the run.
+--
+-- Since the round-2 migration, game_external_identities is verified-only and every
+-- legacy row lives in game_identity_claims instead. The merge assertions therefore
+-- resolve a provider key from whichever table records it: the invariant being
+-- checked is "this key resolves to this canonical game", and that must hold no
+-- matter which side of the trust boundary the key sits on. Where the key must be
+-- verified, that is asserted separately and explicitly.
 
 \set ON_ERROR_STOP on
 
@@ -17,13 +24,21 @@ DECLARE
 BEGIN
   -- 1. A CONFIRMED mapping must collapse the Steam and IGDB identities onto one
   --    canonical game.
-  SELECT catalog_game_id INTO steam_canonical
-  FROM game_external_identities WHERE provider = 'STEAM' AND external_id = '367520' AND region_key = 'GLOBAL';
-  SELECT catalog_game_id INTO igdb_canonical
-  FROM game_external_identities WHERE provider = 'IGDB' AND external_id = '1942' AND region_key = 'GLOBAL';
+  SELECT COALESCE(
+    (SELECT catalog_game_id FROM game_external_identities
+     WHERE provider = 'STEAM' AND external_id = '367520' AND region_key = 'GLOBAL'),
+    (SELECT catalog_game_id FROM game_identity_claims
+     WHERE provider = 'STEAM' AND external_id = '367520' AND region_key = 'GLOBAL' LIMIT 1)
+  ) INTO steam_canonical;
+  SELECT COALESCE(
+    (SELECT catalog_game_id FROM game_external_identities
+     WHERE provider = 'IGDB' AND external_id = '1942' AND region_key = 'GLOBAL'),
+    (SELECT catalog_game_id FROM game_identity_claims
+     WHERE provider = 'IGDB' AND external_id = '1942' AND region_key = 'GLOBAL' LIMIT 1)
+  ) INTO igdb_canonical;
 
   IF steam_canonical IS NULL OR igdb_canonical IS NULL THEN
-    RAISE EXCEPTION 'backfill: the confirmed-mapping identities were not created';
+    RAISE EXCEPTION 'backfill: the confirmed-mapping provider keys were not recorded in either table';
   END IF;
 
   IF steam_canonical <> igdb_canonical THEN
@@ -31,20 +46,44 @@ BEGIN
   END IF;
 
   -- 2. A REJECTED mapping between two identically titled games must NOT merge.
-  SELECT catalog_game_id INTO portal_steam_canonical
-  FROM game_external_identities WHERE provider = 'STEAM' AND external_id = '400' AND region_key = 'GLOBAL';
-  SELECT catalog_game_id INTO portal_igdb_canonical
-  FROM game_external_identities WHERE provider = 'IGDB' AND external_id = '5000' AND region_key = 'GLOBAL';
+  SELECT COALESCE(
+    (SELECT catalog_game_id FROM game_external_identities
+     WHERE provider = 'STEAM' AND external_id = '400' AND region_key = 'GLOBAL'),
+    (SELECT catalog_game_id FROM game_identity_claims
+     WHERE provider = 'STEAM' AND external_id = '400' AND region_key = 'GLOBAL' LIMIT 1)
+  ) INTO portal_steam_canonical;
+  SELECT COALESCE(
+    (SELECT catalog_game_id FROM game_external_identities
+     WHERE provider = 'IGDB' AND external_id = '5000' AND region_key = 'GLOBAL'),
+    (SELECT catalog_game_id FROM game_identity_claims
+     WHERE provider = 'IGDB' AND external_id = '5000' AND region_key = 'GLOBAL' LIMIT 1)
+  ) INTO portal_igdb_canonical;
+
+  IF portal_steam_canonical IS NULL OR portal_igdb_canonical IS NULL THEN
+    RAISE EXCEPTION 'backfill: the rejected-mapping provider keys were not recorded in either table';
+  END IF;
 
   IF portal_steam_canonical = portal_igdb_canonical THEN
     RAISE EXCEPTION 'backfill: a REJECTED mapping produced a duplicate false-positive merge';
   END IF;
 
   -- 3. A CANDIDATE mapping must NOT merge either.
-  SELECT catalog_game_id INTO candidate_steam_canonical
-  FROM game_external_identities WHERE provider = 'STEAM' AND external_id = '620' AND region_key = 'GLOBAL';
-  SELECT catalog_game_id INTO candidate_igdb_canonical
-  FROM game_external_identities WHERE provider = 'IGDB' AND external_id = '7777' AND region_key = 'GLOBAL';
+  SELECT COALESCE(
+    (SELECT catalog_game_id FROM game_external_identities
+     WHERE provider = 'STEAM' AND external_id = '620' AND region_key = 'GLOBAL'),
+    (SELECT catalog_game_id FROM game_identity_claims
+     WHERE provider = 'STEAM' AND external_id = '620' AND region_key = 'GLOBAL' LIMIT 1)
+  ) INTO candidate_steam_canonical;
+  SELECT COALESCE(
+    (SELECT catalog_game_id FROM game_external_identities
+     WHERE provider = 'IGDB' AND external_id = '7777' AND region_key = 'GLOBAL'),
+    (SELECT catalog_game_id FROM game_identity_claims
+     WHERE provider = 'IGDB' AND external_id = '7777' AND region_key = 'GLOBAL' LIMIT 1)
+  ) INTO candidate_igdb_canonical;
+
+  IF candidate_steam_canonical IS NULL OR candidate_igdb_canonical IS NULL THEN
+    RAISE EXCEPTION 'backfill: the candidate-mapping provider keys were not recorded in either table';
+  END IF;
 
   IF candidate_steam_canonical = candidate_igdb_canonical THEN
     RAISE EXCEPTION 'backfill: a CANDIDATE mapping was merged automatically';
@@ -139,22 +178,41 @@ BEGIN
     RAISE EXCEPTION 'backfill: the provider-key unique index is missing';
   END IF;
 
-  -- 11. Every canonical game id must be a UUID (enforced by the column type) and
-  --     every backfilled game must carry at least one identity.
+  -- 11. Every backfilled game must still be reachable by a provider key. After the
+  --     round-2 migration that key may be a claim rather than a verified identity —
+  --     which is the honest record for a legacy row — but it must not have vanished.
   SELECT COUNT(*) INTO offending FROM catalog_games g
   WHERE g.merged_into_catalog_game_id IS NULL
-    AND NOT EXISTS (SELECT 1 FROM game_external_identities i WHERE i.catalog_game_id = g.id);
+    AND NOT EXISTS (SELECT 1 FROM game_external_identities i WHERE i.catalog_game_id = g.id)
+    AND NOT EXISTS (SELECT 1 FROM game_identity_claims c WHERE c.catalog_game_id = g.id);
   IF offending <> 0 THEN
-    RAISE EXCEPTION 'backfill: % canonical games have no provider identity', offending;
+    RAISE EXCEPTION 'backfill: % canonical games have neither a verified identity nor a claim', offending;
   END IF;
 
-  -- 12. Review-fix corrections. No identity may claim PROVIDER_VERIFIED without a
-  --     verifiedAt: the first backfill wrote that provenance for every legacy row
-  --     even though nothing had been verified against a provider.
+  -- 12. The global identity table is verified-only. The round-1 fix demoted the
+  --     overstated legacy provenance but left the rows in place to be "promoted"
+  --     later, which is exactly how a user-supplied appid captured a real Steam
+  --     sync. Round 2 moved every such row into game_identity_claims.
   SELECT COUNT(*) INTO offending FROM "game_external_identities"
-  WHERE "provenance" = 'PROVIDER_VERIFIED' AND "verified_at" IS NULL;
+  WHERE "verified_at" IS NULL
+     OR btrim(COALESCE("verification_source", '')) = ''
+     OR "provenance" NOT IN ('PROVIDER_VERIFIED', 'OFFICIAL_SOURCE', 'EDITOR_VERIFIED');
   IF offending <> 0 THEN
-    RAISE EXCEPTION 'review-fix: % identities claim PROVIDER_VERIFIED with no verifiedAt', offending;
+    RAISE EXCEPTION 'round-2: % unverified rows remain in the global identity table', offending;
+  END IF;
+
+  -- Every legacy identity must have arrived in the claim table rather than simply
+  -- being deleted: losing the key would break resolution for those library rows.
+  SELECT COUNT(*) INTO offending FROM "game_identity_claims"
+  WHERE "claim_source" = 'legacy_backfill_unverified';
+  IF offending = 0 THEN
+    RAISE EXCEPTION 'round-2: no legacy identity was preserved as a claim';
+  END IF;
+
+  SELECT COUNT(*) INTO offending FROM "game_identity_claims"
+  WHERE "provenance" IN ('PROVIDER_VERIFIED', 'OFFICIAL_SOURCE', 'EDITOR_VERIFIED');
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'round-2: % claims assert verified provenance', offending;
   END IF;
 
   -- 13. A synthetic "PROVIDER:id" placeholder title carries no information and must
@@ -251,5 +309,48 @@ BEGIN
     RAISE EXCEPTION 'review-fix: % localizations have an alphanumeric title that normalized to empty', offending;
   END IF;
 
-  RAISE NOTICE 'Product 2.2 backfill and review-fix assertions passed.';
+  -- 19. Round-2: a PUBLISHED game must be backed by verified title provenance.
+  --     The round-1 migration only demoted synthetic "PROVIDER:id" placeholders, so
+  --     a legacy title that merely looked like a real game name stayed publicly
+  --     searchable with UNKNOWN provenance.
+  SELECT COUNT(*) INTO offending FROM "catalog_games"
+  WHERE "publication_status" = 'PUBLISHED'
+    AND "title_provenance" NOT IN ('PROVIDER_VERIFIED', 'OFFICIAL_SOURCE', 'EDITOR_VERIFIED');
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'round-2: % PUBLISHED games carry unverified title provenance', offending;
+  END IF;
+
+  -- 20. Round-2: a localization cannot be verified when its game's title is not.
+  --     The first backfill wrote PROVIDER_VERIFIED localizations for any game with a
+  --     library game_name, which a user could have supplied.
+  SELECT COUNT(*) INTO offending
+  FROM "game_localizations" l
+  JOIN "catalog_games" g ON g."id" = l."catalog_game_id"
+  WHERE l."provenance" IN ('PROVIDER_VERIFIED', 'OFFICIAL_SOURCE', 'EDITOR_VERIFIED')
+    AND g."title_provenance" NOT IN ('PROVIDER_VERIFIED', 'OFFICIAL_SOURCE', 'EDITOR_VERIFIED');
+  IF offending <> 0 THEN
+    RAISE EXCEPTION 'round-2: % localizations claim a provenance their game never earned', offending;
+  END IF;
+
+  -- 21. Round-2: the invariants above must be database constraints, not merely
+  --     properties that happen to hold in this fixture.
+  SELECT COUNT(*) INTO offending FROM pg_constraint
+  WHERE contype = 'c' AND conname IN (
+    'game_external_identities_verified_provenance_check',
+    'game_external_identities_verification_source_present_check',
+    'catalog_games_published_requires_verified_title_check',
+    'game_identity_claims_unverified_provenance_check'
+  );
+  IF offending <> 4 THEN
+    RAISE EXCEPTION 'round-2: expected 4 CHECK constraints, found %', offending;
+  END IF;
+
+  SELECT COUNT(*) INTO offending FROM information_schema.columns
+  WHERE table_schema = 'public' AND table_name = 'game_external_identities'
+    AND column_name IN ('verified_at', 'verification_source') AND is_nullable = 'NO';
+  IF offending <> 2 THEN
+    RAISE EXCEPTION 'round-2: the verified identity columns are not both NOT NULL';
+  END IF;
+
+  RAISE NOTICE 'Product 2.2 backfill, review-fix and round-2 assertions passed.';
 END $$;

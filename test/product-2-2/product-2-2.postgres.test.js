@@ -96,22 +96,30 @@ test('the provider key uniqueness constraint is enforced by the database', { ski
     select: { id: true }
   });
 
+  // The global identity table is verified-only since the round-2 migration: every
+  // row needs a verified provenance, a verifiedAt and a named verification source.
+  const verifiedIdentity = {
+    provenance: 'PROVIDER_VERIFIED',
+    verifiedAt: new Date(),
+    verificationSource: 'steam_owned_games_sync'
+  };
+
   try {
     await prisma.gameExternalIdentity.create({
-      data: { catalogGameId: gameOne.id, provider: 'STEAM', externalId, regionKey: 'GLOBAL' }
+      data: { catalogGameId: gameOne.id, provider: 'STEAM', externalId, regionKey: 'GLOBAL', ...verifiedIdentity }
     });
 
     // The same provider key cannot point at a second canonical game.
     await assert.rejects(
       prisma.gameExternalIdentity.create({
-        data: { catalogGameId: gameTwo.id, provider: 'STEAM', externalId, regionKey: 'GLOBAL' }
+        data: { catalogGameId: gameTwo.id, provider: 'STEAM', externalId, regionKey: 'GLOBAL', ...verifiedIdentity }
       }),
       (error) => error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
     );
 
     // A different region key is a different listing and is allowed.
     await assert.doesNotReject(prisma.gameExternalIdentity.create({
-      data: { catalogGameId: gameTwo.id, provider: 'STEAM', externalId, regionKey: 'KR' }
+      data: { catalogGameId: gameTwo.id, provider: 'STEAM', externalId, regionKey: 'KR', ...verifiedIdentity }
     }));
   } finally {
     await prisma.catalogGame.deleteMany({ where: { id: { in: [gameOne.id, gameTwo.id] } } });
@@ -186,7 +194,13 @@ test('a repeated Playlog clientMutationId cannot create a duplicate row', { skip
 
   const user = await createUser(prisma, 'playlog');
   const game = await prisma.catalogGame.create({
-    data: { originalTitle: 'Playlog Game', normalizedTitle: 'playlog game', publicationStatus: 'PUBLISHED' },
+    data: {
+      originalTitle: 'Playlog Game',
+      normalizedTitle: 'playlog game',
+      publicationStatus: 'PUBLISHED',
+      // A PUBLISHED game requires verified title provenance (round-2 CHECK constraint).
+      titleProvenance: 'EDITOR_VERIFIED'
+    },
     select: { id: true }
   });
   const clientMutationId = `gate-${uniqueSuffix()}`;
@@ -227,7 +241,12 @@ test('the same clientMutationId from two accounts creates two independent sessio
   const userA = await createUser(prisma, 'iso-a');
   const userB = await createUser(prisma, 'iso-b');
   const game = await prisma.catalogGame.create({
-    data: { originalTitle: 'Isolation Game', normalizedTitle: 'isolation game', publicationStatus: 'PUBLISHED' },
+    data: {
+      originalTitle: 'Isolation Game',
+      normalizedTitle: 'isolation game',
+      publicationStatus: 'PUBLISHED',
+      titleProvenance: 'EDITOR_VERIFIED'
+    },
     select: { id: true }
   });
   const clientMutationId = `shared-${uniqueSuffix()}`;
@@ -359,6 +378,8 @@ test('deleting an account removes its private records but keeps catalog facts', 
       originalTitle: 'Deletion Policy Game',
       normalizedTitle: 'deletion policy game',
       publicationStatus: 'PUBLISHED',
+      // A PUBLISHED game requires verified title provenance (round-2 CHECK constraint).
+      titleProvenance: 'EDITOR_VERIFIED',
       // createdByUserId is audit-only and deliberately has no foreign key, so a
       // public catalog fact outlives the account that contributed it.
       createdByUserId: user.id
@@ -815,7 +836,12 @@ test('a Playlog receipt cannot survive a failed mutation', { skip: !enabled }, a
     // So a retry against a real session actually performs the delete rather than
     // reporting a bogus replay.
     const game = await prisma.catalogGame.create({
-      data: { originalTitle: 'Receipt Game', normalizedTitle: 'receipt game', publicationStatus: 'PUBLISHED' },
+      data: {
+        originalTitle: 'Receipt Game',
+        normalizedTitle: 'receipt game',
+        publicationStatus: 'PUBLISHED',
+        titleProvenance: 'EDITOR_VERIFIED'
+      },
       select: { id: true }
     });
     const session = await prisma.playSession.create({
@@ -851,7 +877,12 @@ test('concurrent delete retries with one key apply exactly once', { skip: !enabl
 
   const user = await createUser(prisma, 'delrace');
   const game = await prisma.catalogGame.create({
-    data: { originalTitle: 'Delete Race', normalizedTitle: 'delete race', publicationStatus: 'PUBLISHED' },
+    data: {
+      originalTitle: 'Delete Race',
+      normalizedTitle: 'delete race',
+      publicationStatus: 'PUBLISHED',
+      titleProvenance: 'EDITOR_VERIFIED'
+    },
     select: { id: true }
   });
   const session = await prisma.playSession.create({
@@ -896,7 +927,12 @@ test('a play session always stores the canonical survivor id', { skip: !enabled 
 
   const user = await createUser(prisma, 'canon');
   const survivor = await prisma.catalogGame.create({
-    data: { originalTitle: 'Survivor Game', normalizedTitle: 'survivor game', publicationStatus: 'PUBLISHED' },
+    data: {
+      originalTitle: 'Survivor Game',
+      normalizedTitle: 'survivor game',
+      publicationStatus: 'PUBLISHED',
+      titleProvenance: 'EDITOR_VERIFIED'
+    },
     select: { id: true }
   });
   const tombstone = await prisma.catalogGame.create({
@@ -904,6 +940,7 @@ test('a play session always stores the canonical survivor id', { skip: !enabled 
       originalTitle: 'Tombstone Game',
       normalizedTitle: 'tombstone game',
       publicationStatus: 'PUBLISHED',
+      titleProvenance: 'EDITOR_VERIFIED',
       mergedIntoCatalogGameId: survivor.id
     },
     select: { id: true }
@@ -925,7 +962,12 @@ test('a play session always stores the canonical survivor id', { skip: !enabled 
 
     // Update with the tombstone id too.
     const other = await prisma.catalogGame.create({
-      data: { originalTitle: 'Other Game', normalizedTitle: 'other game', publicationStatus: 'PUBLISHED' },
+      data: {
+        originalTitle: 'Other Game',
+        normalizedTitle: 'other game',
+        publicationStatus: 'PUBLISHED',
+        titleProvenance: 'EDITOR_VERIFIED'
+      },
       select: { id: true }
     });
     const otherTombstone = await prisma.catalogGame.create({
@@ -933,6 +975,7 @@ test('a play session always stores the canonical survivor id', { skip: !enabled 
         originalTitle: 'Other Tombstone',
         normalizedTitle: 'other tombstone',
         publicationStatus: 'PUBLISHED',
+        titleProvenance: 'EDITOR_VERIFIED',
         mergedIntoCatalogGameId: other.id
       },
       select: { id: true }

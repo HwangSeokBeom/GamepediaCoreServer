@@ -332,6 +332,119 @@ test('the contract documents the Product 2.2 invariants a client depends on', ()
   assert.equal(sourceProperties.excerpt.maxLength, 400);
 });
 
+test('the public article contract promises nothing the server cannot deliver', () => {
+  // Round-2 finding D. The single Article schema had a nullable bodyMarkdown and a
+  // nullable revision while its description claimed both were non-null for a
+  // published article, and the server could in fact publish an empty body. The
+  // contract is now split by audience, and each half states what its caller
+  // actually gets.
+  const contract = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
+  const schemas = contract.components.schemas;
+
+  const publicArticle = schemas.PublicArticle;
+
+  assert.ok(publicArticle, 'PublicArticle must exist');
+  // Not a union with null: the server refuses to publish without a body.
+  assert.equal(publicArticle.properties.bodyMarkdown.type, 'string');
+  assert.equal(publicArticle.properties.bodyMarkdown.minLength, 1);
+  assert.equal(publicArticle.properties.revision.type, 'object');
+  assert.ok(publicArticle.required.includes('bodyMarkdown'));
+  assert.ok(publicArticle.required.includes('revision'));
+  assert.ok(publicArticle.properties.revision.required.includes('revisionNumber'));
+  assert.equal(publicArticle.properties.bodyFormat.const, 'commonmark-no-html');
+  // Only publicly readable statuses can appear.
+  assert.deepEqual(publicArticle.properties.status.enum, ['PUBLISHED', 'CORRECTED']);
+  // A correction note is documented as non-empty, and the server enforces it.
+  assert.equal(publicArticle.properties.revision.properties.changeNote.minLength, 1);
+  assert.match(publicArticle.properties.revision.properties.changeNote.description, /CORRECTED/);
+  // Internal workflow fields must not be part of the public shape.
+  for (const internalField of ['id', 'authorUserId', 'scheduledFor', 'retractedAt', 'aiDraftUsed']) {
+    assert.equal(publicArticle.properties[internalField], undefined,
+      `${internalField} must not be in PublicArticle`);
+  }
+
+  // The editor shape keeps the nullable draft body, which is honest there.
+  const editorArticle = schemas.EditorArticle;
+
+  assert.ok(editorArticle);
+  assert.deepEqual(editorArticle.properties.bodyMarkdown.type, ['string', 'null']);
+  assert.ok(editorArticle.properties.authorUserId);
+  assert.ok(editorArticle.properties.aiDraftUsed);
+  assert.match(editorArticle.properties.revision.properties.revisionNumber.description,
+    /expectedRevisionNumber/);
+
+  // A Today card carries no body at all.
+  const summary = schemas.ArticleSummary;
+
+  assert.ok(summary);
+  assert.equal(summary.properties.bodyMarkdown, undefined, 'a summary must not carry a body');
+  assert.ok(summary.properties.sourceCount);
+
+  // The endpoints must reference the right shape for their audience.
+  assert.equal(
+    contract.paths['/api/v1/articles/{slug}'].get
+      .responses['200'].content['application/json'].schema.allOf[1]
+      .properties.data.properties.article.$ref,
+    '#/components/schemas/PublicArticle'
+  );
+  assert.equal(
+    contract.paths['/api/v1/editorial/articles'].get
+      .responses['200'].content['application/json'].schema.allOf[1]
+      .properties.data.properties.articles.items.$ref,
+    '#/components/schemas/EditorArticle'
+  );
+
+  // The legacy alias stays resolvable for an already generated client.
+  assert.equal(schemas.Article.deprecated, true);
+});
+
+test('the contract documents the concurrency check and every editorial conflict code', () => {
+  // Round-2 finding C. A client cannot handle a lost update it was never told about.
+  const contract = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
+
+  for (const [route, method] of [
+    ['/api/v1/editorial/articles/{slug}', 'patch'],
+    ['/api/v1/editorial/articles/{slug}/publish', 'post'],
+    ['/api/v1/editorial/articles/{slug}/retract', 'post']
+  ]) {
+    const operation = contract.paths[route][method];
+    const properties = operation.requestBody.content['application/json'].schema.properties;
+
+    assert.ok(properties.expectedRevisionNumber,
+      `${method.toUpperCase()} ${route} must document expectedRevisionNumber`);
+    assert.match(properties.expectedRevisionNumber.description, /ARTICLE_CONCURRENT_MODIFICATION/);
+    assert.ok(operation.responses['409'], `${method.toUpperCase()} ${route} must declare 409`);
+  }
+
+  // Publish must keep accepting a bodyless POST: that is the shipped contract.
+  assert.equal(
+    contract.paths['/api/v1/editorial/articles/{slug}/publish'].post.requestBody.required,
+    false
+  );
+
+  const conflict = contract.components.responses.Conflict.description;
+
+  for (const code of [
+    'ARTICLE_CONCURRENT_MODIFICATION',
+    'ARTICLE_CORRECTION_REQUIRED',
+    'ARTICLE_CORRECTION_NOTE_REQUIRED',
+    'ARTICLE_CORRECTION_EMPTY',
+    'ARTICLE_BODY_REQUIRED_FOR_PUBLICATION',
+    'ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED',
+    'ARTICLE_HERO_RIGHTS_UNRESOLVED',
+    'IDENTITY_UNVERIFIED_OCCUPANT'
+  ]) {
+    assert.match(conflict, new RegExp(code), `the Conflict response must document ${code}`);
+  }
+
+  // And the write-time Markdown rejection is documented on the 400 as well.
+  assert.match(contract.components.responses.ValidationError.description,
+    /ARTICLE_MARKDOWN_RESOURCE_NOT_ALLOWED/);
+  // Whatever else it says, it must promise that the destination is not echoed back.
+  assert.match(contract.components.responses.ValidationError.description,
+    /reason codes only, never the offending destination/);
+});
+
 test('the cross-platform gate contract is unchanged and still declares its own scope', () => {
   // Product 2.2 must not have edited the deployed mobile gate subset.
   const crossPlatform = JSON.parse(

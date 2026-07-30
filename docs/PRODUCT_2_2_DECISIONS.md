@@ -278,3 +278,111 @@ technical roadmap.
 - Verification impact: the PostgreSQL gate drives the full lifecycle — draft,
   three transitions, publish, silent-edit refusal, correction, retraction — and
   asserts the body survives all of it.
+
+## 2026-07-30 — The global identity table is verified-only
+
+- Status: accepted
+- Context: the round-1 fix demoted overstated legacy provenance but left the rows in
+  `game_external_identities` so a later real provider response could "promote" one in
+  place. That promotion was the capture: a user-supplied appid on an attacker's
+  catalog game was adopted by the victim's real Steam sync, which then returned the
+  attacker's game with their title and their publication status intact. The round-1
+  migration also only demoted synthetic `PROVIDER:id` titles, so a legacy title that
+  merely looked like a real game name stayed publicly searchable with `UNKNOWN`
+  provenance, and `game_localizations` kept a `PROVIDER_VERIFIED` provenance it never
+  earned.
+- Decision: `game_external_identities` admits only verified rows, enforced by CHECK
+  constraints plus NOT NULL on `verified_at` and `verification_source`. Every
+  unverified row moves to `game_identity_claims`. There is no promotion path: a
+  verified sync creates its own canonical game. The demotion rule is the provenance,
+  not the shape of the string, and it cascades to localizations.
+- Alternatives: keeping unverified rows and requiring callers to check
+  `verified_at` (rejected: the previous revision did exactly that and one caller
+  passing `requireVerified: false` was enough to reopen the hole); a runtime-only
+  guard (rejected: a future code path, a manual fix or a bad migration can bypass
+  application code, so the invariant belongs in the database).
+- Consequences: a legacy library row may point at a canonical game that has no
+  verified identity. That is accurate and is what the claim table records. It also
+  means a fixture that creates a `PUBLISHED` game must state a verified title
+  provenance, which is why several test fixtures changed.
+- Verification impact: the attack is performed against a real database in
+  `test/product-2-2/round-2-attacks.postgres.test.js`, all five unverified-identity
+  shapes are rejected with SQLSTATE 23514/23502, and
+  `scripts/test/verify-product-2-2-backfill.sql` asserts the migrated legacy fixture
+  ends in the intended state.
+
+## 2026-07-30 — Editorial mutations hold a row lock for the whole unit of work
+
+- Status: accepted
+- Context: `updateArticle`, `publishArticle` and `retractArticle` read the status,
+  the current revision and the asset rights outside any transaction and then updated
+  by id. An editor who read `SCHEDULED` could edit an article another editor had
+  since published, with no `CORRECTED` status, no `correctedAt` and no `changeNote`;
+  and a publish could pass its hero-rights check while another transaction added an
+  unresolved hero asset.
+- Decision: every mutation is one transaction that begins with
+  `SELECT ... FOR UPDATE` on the article, then re-reads status, revision and assets,
+  then re-checks the actor's role in the database. `expectedRevisionNumber` is
+  available as an explicit optimistic check on top, returning
+  `ARTICLE_CONCURRENT_MODIFICATION`.
+- Alternatives: a process-local mutex (rejected: it does not survive more than one
+  server process, which is how this service runs); an updatedAt comparison in the
+  WHERE clause (deferred: it detects the lost update but still leaves the rights
+  check reading a stale snapshot).
+- Consequences: editorial writes serialize per article. That is acceptable — they
+  are human-paced — and it is the only way the decision can be made on a state no
+  concurrent writer can change.
+- Verification impact: a real two-connection edit-versus-publish race and a
+  mid-request hero-asset insertion are both driven against PostgreSQL.
+
+## 2026-07-30 — A public article's contract is enforced, not merely documented
+
+- Status: accepted
+- Context: an article with `bodyMarkdown: null` could be `PUBLISHED`, and a
+  status-only hop to `CORRECTED` wrote an audit revision with `changeNote: null`,
+  while the OpenAPI document said both were non-null. The Markdown validator was a
+  regular expression that accepted every image form, so a CommonMark image node
+  bypassed the `ArticleAsset` rights review and a published article could load a
+  third-party resource that reports a reader's IP address on open.
+- Decision: fix the server rather than weaken the contract. Publishing requires a
+  non-empty body; a correction requires a non-empty note and an actual visible
+  change; `appendRevision` refuses a `CORRECTED` revision with no note. `mapArticle`
+  splits into `PublicArticle` (throws rather than serving a degraded shape),
+  `EditorArticle` (nullable draft body plus internal metadata) and `ArticleSummary`
+  (no body, for Today cards). Body validation walks a real CommonMark AST with an
+  allowed-node set and an https-only scheme set, at the write boundary and again at
+  publish time.
+- Alternatives: marking `bodyMarkdown` nullable in OpenAPI (rejected: it documents
+  the defect instead of fixing it, and pushes the problem into every client);
+  extending the regular expression (rejected: reference-style images, angle-bracket
+  destinations and `data:` URLs are three separate escapes, and the next syntax would
+  be a fourth).
+- Consequences: `commonmark` is a new runtime dependency (BSD-2-Clause). Only its
+  `Parser` is used; the bundled HTML renderer is never touched. A rejection carries
+  reason codes only, so neither a response nor a log line can echo a tracking URL.
+- Verification impact: twelve image syntaxes, seven raw-HTML positions and eleven
+  refused link destinations at the unit level; at the database level a body written
+  directly to the table is still refused at publish, and a SQL sweep confirms no
+  publicly readable article has an empty body or a noteless correction.
+
+## 2026-07-30 — Text length is measured in Unicode code points
+
+- Status: accepted
+- Context: `normalizeTitle` truncated with `slice(0, 300)`, which counts UTF-16 code
+  units, while PostgreSQL `varchar(300)` and `left(text, 300)` count characters.
+  `'a' + '\u{20BB7}'.repeat(200)` is 201 code points; the JavaScript side kept 151 and
+  ended in an unpaired high surrogate, the SQL side kept all 201. The validated value
+  and the stored value disagreed, and a lone surrogate could be persisted.
+- Decision: `src/utils/unicode-text.js` measures and truncates by code point, and
+  every title, slug, discriminator and bounded text field goes through it.
+  `truncateCodePoints` iterates with `for..of`, so a boundary never falls inside a
+  surrogate pair.
+- Alternatives: widening the columns (rejected: it moves the boundary without making
+  the two sides agree); rejecting astral characters (rejected: they are ordinary
+  characters in Japanese and Chinese titles).
+- Consequences: parity is asserted over a named corpus, not over all of Unicode. The
+  residual risk — the two engines' NFKC tables coming from different Unicode versions
+  — is recorded in `docs/PRODUCT_2_2_VERIFICATION.md` rather than claimed away.
+- Verification impact: the corpus is stored in a real `varchar(300)` column, and
+  `char_length` is compared with `countCodePoints` and `left(value, 300)` with
+  `clampTitle(value)` for every entry.

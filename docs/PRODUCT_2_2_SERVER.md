@@ -286,7 +286,7 @@ are erased, shared facts are not silently rewritten. Verified by
 | `EDITOR_VERIFIED` | an editor decision, role re-read from the database | yes | yes |
 | `USER_CONFIRMED` | a value the user typed or confirmed, including a parsed store URL or package id | no | no — `game_identity_claims` only |
 | `AI_INFERRED` | LLM extraction | no | no |
-| `UNKNOWN` | a legacy row whose origin cannot be proven | no | it may already hold the key, unverified; a real provider response promotes it in place |
+| `UNKNOWN` | a legacy row whose origin cannot be proven | no | no — `game_identity_claims` only |
 | `DISPUTED` | a contested fact | no | no |
 
 Ownership provenance on a library row follows the same rule: the Steam owned-games
@@ -298,6 +298,30 @@ Public promotion requires verified provenance on both the title and the identity
 enforced at runtime by `assertPublicationTrust`. A quick-add submission therefore
 always produces a `PRIVATE` game owned by the submitter, and requesting public
 review only ever reaches `PENDING_REVIEW`.
+
+`game_external_identities` is **verified-only**, and there is no promotion path into
+it. An earlier revision kept unverified legacy rows in that table and upgraded one in
+place when a real provider response arrived, which meant a user-supplied appid could
+be adopted by another account's Steam sync: the attacker's catalog game became the
+sync's canonical game, keeping their title, their `PUBLISHED` status and their
+`UNKNOWN` provenance. Every unverified row now lives in `game_identity_claims`, which
+is unique per *(catalog game, provider, external id, region)* rather than globally, so
+a claim cannot squat a key. Four CHECK constraints in
+`20260730140000_product_2_2_review_fixes_round_2` make the rule a database property:
+
+- `game_external_identities_verified_provenance_check` — the global table admits only
+  `PROVIDER_VERIFIED`, `OFFICIAL_SOURCE` or `EDITOR_VERIFIED`, with `verified_at` and
+  `verification_source` both NOT NULL,
+- `game_external_identities_verification_source_present_check` — the source must name
+  something, not be blank,
+- `catalog_games_published_requires_verified_title_check` — a `PUBLISHED` game must
+  have verified title provenance,
+- `game_identity_claims_unverified_provenance_check` — a claim may never assert
+  verified provenance.
+
+A catalog game and its verified identity are created in one transaction, so a failed
+identity insert cannot leave a public orphan game behind and a retry cannot duplicate
+it.
 
 ## Verification
 

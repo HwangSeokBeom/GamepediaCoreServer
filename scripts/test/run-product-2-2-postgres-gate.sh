@@ -175,6 +175,11 @@ fi
 echo "Running the Product 2.2 real-database integration tests."
 env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" node --test test/product-2-2/product-2-2.postgres.test.js
 
+# The round-2 attack tests run against the same fresh database. They are a separate
+# file so each finding's proof is named and can be run on its own.
+echo "Running the round-2 attack tests (identity capture, atomicity, editorial races, Unicode parity)."
+env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" node --test test/product-2-2/round-2-attacks.postgres.test.js
+
 # ---------------------------------------------------------------------------
 # Phase B: legacy schema, then the Product 2.2 migrations on top
 # ---------------------------------------------------------------------------
