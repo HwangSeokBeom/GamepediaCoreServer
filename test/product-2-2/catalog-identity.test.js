@@ -10,6 +10,7 @@ const {
 } = require('./helpers/test-env');
 
 const {
+  CATALOG_NORMALIZATION_CONTRACT,
   buildSlug,
   compactTitle,
   fingerprintInput,
@@ -42,6 +43,26 @@ test('title normalization is Unicode-safe and keeps every script searchable', ()
   // NFKC folds compatibility forms before anything is stripped.
   assert.equal(normalizeTitle('Ｐｏｒｔａｌ ２'), 'portal 2');
   assert.equal(normalizeTitle('FINAL FANTASY Ⅷ'), 'final fantasy viii');
+});
+
+test('the complete title normalization contract is pinned to Unicode 8.0', () => {
+  // U+1E030 was assigned after Unicode 8.0 and newer ICU versions fold it to
+  // Cyrillic small a. The pinned contract consistently treats the then-unassigned
+  // code point as a separator instead of inheriting that newer host behavior.
+  const postUnicode8CompatibilityLetter = '\u{1E030}';
+
+  assert.equal(
+    CATALOG_NORMALIZATION_CONTRACT,
+    'unicode-8.0-unorm-1.6.0-data-1.6.17-v1'
+  );
+  assert.equal(normalizeTitle(postUnicode8CompatibilityLetter), '');
+  assert.equal(normalizeTitle(`A${postUnicode8CompatibilityLetter}B`), 'a b');
+
+  // Default Unicode lowercasing includes an unconditional multi-code-point
+  // mapping and the locale-independent final-sigma context rule.
+  assert.equal(normalizeTitle('İ'), 'i\u0307');
+  assert.equal(normalizeTitle('ΟΣ'), 'ος');
+  assert.equal(normalizeTitle('ΟΣΑ'), 'οσα');
 });
 
 test('every required script normalizes to a non-empty searchable value', () => {
@@ -77,7 +98,7 @@ test('every required script normalizes to a non-empty searchable value', () => {
   assert.equal(normalizeTitle('👾 emoji 🎮'), 'emoji');
 });
 
-test('the retained mark class is the single source shared with the successor migration', () => {
+test('the pinned retained-mark ranges remain compatible with the immutable SQL backfill', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const {
@@ -88,8 +109,9 @@ test('the retained mark class is the single source shared with the successor mig
   assert.equal(RETAINED_MARK_CLASS, buildRetainedMarkClass());
   assert.ok(RETAINED_MARK_CLASS.length > 40);
 
-  // The migration must embed the identical class, otherwise JS-created rows and
-  // migration-recomputed rows would normalize differently and search would miss.
+  // Preserve the already-published SQL backfill as an audited historical step.
+  // The newer application reconciler subsequently rewrites every row under the
+  // complete pinned Unicode contract.
   const migration = fs.readFileSync(path.resolve(
     process.cwd(),
     'prisma/migrations/20260730130000_product_2_2_review_fixes/migration.sql'
@@ -97,9 +119,9 @@ test('the retained mark class is the single source shared with the successor mig
 
   assert.ok(
     migration.includes(`'[^[:alnum:]${RETAINED_MARK_CLASS}]+'`),
-    'the successor migration must embed the shared retained-mark class verbatim'
+    'the immutable SQL backfill must retain the audited mark class verbatim'
   );
-  // And it must apply the same pre-strip and NFKC on the SQL side.
+  // That historical backfill also used the intended pre-strip and NFKC order.
   const { STRIPPED_LEGAL_SYMBOLS } = require('../../src/modules/catalog/catalog-title.util');
 
   assert.ok(migration.includes(`translate("original_title", '${STRIPPED_LEGAL_SYMBOLS}', '')`));

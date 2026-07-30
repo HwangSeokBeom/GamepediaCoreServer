@@ -18,7 +18,7 @@ defaults:
     shell: bash
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
 
 jobs:
   validate:
@@ -37,7 +37,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Prisma client
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@127.0.0.1:5499/placeholder_ci_only
+        run: npx prisma generate
+
+      - name: Verify deployed dependency tree has no known advisory
+        run: npm run test:dependency-security
+
+      - name: Validate the Product 2.2 OpenAPI contract
+        run: npm run test:openapi-contract
+
       - name: Run tests if available
+        env:
+          NODE_ENV: test
+          APP_ENV: test
+          MAIL_MODE: log
+          DATABASE_URL: postgresql://placeholder:placeholder@127.0.0.1:5499/placeholder_ci_only
+          JWT_ACCESS_SECRET: ci-test-access-secret
+          JWT_REFRESH_SECRET: ci-test-refresh-secret
+          ACCESS_TOKEN_EXPIRES_IN: '900'
+          REFRESH_TOKEN_EXPIRES_IN: '1209600'
+          BCRYPT_SALT_ROUNDS: '4'
         run: npm test --if-present
 
       - name: Run lint if available

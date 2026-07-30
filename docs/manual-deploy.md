@@ -128,7 +128,7 @@ cd ~/GamePediaCoreServer-staging
 pwd
 git fetch origin
 git reset --hard origin/staging
-npm ci
+npm ci --omit=dev --omit=optional
 pm2 restart core-server-staging
 pm2 status core-server-staging
 pm2 describe core-server-staging | grep "exec cwd"
@@ -147,7 +147,7 @@ cd ~/GamePediaCoreServer-staging
 pwd
 git fetch origin
 git reset --hard origin/staging
-npm ci
+npm ci --omit=dev --omit=optional
 NODE_ENV=staging npx prisma generate
 
 # migration 파일이 포함된 경우에만 실행
@@ -171,7 +171,7 @@ cd ~/GamePediaCoreServer-staging
 pwd
 git fetch origin
 git reset --hard origin/staging
-npm ci
+npm ci --omit=dev --omit=optional
 
 set -a
 [ -f .env ] && source .env
@@ -229,7 +229,7 @@ cd ~/GamePediaCoreServer-prod
 pwd
 git fetch origin
 git reset --hard origin/main
-npm ci
+npm ci --omit=dev --omit=optional
 pm2 restart core-server
 pm2 status core-server
 pm2 describe core-server | grep "exec cwd"
@@ -248,7 +248,7 @@ cd ~/GamePediaCoreServer-prod
 pwd
 git fetch origin
 git reset --hard origin/main
-npm ci
+npm ci --omit=dev --omit=optional
 NODE_ENV=production npx prisma generate
 
 # staging 에서 검증된 migration 만 실행
@@ -270,7 +270,7 @@ cd ~/GamePediaCoreServer-prod
 pwd
 git fetch origin
 git reset --hard origin/main
-npm ci
+npm ci --omit=dev --omit=optional
 
 set -a
 [ -f .env ] && source .env

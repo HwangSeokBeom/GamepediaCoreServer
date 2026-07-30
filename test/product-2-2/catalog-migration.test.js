@@ -15,6 +15,7 @@ const CATALOG_MIGRATION = '20260730120000_create_catalog_game_identity';
 const QUICK_ADD_MIGRATION = '20260730121000_add_quick_add_usage_counter';
 const PLAY_MIGRATION = '20260730122000_create_playlog_and_compass';
 const EDITORIAL_MIGRATION = '20260730123000_create_editorial_and_product_controls';
+const NORMALIZATION_CONTRACT_MIGRATION = '20260730150000_catalog_normalization_contract';
 
 function readMigration(name) {
   return fs.readFileSync(path.join(MIGRATIONS_DIR, name, 'migration.sql'), 'utf8');
@@ -97,6 +98,16 @@ test('the successor migration is a new directory alongside the original four', (
   assert.match(sql, /ALTER TABLE "game_external_identities" ADD COLUMN "verified_at" TIMESTAMP\(3\);/);
   assert.match(sql, /CREATE TABLE "game_identity_claims"/);
   assert.match(sql, /editorial_articles_current_revision_id_fkey/);
+});
+
+test('the normalization contract migration starts fail-closed and is application-reconciled', () => {
+  const sql = readMigration(NORMALIZATION_CONTRACT_MIGRATION);
+
+  assert.match(sql, /CREATE TABLE "catalog_normalization_state"/);
+  assert.match(sql, /CHECK \("singleton_id" = 1\)/);
+  assert.match(sql, /VALUES \(1, 'PENDING', 0, 0, NULL\)/);
+  assert.doesNotMatch(sql, /normalize\s*\(/i);
+  assert.doesNotMatch(sql, /DROP\s+(TABLE|COLUMN)/i);
 });
 
 test('the catalog migration is additive and never drops or retypes legacy identity columns', () => {
@@ -209,19 +220,22 @@ test('the backfill collects legacy identities from all four legacy tables', () =
   assert.match(sql, /FROM "game_external_identities" AS identity/);
 });
 
-test('the title normalization in SQL matches the JavaScript implementation', () => {
+test('the immutable first catalog migration keeps its historical ASCII backfill baseline', () => {
   const sql = readMigration(CATALOG_MIGRATION);
   const { normalizeTitle } = require('../../src/modules/catalog/catalog-title.util');
 
-  // Both sides must strip the same character class, otherwise backfilled rows and
-  // API-created rows would normalize differently.
+  // This expression is intentionally historical. The successor normalization
+  // contract migration starts PENDING and the application reconciler upgrades
+  // every stored row to the pinned Unicode contract before server startup.
   const expectedClass = "'[^a-z0-9가-힣ぁ-んァ-ヶ一-龯]+'";
 
-  assert.ok(sql.includes(expectedClass), 'the SQL must use the shared retained-character class');
+  assert.ok(sql.includes(expectedClass), 'the first migration must keep its published backfill expression');
   assert.ok(
     sql.includes(`regexp_replace(lower("title"), ${expectedClass}, ' ', 'g')`),
-    'the SQL normalization expression must match the documented form'
+    'the first migration must not be rewritten after publication'
   );
+  // The pinned implementation agrees for the legacy ASCII corpus; the
+  // reconciliation gate is what establishes the broader Unicode contract.
   assert.equal(normalizeTitle('Portal 2'), 'portal 2');
 });
 

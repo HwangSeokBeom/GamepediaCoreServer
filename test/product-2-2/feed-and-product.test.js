@@ -894,6 +894,66 @@ test('the Today feed returns sections in a fixed deterministic order', async () 
     );
     assert.equal(first.meta.partialFailure, false);
     assert.equal(first.meta.nextCursor, null);
+    assert.equal(first.sections.every((section) => section.status === 'ok' && section.data !== null), true);
+
+    const expectedDataKeys = new Map([
+      ['playCompass', ['recommendations', 'confidence', 'dataFreshness', 'emptyReason', 'ownedOnly']],
+      [
+        'gameDNA',
+        [
+          'signalCount',
+          'confidence',
+          'generatedAt',
+          'topGenres',
+          'sessionLengthLabel',
+          'socialLabel',
+          'toneLabel',
+          'missingSignals',
+          'reasonCodes'
+        ]
+      ],
+      ['gameBriefing', ['items', 'emptyReason', 'generatedAt']],
+      ['backlogRescue', ['items', 'emptyReason']],
+      ['spoilerFreeStartGuide', ['items', 'emptyReason']],
+      ['editorialCuration', ['articles', 'emptyReason']],
+      [
+        'monthlyReplay',
+        [
+          'monthKey',
+          'timezone',
+          'isEmpty',
+          'playedDayCount',
+          'totalMinutes',
+          'mostPlayedGame',
+          'surpriseGame',
+          'missingData'
+        ]
+      ],
+      ['friendActivity', ['items', 'emptyReason']]
+    ]);
+
+    for (const section of first.sections) {
+      assert.deepEqual(
+        Object.keys(section.data).sort(),
+        [...expectedDataKeys.get(section.key)].sort(),
+        `${section.key} must keep its documented key-specific Today shape`
+      );
+    }
+
+    const compass = first.sections.find((section) => section.key === 'playCompass');
+    assert.deepEqual(compass.data.dataFreshness, {
+      candidatePoolSize: 0,
+      freshestLibraryUpdateAt: null,
+      playlogSampleSize: 0,
+      stale: true
+    });
+
+    const briefing = first.sections.find((section) => section.key === 'gameBriefing');
+    assert.deepEqual(briefing.data, {
+      items: [],
+      emptyReason: 'no_followed_or_playing_games',
+      generatedAt: NOW.toISOString()
+    });
   } finally {
     restore();
   }

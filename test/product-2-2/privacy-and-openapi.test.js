@@ -394,9 +394,10 @@ test('the public article contract promises nothing the server cannot deliver', (
     '#/components/schemas/ArticleRelatedGame'
   );
   assert.equal(
-    summary.properties.heroImage.oneOf[0].$ref,
+    summary.properties.heroImage.$ref,
     '#/components/schemas/ArticleHeroImage'
   );
+  assert.deepEqual(schemas.ArticleHeroImage.type, ['object', 'null']);
 
   // The endpoints must reference the right shape for their audience.
   assert.equal(
@@ -416,7 +417,7 @@ test('the public article contract promises nothing the server cannot deliver', (
   assert.equal(schemas.Article.deprecated, true);
 });
 
-test('the Today response reaches ArticleSummary through the editorial section contract', () => {
+test('the Today response reaches every key-specific data contract and ArticleSummary', () => {
   const contract = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
   const responseSchema = contract.paths['/api/v1/users/me/today'].get
     .responses['200'].content['application/json'].schema;
@@ -454,11 +455,73 @@ test('the Today response reaches ArticleSummary through the editorial section co
 
   walkReachable(responseSchema);
 
+  const sectionContracts = [
+    [
+      'playCompass',
+      'TodayPlayCompassSection',
+      'TodayPlayCompassData',
+      ['recommendations', 'confidence', 'dataFreshness', 'emptyReason', 'ownedOnly']
+    ],
+    [
+      'gameDNA',
+      'TodayGameDnaSection',
+      'TodayGameDnaData',
+      [
+        'signalCount',
+        'confidence',
+        'generatedAt',
+        'topGenres',
+        'sessionLengthLabel',
+        'socialLabel',
+        'toneLabel',
+        'missingSignals',
+        'reasonCodes'
+      ]
+    ],
+    [
+      'gameBriefing',
+      'TodayGameBriefingSection',
+      'TodayGameBriefingData',
+      ['items', 'emptyReason', 'generatedAt']
+    ],
+    ['backlogRescue', 'TodayBacklogRescueSection', 'TodayBacklogRescueData', ['items', 'emptyReason']],
+    [
+      'spoilerFreeStartGuide',
+      'TodaySpoilerFreeStartGuideSection',
+      'TodaySpoilerFreeStartGuideData',
+      ['items', 'emptyReason']
+    ],
+    [
+      'editorialCuration',
+      'TodayEditorialCurationSection',
+      'TodayEditorialCurationData',
+      ['articles', 'emptyReason']
+    ],
+    [
+      'monthlyReplay',
+      'TodayMonthlyReplaySection',
+      'TodayMonthlyReplayData',
+      [
+        'monthKey',
+        'timezone',
+        'isEmpty',
+        'playedDayCount',
+        'totalMinutes',
+        'mostPlayedGame',
+        'surpriseGame',
+        'missingData'
+      ]
+    ],
+    ['friendActivity', 'TodayFriendActivitySection', 'TodayFriendActivityData', ['items', 'emptyReason']]
+  ];
+
   for (const ref of [
     '#/components/schemas/TodayFeed',
     '#/components/schemas/TodaySection',
-    '#/components/schemas/TodayEditorialCurationSection',
-    '#/components/schemas/TodayEditorialCurationData',
+    ...sectionContracts.flatMap(([, sectionSchema, dataSchema]) => [
+      `#/components/schemas/${sectionSchema}`,
+      `#/components/schemas/${dataSchema}`
+    ]),
     '#/components/schemas/ArticleSummary'
   ]) {
     assert.ok(reachableRefs.has(ref), `Today 200 response must reach ${ref}`);
@@ -471,21 +534,156 @@ test('the Today response reaches ArticleSummary through the editorial section co
     schemas.TodayEditorialCurationData.properties.articles.items.$ref,
     '#/components/schemas/ArticleSummary'
   );
+  assert.equal(schemas.TodayOtherSection, undefined, 'no Today key may fall back to an opaque object');
+  assert.equal(schemas.TodaySection.oneOf.length, sectionContracts.length);
+
+  for (const [key, sectionSchemaName, dataSchemaName, expectedDataKeys] of sectionContracts) {
+    const sectionRef = `#/components/schemas/${sectionSchemaName}`;
+    const dataRef = `#/components/schemas/${dataSchemaName}`;
+    const sectionSchema = schemas[sectionSchemaName];
+    const okBranch = sectionSchema.oneOf[0];
+    const dataSchema = schemas[dataSchemaName];
+
+    assert.equal(schemas.TodaySection.discriminator.mapping[key], sectionRef);
+    assert.ok(
+      schemas.TodaySection.oneOf.some((branch) => branch.$ref === sectionRef),
+      `TodaySection must include ${sectionRef}`
+    );
+    assert.equal(okBranch.properties.key.const, key);
+    assert.equal(okBranch.properties.status.const, 'ok');
+    assert.equal(okBranch.properties.data.$ref, dataRef);
+    assert.equal(dataSchema.type, 'object');
+    assert.equal(dataSchema.additionalProperties, false);
+    assert.deepEqual(
+      [...dataSchema.required].sort(),
+      [...expectedDataKeys].sort(),
+      `${dataSchemaName} must require every runtime field`
+    );
+    assert.deepEqual(
+      Object.keys(dataSchema.properties).sort(),
+      [...expectedDataKeys].sort(),
+      `${dataSchemaName} must neither omit runtime fields nor invent extras`
+    );
+  }
+
+  assert.equal(schemas.TodayPlayCompassData.properties.recommendations.type, 'array');
   assert.equal(
-    schemas.TodaySection.discriminator.mapping.editorialCuration,
-    '#/components/schemas/TodayEditorialCurationSection'
+    schemas.TodayPlayCompassData.properties.recommendations.items.$ref,
+    '#/components/schemas/PlayCompassRecommendation'
   );
   assert.equal(
-    schemas.TodayEditorialCurationSection.oneOf[0].properties.key.const,
-    'editorialCuration'
+    schemas.PlayCompassResponse.properties.recommendations.items.$ref,
+    '#/components/schemas/PlayCompassRecommendation'
   );
   assert.equal(
-    schemas.TodayEditorialCurationSection.oneOf[0].properties.status.const,
-    'ok'
+    schemas.TodayPlayCompassData.properties.dataFreshness.$ref,
+    '#/components/schemas/PlayCompassDataFreshness'
   );
+  assert.equal(
+    schemas.PlayCompassResponse.properties.dataFreshness.$ref,
+    '#/components/schemas/PlayCompassDataFreshness'
+  );
+  assert.deepEqual(
+    schemas.PlayCompassDataFreshness.required,
+    ['candidatePoolSize', 'freshestLibraryUpdateAt', 'playlogSampleSize', 'stale']
+  );
+  assert.deepEqual(
+    schemas.PlayCompassResponse.properties.emptyReason.enum,
+    ['no_owned_playing_or_backlog_games', 'no_candidate_matched_constraints', null]
+  );
+  assert.deepEqual(
+    schemas.TodayPlayCompassData.properties.emptyReason.enum,
+    schemas.PlayCompassResponse.properties.emptyReason.enum
+  );
+  assert.equal(schemas.PlayCompassRecommendation.additionalProperties, false);
+  assert.equal(schemas.PlayCompassRecommendation.properties.scoreComponents.additionalProperties, false);
+  assert.deepEqual(
+    schemas.PlayCompassRecommendation.properties.scoreComponents.required,
+    ['platform', 'timeFit', 'continuity', 'social', 'energy', 'mood', 'recency', 'snooze']
+  );
+  assert.equal(
+    schemas.PlayCompassRecommendation.properties.ownershipEvidence.properties.installEvidence
+      .properties.reason.const,
+    'install_state_not_tracked'
+  );
+  assert.equal(schemas.TodayGameBriefingData.properties.items.items.type, 'object');
+  assert.equal(schemas.TodayBacklogRescueData.properties.items.items.type, 'object');
+  assert.equal(schemas.TodaySpoilerFreeStartGuideData.properties.items.items.type, 'object');
+  assert.equal(schemas.TodayMonthlyReplayData.properties.missingData.items.type, 'object');
+  assert.equal(schemas.TodayFriendActivityData.properties.items.items.type, 'object');
   assert.ok(schemas.TodayFeed.required.includes('timezone'));
   assert.ok(schemas.TodayFeed.required.includes('locale'));
   assert.ok(schemas.TodayFeed.properties.meta.required.includes('limit'));
+});
+
+test('the generated-client contract avoids unsupported null and nested-property references', () => {
+  const contract = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
+  const unsupportedNullSchemas = [];
+  const nestedPropertyRefs = [];
+
+  (function walk(node, pointer) {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    if (node.type === 'null') {
+      unsupportedNullSchemas.push(pointer);
+    }
+
+    if (typeof node.$ref === 'string' && /\/properties\//.test(node.$ref)) {
+      nestedPropertyRefs.push(`${pointer} -> ${node.$ref}`);
+    }
+
+    for (const [key, child] of Object.entries(node)) {
+      walk(child, `${pointer}/${key}`);
+    }
+  })(contract, '');
+
+  assert.deepEqual(unsupportedNullSchemas, []);
+  assert.deepEqual(nestedPropertyRefs, []);
+});
+
+test('the Redocly exception is scoped only to the deprecated Article alias', () => {
+  const ignorePath = path.resolve(process.cwd(), '.redocly.lint-ignore.yaml');
+  const ignore = fs.readFileSync(ignorePath, 'utf8');
+  const ignoredPointers = [...ignore.matchAll(/^\s+- '(#[^']+)'$/gm)].map((match) => match[1]);
+  const contract = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
+
+  assert.deepEqual(ignoredPointers, ['#/components/schemas/Article']);
+  assert.equal(contract.components.schemas.Article.deprecated, true);
+  assert.equal(contract.components.responses.FeatureStateUnavailable, undefined);
+});
+
+test('the iOS generated-client gate is version-pinned and exercises decoding plus the Simulator SDK', () => {
+  const fixtureRoot = path.resolve(process.cwd(), 'scripts/test/swift-openapi-client');
+  const manifest = fs.readFileSync(path.join(fixtureRoot, 'Package.swift'), 'utf8');
+  const resolved = JSON.parse(fs.readFileSync(path.join(fixtureRoot, 'Package.resolved'), 'utf8'));
+  const generatorConfig = fs.readFileSync(
+    path.join(fixtureRoot, 'Sources/ContractSmoke/openapi-generator-config.yaml'),
+    'utf8'
+  );
+  const smoke = fs.readFileSync(
+    path.join(fixtureRoot, 'Sources/ContractSmoke/main.swift'),
+    'utf8'
+  );
+  const gate = fs.readFileSync(
+    path.resolve(process.cwd(), 'scripts/test/run-ios-openapi-contract-gate.sh'),
+    'utf8'
+  );
+  const pins = new Map(resolved.pins.map((pin) => [pin.identity, pin.state.version]));
+
+  assert.match(manifest, /swift-openapi-generator",\s*exact: "1\.11\.1"/);
+  assert.match(manifest, /swift-openapi-runtime",\s*exact: "1\.12\.0"/);
+  assert.equal(pins.get('swift-openapi-generator'), '1.11.1');
+  assert.equal(pins.get('swift-openapi-runtime'), '1.12.0');
+  assert.equal(resolved.pins.every((pin) => typeof pin.state.revision === 'string'), true);
+  assert.match(generatorConfig, /generate:\s*\n\s+- types\s*\n\s+- client/);
+  assert.match(smoke, /JSONDecoder/);
+  assert.match(smoke, /Components\.Schemas\.ArticleSummary/);
+  assert.match(smoke, /Components\.Schemas\.TodayFeed/);
+  assert.match(gate, /swift run ContractSmoke/);
+  assert.match(gate, /generic\/platform=iOS Simulator/);
+  assert.match(gate, /Swift OpenAPI Generator emitted a warning/);
 });
 
 test('the contract documents the concurrency check and every editorial conflict code', () => {

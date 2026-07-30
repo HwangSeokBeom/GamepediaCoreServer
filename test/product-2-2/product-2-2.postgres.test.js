@@ -48,6 +48,7 @@ test('every Product 2.2 table exists with the expected additive columns', { skip
   const { prisma } = require('../../src/config/prisma');
   const expectedTables = [
     'catalog_games', 'game_localizations', 'regional_releases', 'game_external_identities',
+    'catalog_normalization_state',
     'game_assets', 'game_field_evidence', 'game_submissions', 'catalog_merge_audits', 'game_follows',
     'play_sessions', 'client_mutation_receipts', 'play_compass_events',
     'editorial_articles', 'article_revisions', 'article_sources', 'article_game_links', 'article_assets',
@@ -1201,6 +1202,143 @@ test('every stored normalized title matches the JavaScript normalizer exactly', 
     }
   } finally {
     await prisma.catalogGame.deleteMany({ where: { id: { in: created } } });
+  }
+});
+
+test('pinned normalization reconciliation corrects host-version drift atomically', { skip: !enabled }, async () => {
+  const { prisma } = require('../../src/config/prisma');
+  const {
+    CATALOG_NORMALIZATION_CONTRACT,
+    reconcileCatalogNormalization,
+    verifyCatalogNormalizationContract
+  } = require('../../src/modules/catalog/catalog-normalization.service');
+  const postUnicode8CompatibilityLetter = '\u{1E030}';
+  const hostNormalized = postUnicode8CompatibilityLetter.normalize('NFKC').toLowerCase();
+  let game;
+
+  assert.notEqual(
+    hostNormalized,
+    postUnicode8CompatibilityLetter,
+    'the gate runtime must expose the historical Unicode-version drift fixture'
+  );
+
+  try {
+    game = await prisma.catalogGame.create({
+      data: {
+        originalTitle: postUnicode8CompatibilityLetter,
+        normalizedTitle: hostNormalized,
+        publicationStatus: 'PRIVATE',
+        localizations: {
+          create: {
+            kind: 'ORIGINAL_TITLE',
+            languageCode: 'und',
+            regionCode: 'GLOBAL',
+            title: postUnicode8CompatibilityLetter,
+            normalizedTitle: hostNormalized
+          }
+        }
+      },
+      select: { id: true }
+    });
+
+    await assert.rejects(
+      verifyCatalogNormalizationContract(),
+      (error) => error?.code === 'CATALOG_NORMALIZATION_CONTRACT_NOT_READY'
+        && error?.reason === 'catalog_game_mismatch'
+    );
+
+    const result = await reconcileCatalogNormalization();
+    assert.equal(result.contractVersion, CATALOG_NORMALIZATION_CONTRACT);
+    assert.ok(result.catalogGamesUpdated >= 1);
+    assert.ok(result.localizationsUpdated >= 1);
+
+    const [storedGame, storedLocalization] = await Promise.all([
+      prisma.catalogGame.findUnique({
+        where: { id: game.id },
+        select: { normalizedTitle: true }
+      }),
+      prisma.gameLocalization.findFirst({
+        where: { catalogGameId: game.id },
+        select: { normalizedTitle: true }
+      })
+    ]);
+
+    assert.equal(storedGame.normalizedTitle, '');
+    assert.equal(storedLocalization.normalizedTitle, '');
+    await verifyCatalogNormalizationContract();
+  } finally {
+    if (game) {
+      await prisma.catalogGame.deleteMany({ where: { id: game.id } });
+    }
+  }
+});
+
+test('normalization collision aborts without publishing a new contract marker', { skip: !enabled }, async () => {
+  const { prisma } = require('../../src/config/prisma');
+  const {
+    reconcileCatalogNormalization
+  } = require('../../src/modules/catalog/catalog-normalization.service');
+  let game;
+
+  try {
+    game = await prisma.catalogGame.create({
+      data: {
+        originalTitle: 'Normalization Collision Fixture',
+        normalizedTitle: 'normalization collision fixture',
+        publicationStatus: 'PRIVATE'
+      },
+      select: { id: true }
+    });
+
+    await prisma.gameLocalization.createMany({
+      data: [
+        {
+          catalogGameId: game.id,
+          kind: 'ALIAS',
+          languageCode: 'en',
+          regionCode: 'GLOBAL',
+          title: 'Ｆｏｏ',
+          normalizedTitle: 'legacy-fullwidth-foo'
+        },
+        {
+          catalogGameId: game.id,
+          kind: 'ALIAS',
+          languageCode: 'en',
+          regionCode: 'GLOBAL',
+          title: 'Foo',
+          normalizedTitle: 'legacy-ascii-foo'
+        }
+      ]
+    });
+
+    const markerBefore = await prisma.catalogNormalizationState.findUnique({
+      where: { singletonId: 1 }
+    });
+
+    await assert.rejects(
+      reconcileCatalogNormalization(),
+      (error) => error?.code === 'CATALOG_NORMALIZATION_CONTRACT_NOT_READY'
+        && error?.reason === 'localization_collision'
+    );
+
+    const [markerAfter, rowsAfter] = await Promise.all([
+      prisma.catalogNormalizationState.findUnique({ where: { singletonId: 1 } }),
+      prisma.gameLocalization.findMany({
+        where: { catalogGameId: game.id },
+        select: { normalizedTitle: true },
+        orderBy: { normalizedTitle: 'asc' }
+      })
+    ]);
+
+    assert.deepEqual(markerAfter, markerBefore);
+    assert.deepEqual(
+      rowsAfter.map((row) => row.normalizedTitle),
+      ['legacy-ascii-foo', 'legacy-fullwidth-foo']
+    );
+  } finally {
+    if (game) {
+      await prisma.catalogGame.deleteMany({ where: { id: game.id } });
+    }
   }
 });
 

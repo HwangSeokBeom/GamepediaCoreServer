@@ -172,7 +172,12 @@ playCompassService.recommend = async () => ({
   recommendations: [],
   confidence: 'LOW',
   generatedAt: isoNow(),
-  dataFreshness: { candidatePoolSize: 0, freshestLibraryUpdateAt: null, stale: true },
+  dataFreshness: {
+    candidatePoolSize: 0,
+    freshestLibraryUpdateAt: null,
+    playlogSampleSize: 0,
+    stale: true
+  },
   emptyReason: 'no_owned_playing_or_backlog_games',
   ownedOnly: true,
   requestHash: 'a'.repeat(64)

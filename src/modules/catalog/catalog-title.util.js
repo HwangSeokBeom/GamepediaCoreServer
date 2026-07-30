@@ -1,10 +1,15 @@
 const crypto = require('node:crypto');
+const unorm = require('unorm');
 const {
   countCodePoints,
   isWellFormedUnicode,
   truncateCodePoints,
   UNPAIRED_SURROGATE_MESSAGE
 } = require('../../utils/unicode-text');
+const {
+  isUnicode8LetterOrNumber,
+  toUnicode8Lowercase
+} = require('../../utils/pinned-unicode');
 
 // Unicode-safe title normalization.
 //
@@ -30,21 +35,32 @@ const {
 // NFKC folds compatibility forms first, so fullwidth "Ｐｏｒｔａｌ ２" and
 // "Ⅷ" and "½" reduce to their ASCII equivalents before anything is stripped.
 //
-// DATABASE PARITY. The same rule is expressed in SQL as
+// NORMALIZATION CONTRACT. NFKC is provided by exactly pinned `unorm` Unicode
+// 8.0 tables. Lowercase mappings and letter/number categories come from exactly
+// pinned `@unicode/unicode-8.0.0` data. No String.prototype.normalize(),
+// String.prototype.toLowerCase() or Unicode property escape participates in the
+// stored result, so it is independent of the Node.js/ICU version on a host. The
+// successor reconciliation gate rewrites historical SQL-normalized rows with
+// this implementation and records CATALOG_NORMALIZATION_CONTRACT in the
+// database before the server is allowed to listen.
+//
+// The older SQL backfill expressed the same intended rule as
 //
 //   btrim(regexp_replace(lower(normalize(translate(title, '<legal symbols>', ''),
 //         NFKC)), '[^[:alnum:]<retained marks>]+', ' ', 'g'))
 //
 // inside prisma/migrations/20260730130000_product_2_2_review_fixes/migration.sql.
 // PostgreSQL classifies combining marks as [:punct:], so the marks have to be
-// whitelisted explicitly on both sides; RETAINED_MARK_RANGES below is the single
-// source of that whitelist and `buildRetainedMarkClass()` renders the exact
-// character class both engines use. A test asserts the migration contains that
-// rendered class verbatim, and the PostgreSQL gate proves byte-level parity over
-// a multi-script corpus.
+// whitelisted explicitly. RETAINED_MARK_RANGES below remains byte-compatible
+// with that immutable migration for auditability, but only this pinned
+// application implementation is authoritative after reconciliation. PostgreSQL's
+// NFKC result is deliberately no longer trusted because its Unicode version can
+// differ.
 //
 // Never edit an applied migration to change this; add a successor migration that
 // recomputes the stored normalized titles.
+
+const CATALOG_NORMALIZATION_CONTRACT = 'unicode-8.0-unorm-1.6.0-data-1.6.17-v1';
 
 /// Combining-mark ranges retained by normalization, as inclusive
 /// [startCodepoint, endCodepoint] pairs. Marks are semantically load-bearing in
@@ -87,8 +103,8 @@ const RETAINED_MARK_RANGES = Object.freeze([
 const STRIPPED_LEGAL_SYMBOLS = '™℠®©℗';
 const STRIPPED_LEGAL_SYMBOLS_PATTERN = new RegExp(`[${STRIPPED_LEGAL_SYMBOLS}]`, 'gu');
 
-/// Renders RETAINED_MARK_RANGES as the character-class body shared by the JS
-/// regex and the SQL bracket expression.
+/// Renders RETAINED_MARK_RANGES in the historical SQL bracket-expression form.
+/// The live implementation tests numeric ranges directly.
 function buildRetainedMarkClass() {
   return RETAINED_MARK_RANGES
     .map(([from, to]) => (from === to
@@ -97,8 +113,15 @@ function buildRetainedMarkClass() {
     .join('');
 }
 
+function isRetainedMark(symbol) {
+  const codePoint = symbol.codePointAt(0);
+
+  return RETAINED_MARK_RANGES.some(
+    ([from, to]) => codePoint >= from && codePoint <= to
+  );
+}
+
 const RETAINED_MARK_CLASS = buildRetainedMarkClass();
-const SEPARATOR_RUN = new RegExp(`[^\\p{L}\\p{N}${RETAINED_MARK_CLASS}]+`, 'gu');
 const MAX_TITLE_LENGTH = 300;
 const MAX_SLUG_LENGTH = 320;
 const MAX_SLUG_DISCRIMINATOR_LENGTH = 12;
@@ -125,12 +148,27 @@ function normalizeTitle(value) {
 
   assertWellFormedTitle(value);
 
-  const normalized = value
-    .replace(STRIPPED_LEGAL_SYMBOLS_PATTERN, '')
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(SEPARATOR_RUN, ' ')
-    .trim();
+  const lowered = toUnicode8Lowercase(
+    unorm.nfkc(value.replace(STRIPPED_LEGAL_SYMBOLS_PATTERN, ''))
+  );
+  let normalized = '';
+  let pendingSeparator = false;
+
+  for (const symbol of lowered) {
+    const retained = isUnicode8LetterOrNumber(symbol) || isRetainedMark(symbol);
+
+    if (!retained) {
+      pendingSeparator = normalized.length > 0;
+      continue;
+    }
+
+    if (pendingSeparator) {
+      normalized += ' ';
+      pendingSeparator = false;
+    }
+
+    normalized += symbol;
+  }
 
   // Truncating can leave a trailing separator space; trim again so the result is
   // stable regardless of where the boundary fell.
@@ -221,6 +259,7 @@ function titleSimilarity(left, right) {
 }
 
 module.exports = {
+  CATALOG_NORMALIZATION_CONTRACT,
   MAX_SLUG_DISCRIMINATOR_LENGTH,
   MAX_SLUG_LENGTH,
   MAX_TITLE_LENGTH,

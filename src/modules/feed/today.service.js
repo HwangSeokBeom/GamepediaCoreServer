@@ -134,7 +134,11 @@ async function buildGameBriefingSection({ userId, now }) {
   ])];
 
   if (catalogGameIds.length === 0) {
-    return { items: [], emptyReason: 'no_followed_or_playing_games' };
+    return {
+      items: [],
+      emptyReason: 'no_followed_or_playing_games',
+      generatedAt: now.toISOString()
+    };
   }
 
   const games = await prisma.catalogGame.findMany({

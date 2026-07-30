@@ -1,49 +1,67 @@
 # Pre-production dependency security review
 
-## Scope
+## Runtime contract
 
-This change updates production dependencies without using `npm audit fix`.
-The selected versions preserve the repository's Node.js 20 runtime contract.
+The supported runtime is Node.js 22 or newer. This is enforced in three places:
 
-- `multer` 2.2 resolves the reported upload denial-of-service advisories.
-- `nodemailer` 9.0.3 resolves the reported SMTP/header/file-access advisories.
-- `firebase-admin` 13.10 applies the latest Node.js 20-compatible 13.x fixes.
-- Patched transitive versions are pinned for Express request parsing, Prisma
-  configuration, and Firebase Realtime Database WebSocket handling.
+- `package.json` declares `engines.node >=22.0.0`;
+- `.npmrc` enables `engine-strict=true`;
+- the validation workflow installs Node.js 22.
 
-`@prisma/client` and `prisma` remain on 6.19.2 because Prisma 7 is a major
-migration. The vulnerable `effect` package used by Prisma's configuration CLI
-is overridden with a patched compatible implementation and is verified through
-client generation plus the disposable migration and PostgreSQL gates.
+The self-hosted deploy runner must therefore expose Node.js 22 to the deployment
+shell before this change is released. `npm ci` fails closed on an older runtime.
 
-## Residual audit entries
+## Deployed dependency tree
 
-`npm audit --omit=dev` still reports moderate entries through optional
-Firestore and Cloud Storage dependency trees bundled by `firebase-admin`.
-GamePediaCoreServer initializes Firebase Admin only for Cloud Messaging; it
-does not import or initialize Firestore, Cloud Storage, or Realtime Database.
+Production installation uses the committed lockfile and the explicit
+`npm ci --omit=dev --omit=optional` command. `.npmrc` also sets
+`omit=optional`, so a plain clean install used by validation cannot silently
+restore unused Firebase service trees. The server imports Firebase Admin only
+for Cloud Messaging; it does not import Firestore, Cloud Storage or Realtime
+Database. The deployed installation therefore contains neither development
+tooling nor those unused optional service trees.
 
-Removing those residual entries requires `firebase-admin` 14, which requires
-Node.js 22. The repository's CI and deployment contract currently use Node.js
-20, so that major upgrade is deliberately deferred instead of silently
-changing the production runtime. A Node.js 22 migration must validate the
-runner, PM2 host, Firebase Messaging initialization, and rollback path together.
+`firebase-admin` is pinned to 14.2.0. `@prisma/client` and `prisma` remain on
+6.19.2 because Prisma 7 is a separate major migration. Existing compatible
+transitive overrides remain pinned and are exercised by Prisma generation,
+migrations, PostgreSQL gates, HTTP tests and startup tests.
 
-This reachability assessment does not claim the installed optional code is
-vulnerability-free. It records why the remaining moderate entries are not
-request-runtime paths in the current application and why a major runtime change
-is outside this narrowly scoped dependency update.
+The release gate first verifies this package/workflow/deploy contract and then
+audits it:
+
+```bash
+npm run test:dependency-security
+```
+
+It executes:
+
+```bash
+npm audit --omit=dev --omit=optional --audit-level=moderate
+```
+
+and must report zero deployed-tree vulnerabilities. Development-only tooling is
+not represented as deployed code; its behavior is verified by the pinned
+OpenAPI lint and generated-client gates.
+
+## Service boundary
+
+Cloud Messaging initialization and push-service tests must pass after a clean
+`npm ci`. If the application later starts using Firestore, Cloud Storage,
+Realtime Database, or another Firebase service whose packages are currently
+optional, that feature must first remove or narrow `omit=optional`, review the
+new deployed tree, and rerun the security and full regression gates. It must not
+assume those omitted modules are present.
 
 ## Verification contract
 
 Before release, this branch must pass:
 
-- clean `npm ci` on Node.js 20 and the local supported Node.js runtime;
-- `npm audit --omit=dev` with no critical or high advisory;
-- Prisma validate, generate, and all repository migrations;
-- the self-isolating PostgreSQL 16 gate;
+- clean `npm ci` on Node.js 22;
+- `npm run test:dependency-security` with zero vulnerabilities;
+- Prisma validate, generate, and every repository migration;
+- the self-isolating PostgreSQL 16 gates;
 - Firebase Admin initialization and push-service tests;
 - mail transport and upload/request contract tests;
-- the canonical test suite;
-- startup/bootstrap smoke tests;
+- the canonical test suite and startup/bootstrap tests;
+- pinned OpenAPI lint and generated iOS client compilation;
 - source secret and conflict-marker scans.

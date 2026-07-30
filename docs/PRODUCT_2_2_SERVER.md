@@ -235,6 +235,26 @@ command twice consecutively, and compares the complete fixture snapshot:
 npm run test:postgres:product-2-2:seed
 ```
 
+## Catalog normalization deployment gate
+
+Persisted `normalized_title` values use the frozen
+`unicode-8.0-unorm-1.6.0-data-1.6.17-v1` contract, independent of the host's
+Node.js/ICU and PostgreSQL Unicode tables. After migrations and before PM2
+restart, the deployment script always runs:
+
+```bash
+npm run catalog:normalization:reconcile
+```
+
+The reconciler locks `catalog_games` and `game_localizations`, checks for
+canonical localization collisions, rewrites drifted rows atomically, and marks
+the exact contract ready. The server then re-verifies the marker and every
+stored canonical title before it listens. Skipping `prisma migrate deploy` does
+not skip reconciliation; if the normalization-state migration is absent, the
+deployment fails closed. Characters introduced after Unicode 8 remain
+separators until a separately reviewed versioned migration upgrades the
+contract.
+
 ## Feature flags and analytics
 
 Eight independent kill switches: `openCatalog`, `aiQuickAdd`, `playlog`,

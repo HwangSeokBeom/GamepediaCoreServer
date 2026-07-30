@@ -323,7 +323,12 @@ async function recommend({ userId, request, now = new Date() }) {
       recommendations: [],
       confidence: 'LOW',
       generatedAt: now.toISOString(),
-      dataFreshness: { candidatePoolSize: 0, freshestLibraryUpdateAt: null, stale: true },
+      dataFreshness: {
+        candidatePoolSize: 0,
+        freshestLibraryUpdateAt: null,
+        playlogSampleSize: 0,
+        stale: true
+      },
       emptyReason: 'no_owned_playing_or_backlog_games',
       ownedOnly: true,
       requestHash: hashCompassRequest(request)

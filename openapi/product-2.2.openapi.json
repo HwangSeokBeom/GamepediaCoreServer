@@ -6,6 +6,10 @@
     "description": "Machine-readable contract for the Product 2.2 server surface: the canonical open game catalog, AI-assisted quick add, Playlog, Game DNA, Play Compass, Monthly Replay, the Today feed, the editorial magazine and the product control plane. This document covers only the /api/v1 Product 2.2 subset and is not the complete backend API; the deployed mobile gate subset stays in openapi/cross-platform.openapi.json, and every pre-existing unversioned route is unchanged by this contract. Trust model: a value a user supplied — a provider id, a title, a URL — is at most USER_CONFIRMED, and parsing the syntax of a store URL or a package id is not verification. Only a real server-side provider response or an editor decision produces a verified identity or a publicly visible catalog fact.",
     "contact": {
       "name": "GamePedia backend"
+    },
+    "license": {
+      "name": "Proprietary",
+      "identifier": "LicenseRef-Proprietary"
     }
   },
   "servers": [
@@ -243,7 +247,10 @@
         "deprecated": true
       },
       "ArticleHeroImage": {
-        "type": "object",
+        "type": [
+          "object",
+          "null"
+        ],
         "additionalProperties": false,
         "required": [
           "url",
@@ -347,14 +354,7 @@
             "format": "date-time"
           },
           "heroImage": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/ArticleHeroImage"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "$ref": "#/components/schemas/ArticleHeroImage",
             "description": "Null unless the hero asset has a resolved rights status. An image with an unknown or restricted rights status is never offered as a public hero."
           },
           "heroImageWithheldReason": {
@@ -1420,13 +1420,236 @@
           }
         }
       },
+      "PlayCompassRecommendation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "catalogGameId",
+          "title",
+          "rank",
+          "score",
+          "scoreComponents",
+          "reasonCodes",
+          "estimatedSessionMinutes",
+          "estimatedSessionBasis",
+          "ownershipEvidence"
+        ],
+        "properties": {
+          "catalogGameId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "score": {
+            "type": "number"
+          },
+          "scoreComponents": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "platform",
+              "timeFit",
+              "continuity",
+              "social",
+              "energy",
+              "mood",
+              "recency",
+              "snooze"
+            ],
+            "properties": {
+              "platform": {
+                "type": "number"
+              },
+              "timeFit": {
+                "type": "number"
+              },
+              "continuity": {
+                "type": "number"
+              },
+              "social": {
+                "type": "number"
+              },
+              "energy": {
+                "type": "number"
+              },
+              "mood": {
+                "type": "number"
+              },
+              "recency": {
+                "type": "number"
+              },
+              "snooze": {
+                "type": "number"
+              },
+              "friendOverlap": {
+                "type": "number"
+              }
+            }
+          },
+          "reasonCodes": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "fits_available_time",
+                "shorter_than_available_time",
+                "already_in_progress",
+                "fresh_start_available",
+                "backlog_oldest_untouched",
+                "recently_played",
+                "not_played_recently",
+                "genre_affinity_match",
+                "solo_friendly",
+                "party_friendly",
+                "low_energy_friendly",
+                "high_energy_friendly",
+                "comfort_pick",
+                "challenge_pick",
+                "platform_available",
+                "installed_on_platform",
+                "owned_on_steam",
+                "friend_owned_overlap",
+                "snoozed_recently_deprioritized"
+              ]
+            }
+          },
+          "estimatedSessionMinutes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "estimatedSessionBasis": {
+            "type": "string",
+            "enum": [
+              "playlog_median",
+              "catalog_typical_session",
+              "genre_short_session",
+              "genre_long_session",
+              "default_estimate"
+            ]
+          },
+          "ownershipEvidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "externalGameId",
+              "libraryStatus",
+              "provenance",
+              "ownershipVerified",
+              "playtimeMinutes",
+              "lastPlayedAt",
+              "installEvidence"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "STEAM",
+                  "IGDB"
+                ]
+              },
+              "externalGameId": {
+                "type": "string"
+              },
+              "libraryStatus": {
+                "type": "string",
+                "enum": [
+                  "PLAYING",
+                  "BACKLOG"
+                ]
+              },
+              "provenance": {
+                "$ref": "#/components/schemas/CatalogProvenance",
+                "description": "Read from the stored ownership provenance. PROVIDER_VERIFIED only when the server itself established ownership from a real provider response; a manual library write is USER_CONFIRMED; a row predating provenance tracking is UNKNOWN. Never inferred from gameSource."
+              },
+              "playtimeMinutes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "lastPlayedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "installEvidence": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "known",
+                  "reason"
+                ],
+                "properties": {
+                  "known": {
+                    "const": false
+                  },
+                  "reason": {
+                    "const": "install_state_not_tracked"
+                  }
+                }
+              },
+              "ownershipVerified": {
+                "type": "boolean",
+                "description": "True only when provenance is PROVIDER_VERIFIED."
+              }
+            }
+          }
+        }
+      },
+      "PlayCompassDataFreshness": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidatePoolSize",
+          "freshestLibraryUpdateAt",
+          "playlogSampleSize",
+          "stale"
+        ],
+        "properties": {
+          "candidatePoolSize": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "freshestLibraryUpdateAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "playlogSampleSize": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stale": {
+            "type": "boolean"
+          }
+        }
+      },
       "PlayCompassResponse": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "recommendations",
           "confidence",
           "generatedAt",
           "dataFreshness",
+          "emptyReason",
+          "requestHash",
           "ownedOnly"
         ],
         "properties": {
@@ -1435,107 +1658,7 @@
             "maxItems": 3,
             "description": "At most three picks, drawn only from owned PLAYING/BACKLOG library entries. A default request never proposes an unowned game.",
             "items": {
-              "type": "object",
-              "required": [
-                "catalogGameId",
-                "score",
-                "scoreComponents",
-                "reasonCodes",
-                "ownershipEvidence",
-                "rank"
-              ],
-              "properties": {
-                "catalogGameId": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "title": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "rank": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 3
-                },
-                "score": {
-                  "type": "number"
-                },
-                "scoreComponents": {
-                  "type": "object"
-                },
-                "reasonCodes": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "estimatedSessionMinutes": {
-                  "type": "integer"
-                },
-                "estimatedSessionBasis": {
-                  "type": "string"
-                },
-                "ownershipEvidence": {
-                  "type": "object",
-                  "required": [
-                    "source",
-                    "externalGameId",
-                    "libraryStatus",
-                    "provenance",
-                    "ownershipVerified",
-                    "installEvidence"
-                  ],
-                  "properties": {
-                    "source": {
-                      "type": "string"
-                    },
-                    "externalGameId": {
-                      "type": "string"
-                    },
-                    "libraryStatus": {
-                      "type": "string"
-                    },
-                    "provenance": {
-                      "$ref": "#/components/schemas/CatalogProvenance",
-                      "description": "Read from the stored ownership provenance. PROVIDER_VERIFIED only when the server itself established ownership from a real provider response; a manual library write is USER_CONFIRMED; a row predating provenance tracking is UNKNOWN. Never inferred from gameSource."
-                    },
-                    "playtimeMinutes": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
-                    "lastPlayedAt": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "format": "date-time"
-                    },
-                    "installEvidence": {
-                      "type": "object",
-                      "required": [
-                        "known"
-                      ],
-                      "properties": {
-                        "known": {
-                          "type": "boolean"
-                        },
-                        "reason": {
-                          "type": "string"
-                        }
-                      }
-                    },
-                    "ownershipVerified": {
-                      "type": "boolean",
-                      "description": "True only when provenance is PROVIDER_VERIFIED."
-                    }
-                  }
-                }
-              }
+              "$ref": "#/components/schemas/PlayCompassRecommendation"
             }
           },
           "confidence": {
@@ -1551,19 +1674,25 @@
             "format": "date-time"
           },
           "dataFreshness": {
-            "type": "object"
+            "$ref": "#/components/schemas/PlayCompassDataFreshness"
           },
           "emptyReason": {
             "type": [
               "string",
               "null"
+            ],
+            "enum": [
+              "no_owned_playing_or_backlog_games",
+              "no_candidate_matched_constraints",
+              null
             ]
           },
           "ownedOnly": {
             "const": true
           },
           "requestHash": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
           }
         }
       },
@@ -2329,7 +2458,13 @@
                 "const": "ok"
               },
               "reasonCode": {
-                "type": "null"
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null
+                ]
               },
               "data": {
                 "$ref": "#/components/schemas/TodayEditorialCurationData"
@@ -2360,77 +2495,1095 @@
                 "type": "string"
               },
               "data": {
-                "type": "null"
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "const": null
               }
             }
           }
         ]
       },
-      "TodayOtherSection": {
+      "TodayPlayCompassData": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
-          "key",
-          "status",
-          "reasonCode",
-          "data"
+          "recommendations",
+          "confidence",
+          "dataFreshness",
+          "emptyReason",
+          "ownedOnly"
         ],
         "properties": {
-          "key": {
+          "recommendations": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "$ref": "#/components/schemas/PlayCompassRecommendation"
+            }
+          },
+          "confidence": {
             "type": "string",
             "enum": [
-              "playCompass",
-              "gameDNA",
-              "gameBriefing",
-              "backlogRescue",
-              "spoilerFreeStartGuide",
-              "monthlyReplay",
-              "friendActivity"
+              "LOW",
+              "MEDIUM",
+              "HIGH"
             ]
           },
-          "status": {
+          "dataFreshness": {
+            "$ref": "#/components/schemas/PlayCompassDataFreshness"
+          },
+          "emptyReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "no_owned_playing_or_backlog_games",
+              "no_candidate_matched_constraints",
+              null
+            ]
+          },
+          "ownedOnly": {
+            "const": true
+          }
+        }
+      },
+      "TodayGameDnaData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "signalCount",
+          "confidence",
+          "generatedAt",
+          "topGenres",
+          "sessionLengthLabel",
+          "socialLabel",
+          "toneLabel",
+          "missingSignals",
+          "reasonCodes"
+        ],
+        "properties": {
+          "signalCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "confidence": {
             "type": "string",
             "enum": [
-              "ok",
-              "disabled",
-              "unavailable"
-            ],
-            "description": "A failing section is reported as unavailable while every other section still renders."
+              "LOW",
+              "MEDIUM",
+              "HIGH"
+            ]
           },
-          "reasonCode": {
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "topGenres": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "genre",
+                "weight",
+                "share"
+              ],
+              "properties": {
+                "genre": {
+                  "type": "string"
+                },
+                "weight": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "share": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            }
+          },
+          "sessionLengthLabel": {
+            "type": "string",
+            "enum": [
+              "UNKNOWN",
+              "SHORT",
+              "MIXED",
+              "LONG"
+            ]
+          },
+          "socialLabel": {
+            "type": "string",
+            "enum": [
+              "MULTIPLAYER",
+              "SINGLEPLAYER",
+              "BALANCED"
+            ]
+          },
+          "toneLabel": {
+            "type": "string",
+            "enum": [
+              "COMFORT",
+              "CHALLENGE",
+              "BALANCED"
+            ]
+          },
+          "missingSignals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reasonCodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "TodayGameBriefingData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "emptyReason",
+          "generatedAt"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "catalogGameId",
+                "title",
+                "updatedAt",
+                "noteworthyReleases"
+              ],
+              "properties": {
+                "catalogGameId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "noteworthyReleases": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "countryCode",
+                      "platform",
+                      "serviceStatus",
+                      "shutdownDate",
+                      "provenance"
+                    ],
+                    "properties": {
+                      "countryCode": {
+                        "type": "string"
+                      },
+                      "platform": {
+                        "type": "string"
+                      },
+                      "serviceStatus": {
+                        "$ref": "#/components/schemas/CatalogServiceStatus"
+                      },
+                      "shutdownDate": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "format": "date"
+                      },
+                      "provenance": {
+                        "$ref": "#/components/schemas/CatalogProvenance"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "emptyReason": {
             "type": [
               "string",
               "null"
             ]
           },
-          "data": {
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TodayBacklogRescueData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "emptyReason"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "catalogGameId",
+                "title",
+                "addedAt",
+                "reasonCode",
+                "ownershipProvenance"
+              ],
+              "properties": {
+                "catalogGameId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "addedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "reasonCode": {
+                  "const": "backlog_never_logged"
+                },
+                "ownershipProvenance": {
+                  "$ref": "#/components/schemas/CatalogProvenance"
+                }
+              }
+            }
+          },
+          "emptyReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TodaySpoilerFreeStartGuideData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "emptyReason"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "catalogGameId",
+                "title",
+                "libraryStatus",
+                "genres",
+                "platforms",
+                "estimatedFirstSessionMinutes",
+                "soloFriendly",
+                "partyFriendly",
+                "spoilerFree"
+              ],
+              "properties": {
+                "catalogGameId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "libraryStatus": {
+                  "type": "string",
+                  "enum": [
+                    "PLAYING",
+                    "BACKLOG"
+                  ]
+                },
+                "genres": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "platforms": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "estimatedFirstSessionMinutes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                },
+                "soloFriendly": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "partyFriendly": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "spoilerFree": {
+                  "const": true
+                }
+              }
+            }
+          },
+          "emptyReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TodayMonthlyReplayData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "monthKey",
+          "timezone",
+          "isEmpty",
+          "playedDayCount",
+          "totalMinutes",
+          "mostPlayedGame",
+          "surpriseGame",
+          "missingData"
+        ],
+        "properties": {
+          "monthKey": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}$"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "isEmpty": {
+            "type": "boolean"
+          },
+          "playedDayCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 31
+          },
+          "totalMinutes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mostPlayedGame": {
             "type": [
               "object",
               "null"
             ],
-            "description": "The runtime payload for the named non-editorial section. No fields beyond the current server response are promised here."
+            "additionalProperties": false,
+            "required": [
+              "catalogGameId",
+              "title",
+              "totalMinutes",
+              "sessionCount",
+              "minutesKnown"
+            ],
+            "properties": {
+              "catalogGameId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "totalMinutes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sessionCount": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "minutesKnown": {
+                "type": "boolean"
+              }
+            }
+          },
+          "surpriseGame": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "catalogGameId",
+              "title",
+              "totalMinutes",
+              "sessionCount",
+              "reasonCode"
+            ],
+            "properties": {
+              "catalogGameId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "totalMinutes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sessionCount": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "reasonCode": {
+                "const": "first_played_this_month"
+              }
+            }
+          },
+          "missingData": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "effect"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "affectedSessionCount": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "affectedGameCount": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "effect": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
+      },
+      "TodayFriendActivityData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "emptyReason"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "activityId",
+                "actorUserId",
+                "activityType",
+                "catalogGameId",
+                "legacyIdentity",
+                "createdAt"
+              ],
+              "properties": {
+                "activityId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "actorUserId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "activityType": {
+                  "type": "string",
+                  "enum": [
+                    "REVIEW_CREATED",
+                    "REVIEW_UPDATED",
+                    "LIKED_GAME_ADDED",
+                    "LIKED_GAME_REMOVED",
+                    "RATING_CHANGED",
+                    "PLAY_STATUS_CHANGED",
+                    "STEAM_RECENTLY_PLAYED_SYNC"
+                  ]
+                },
+                "catalogGameId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "legacyIdentity": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "gameSource",
+                    "externalGameId",
+                    "igdbGameId"
+                  ],
+                  "properties": {
+                    "gameSource": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "STEAM",
+                        "IGDB",
+                        null
+                      ]
+                    },
+                    "externalGameId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "igdbGameId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "emptyReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TodayPlayCompassSection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "playCompass"
+              },
+              "status": {
+                "const": "ok"
+              },
+              "reasonCode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null
+                ]
+              },
+              "data": {
+                "$ref": "#/components/schemas/TodayPlayCompassData"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "playCompass"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "disabled",
+                  "unavailable"
+                ]
+              },
+              "reasonCode": {
+                "type": "string"
+              },
+              "data": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "const": null
+              }
+            }
+          }
+        ]
+      },
+      "TodayGameDnaSection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "gameDNA"
+              },
+              "status": {
+                "const": "ok"
+              },
+              "reasonCode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null
+                ]
+              },
+              "data": {
+                "$ref": "#/components/schemas/TodayGameDnaData"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "gameDNA"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "disabled",
+                  "unavailable"
+                ]
+              },
+              "reasonCode": {
+                "type": "string"
+              },
+              "data": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "const": null
+              }
+            }
+          }
+        ]
+      },
+      "TodayGameBriefingSection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "gameBriefing"
+              },
+              "status": {
+                "const": "ok"
+              },
+              "reasonCode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null
+                ]
+              },
+              "data": {
+                "$ref": "#/components/schemas/TodayGameBriefingData"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "gameBriefing"
+              },
+              "status": {
+                "const": "unavailable"
+              },
+              "reasonCode": {
+                "type": "string"
+              },
+              "data": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "const": null
+              }
+            }
+          }
+        ]
+      },
+      "TodayBacklogRescueSection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "backlogRescue"
+              },
+              "status": {
+                "const": "ok"
+              },
+              "reasonCode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null
+                ]
+              },
+              "data": {
+                "$ref": "#/components/schemas/TodayBacklogRescueData"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "backlogRescue"
+              },
+              "status": {
+                "const": "unavailable"
+              },
+              "reasonCode": {
+                "type": "string"
+              },
+              "data": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "const": null
+              }
+            }
+          }
+        ]
+      },
+      "TodaySpoilerFreeStartGuideSection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "spoilerFreeStartGuide"
+              },
+              "status": {
+                "const": "ok"
+              },
+              "reasonCode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null
+                ]
+              },
+              "data": {
+                "$ref": "#/components/schemas/TodaySpoilerFreeStartGuideData"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "spoilerFreeStartGuide"
+              },
+              "status": {
+                "const": "unavailable"
+              },
+              "reasonCode": {
+                "type": "string"
+              },
+              "data": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "const": null
+              }
+            }
+          }
+        ]
+      },
+      "TodayMonthlyReplaySection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "monthlyReplay"
+              },
+              "status": {
+                "const": "ok"
+              },
+              "reasonCode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null
+                ]
+              },
+              "data": {
+                "$ref": "#/components/schemas/TodayMonthlyReplayData"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "monthlyReplay"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "disabled",
+                  "unavailable"
+                ]
+              },
+              "reasonCode": {
+                "type": "string"
+              },
+              "data": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "const": null
+              }
+            }
+          }
+        ]
+      },
+      "TodayFriendActivitySection": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "friendActivity"
+              },
+              "status": {
+                "const": "ok"
+              },
+              "reasonCode": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null
+                ]
+              },
+              "data": {
+                "$ref": "#/components/schemas/TodayFriendActivityData"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "status",
+              "reasonCode",
+              "data"
+            ],
+            "properties": {
+              "key": {
+                "const": "friendActivity"
+              },
+              "status": {
+                "const": "unavailable"
+              },
+              "reasonCode": {
+                "type": "string"
+              },
+              "data": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "const": null
+              }
+            }
+          }
+        ]
       },
       "TodaySection": {
         "oneOf": [
           {
+            "$ref": "#/components/schemas/TodayPlayCompassSection"
+          },
+          {
+            "$ref": "#/components/schemas/TodayGameDnaSection"
+          },
+          {
+            "$ref": "#/components/schemas/TodayGameBriefingSection"
+          },
+          {
+            "$ref": "#/components/schemas/TodayBacklogRescueSection"
+          },
+          {
+            "$ref": "#/components/schemas/TodaySpoilerFreeStartGuideSection"
+          },
+          {
             "$ref": "#/components/schemas/TodayEditorialCurationSection"
           },
           {
-            "$ref": "#/components/schemas/TodayOtherSection"
+            "$ref": "#/components/schemas/TodayMonthlyReplaySection"
+          },
+          {
+            "$ref": "#/components/schemas/TodayFriendActivitySection"
           }
         ],
         "discriminator": {
           "propertyName": "key",
           "mapping": {
             "editorialCuration": "#/components/schemas/TodayEditorialCurationSection",
-            "playCompass": "#/components/schemas/TodayOtherSection",
-            "gameDNA": "#/components/schemas/TodayOtherSection",
-            "gameBriefing": "#/components/schemas/TodayOtherSection",
-            "backlogRescue": "#/components/schemas/TodayOtherSection",
-            "spoilerFreeStartGuide": "#/components/schemas/TodayOtherSection",
-            "monthlyReplay": "#/components/schemas/TodayOtherSection",
-            "friendActivity": "#/components/schemas/TodayOtherSection"
+            "playCompass": "#/components/schemas/TodayPlayCompassSection",
+            "gameDNA": "#/components/schemas/TodayGameDnaSection",
+            "gameBriefing": "#/components/schemas/TodayGameBriefingSection",
+            "backlogRescue": "#/components/schemas/TodayBacklogRescueSection",
+            "spoilerFreeStartGuide": "#/components/schemas/TodaySpoilerFreeStartGuideSection",
+            "monthlyReplay": "#/components/schemas/TodayMonthlyReplaySection",
+            "friendActivity": "#/components/schemas/TodayFriendActivitySection"
           }
         }
       },
@@ -2558,16 +3711,6 @@
       },
       "FeatureDisabled": {
         "description": "The feature's kill switch is off (FEATURE_DISABLED), or its state could not be read (FEATURE_STATE_UNAVAILABLE). Other features and every pre-existing endpoint keep working.",
-        "content": {
-          "application/json": {
-            "schema": {
-              "$ref": "#/components/schemas/ErrorEnvelope"
-            }
-          }
-        }
-      },
-      "FeatureStateUnavailable": {
-        "description": "The kill-switch state could not be read, so the feature is enforced as disabled (FEATURE_STATE_UNAVAILABLE). Distinct from FEATURE_DISABLED, and retryable.",
         "content": {
           "application/json": {
             "schema": {

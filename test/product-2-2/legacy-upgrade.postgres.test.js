@@ -1,13 +1,22 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // This file is run only in Phase B of the PostgreSQL gate:
-//   33 legacy migrations -> pre-2.2 fixture -> 6 real Product 2.2 migrations.
+//   legacy migrations -> pre-2.2 fixture -> every real Product 2.2 migration.
 // It therefore proves the upgraded-database path rather than reconstructing a
 // post-migration lookalike row.
 
 const enabled = process.env.RUN_POSTGRES_INTEGRATION === '1';
 const LEGACY_STEAM_LIBRARY_ID = '00000000-0000-4000-8000-00000000b003';
+const MIGRATIONS_DIR = path.resolve(process.cwd(), 'prisma/migrations');
+
+function repositoryMigrationNames() {
+  return fs.readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+}
 
 test('a migrated unverified Steam identity cannot capture the next real victim sync',
   { skip: !enabled }, async () => {
@@ -20,8 +29,15 @@ test('a migrated unverified Steam identity cannot capture the next real victim s
       WHERE "finished_at" IS NOT NULL AND "rolled_back_at" IS NULL
     `;
 
-    assert.equal(Number(migrationCount), 39,
-      'the scenario must run after all 33 legacy and 6 Product 2.2 migrations');
+    const migrationNames = repositoryMigrationNames();
+    const productMigrationCount = migrationNames.filter((name) => name.startsWith('20260730')).length;
+
+    assert.equal(
+      Number(migrationCount),
+      migrationNames.length,
+      `the scenario must run after every repository migration (${migrationNames.length} total, `
+        + `${productMigrationCount} Product 2.2)`
+    );
 
     const legacyLibraryRow = await prisma.userGameLibrary.findUnique({
       where: { id: LEGACY_STEAM_LIBRARY_ID },

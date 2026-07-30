@@ -103,6 +103,9 @@ env "${TEST_ENV[@]}" npx prisma generate
 echo "Applying all $MIGRATION_COUNT repository migrations."
 env "${TEST_ENV[@]}" npx prisma migrate deploy
 
+echo "Reconciling the pinned catalog normalization contract."
+env "${TEST_ENV[@]}" npm run --silent catalog:normalization:reconcile
+
 applied_migrations="$(docker exec "$CONTAINER_NAME" psql \
   --username "$POSTGRES_USER" \
   --dbname "$DATABASE_NAME" \

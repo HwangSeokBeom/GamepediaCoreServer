@@ -148,6 +148,10 @@ env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" npx prisma generate
 
 env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" npx prisma migrate deploy
 
+echo "Reconciling and verifying the pinned catalog normalization contract."
+env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" \
+  npm run --silent catalog:normalization:reconcile
+
 applied_migrations="$(docker exec "$CONTAINER_NAME" psql \
   --username "$POSTGRES_USER" \
   --dbname "$FRESH_DATABASE" \
@@ -259,6 +263,10 @@ cp prisma/schema.prisma "$LEGACY_STAGE_DIR/prisma/schema.prisma"
   DATABASE_URL="$UPGRADE_DATABASE_URL" "$REPO_ROOT/node_modules/.bin/prisma" migrate deploy --schema prisma/schema.prisma
 )
 
+echo "Reconciling upgraded rows with the pinned catalog normalization contract."
+env "${base_env[@]}" "DATABASE_URL=$UPGRADE_DATABASE_URL" \
+  npm run --silent catalog:normalization:reconcile
+
 upgrade_applied="$(docker exec "$CONTAINER_NAME" psql \
   --username "$POSTGRES_USER" \
   --dbname "$UPGRADE_DATABASE" \
@@ -304,6 +312,13 @@ docker exec -i "$CONTAINER_NAME" psql \
   --username "$POSTGRES_USER" \
   --dbname "$UPGRADE_DATABASE" \
   --set ON_ERROR_STOP=1 < scripts/test/verify-product-2-2-backfill.sql
+
+echo "Confirming reconciliation is idempotent after the migration re-run."
+reconcile_output="$(env "${base_env[@]}" "DATABASE_URL=$UPGRADE_DATABASE_URL" \
+  npm run --silent catalog:normalization:reconcile)"
+echo "$reconcile_output"
+grep -q 'catalog games updated: 0' <<<"$reconcile_output"
+grep -q 'localizations updated: 0' <<<"$reconcile_output"
 
 echo
 echo "Product 2.2 PostgreSQL gate passed."

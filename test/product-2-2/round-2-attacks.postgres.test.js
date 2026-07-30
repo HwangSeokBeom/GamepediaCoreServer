@@ -858,7 +858,7 @@ test('a body carrying a remote image is refused at write and at publish', { skip
 });
 
 // ===========================================================================
-// F. Unicode JS/SQL parity
+// F. Unicode code-point storage semantics
 // ===========================================================================
 
 test('JavaScript truncation and PostgreSQL varchar(300) agree on every corpus title', { skip: !enabled }, async () => {

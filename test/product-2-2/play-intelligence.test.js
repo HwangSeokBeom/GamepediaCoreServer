@@ -243,6 +243,12 @@ test('Play Compass only queries owned PLAYING and BACKLOG library entries', asyn
     assert.deepEqual(capturedWhere.catalogGameId, { not: null });
     assert.equal(result.recommendations.length, 0);
     assert.equal(result.emptyReason, 'no_owned_playing_or_backlog_games');
+    assert.deepEqual(result.dataFreshness, {
+      candidatePoolSize: 0,
+      freshestLibraryUpdateAt: null,
+      playlogSampleSize: 0,
+      stale: true
+    });
     assert.equal(result.ownedOnly, true);
   } finally {
     restore();

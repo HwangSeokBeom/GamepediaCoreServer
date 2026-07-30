@@ -743,6 +743,19 @@ model AiSearchLog {
 // Product 2.2 — Canonical game catalog
 // ===========================================================================
 
+/// Singleton deployment marker for the application-owned title normalization
+/// contract. The migration creates it as PENDING; the reconciliation command
+/// updates it only after every persisted title has been recomputed atomically.
+model CatalogNormalizationState {
+  singletonId       Int       @id @default(1) @map("singleton_id") @db.SmallInt
+  contractVersion   String    @map("contract_version") @db.VarChar(80)
+  catalogGameCount  Int       @default(0) @map("catalog_game_count")
+  localizationCount Int       @default(0) @map("localization_count")
+  reconciledAt      DateTime? @map("reconciled_at") @db.Timestamptz(6)
+
+  @@map("catalog_normalization_state")
+}
+
 /// One game *work*. Regional service editions live in RegionalRelease, and
 /// every provider key lives in GameExternalIdentity, so the same work can be
 /// reached from IGDB, Steam, the stores, or a community submission.

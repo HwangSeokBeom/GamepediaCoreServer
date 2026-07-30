@@ -106,6 +106,7 @@ echo "Confirmed isolated seed target via SELECT current_database(): $active_data
 echo "Generating Prisma client and applying all $MIGRATION_COUNT migrations."
 env "${TEST_ENV[@]}" npx prisma generate
 env "${TEST_ENV[@]}" npx prisma migrate deploy
+env "${TEST_ENV[@]}" npm run --silent catalog:normalization:reconcile
 
 applied_migrations="$(docker exec "$CONTAINER_NAME" psql \
   --username "$POSTGRES_USER" \

@@ -461,3 +461,74 @@ technical roadmap.
 - Verification impact: the contract test walks references starting at the
   actual Today 200 response and must reach `ArticleSummary`; JSON parse, local
   reference resolution and an OpenAPI 3.1 validator are also required.
+
+## 2026-07-30 — Persisted catalog normalization uses one frozen Unicode contract
+
+- Status: accepted; supersedes the normalization-version residual risk recorded
+  in the earlier code-point and malformed-UTF-16 decisions.
+- Context: pinning code-point length did not make canonical titles independent
+  of the host. Native NFKC, lowercase mapping, and Unicode letter/number classes
+  can all change when Node.js/ICU or PostgreSQL is upgraded.
+- Decision: persisted title normalization uses `unorm` 1.6.0 NFKC plus
+  `@unicode/unicode-8.0.0` 1.6.17 lowercase and category tables. Native
+  `normalize`, `toLowerCase`, Unicode property escapes, and PostgreSQL
+  normalization do not participate in the stored canonical result. A successor
+  migration creates a singleton `PENDING` marker; the deploy-time application
+  reconciler locks both catalog title tables, checks localization collisions,
+  rewrites both tables atomically, and records the exact contract version.
+  Startup verifies the marker and every stored normalized title before listening.
+- Alternatives: documenting a corpus-only parity claim (rejected: titles outside
+  the corpus would remain host-dependent); updating an already-applied migration
+  (rejected: migration history is immutable); trusting only the marker (rejected:
+  privileged writes after reconciliation could leave drift undetected).
+- Consequences: characters introduced after Unicode 8 are not silently reclassified
+  by a newer host; they remain separators until an explicit, versioned contract
+  upgrade and reconciliation is reviewed. Reconciliation is a full catalog scan
+  and briefly blocks catalog title writes, so deploy time grows with catalog size.
+- Verification impact: unit tests cover compatibility folding, special lowercase
+  rules, a post-Unicode-8 character, and every supported script. Fresh and upgraded
+  PostgreSQL gates run reconciliation, prove drift repair and collision rollback,
+  and startup fails closed when the marker or any row is stale. The repository now
+  contains 40 migrations.
+
+## 2026-07-30 — Every Today section is a generated-client contract
+
+- Status: accepted; supersedes the earlier editorial-only Today decision.
+- Context: making only `editorialCuration` concrete left the other seven section
+  payloads as generator-unusable objects and still allowed their runtime fields to
+  drift without a contract failure.
+- Decision: all eight section keys map through `TodaySection`'s discriminator to a
+  key-specific success schema. Every schema forbids additional properties and
+  requires exactly the fields returned by its runtime builder. Nested item shapes
+  are concrete, Play Compass shares one typed recommendation/freshness contract,
+  and `editorialCuration.data.articles.items` still references `ArticleSummary`.
+  Disabled and unavailable branches keep `data: null`.
+- Consequences: existing JSON wire shapes remain unchanged except that the empty
+  Play Compass freshness object now consistently includes
+  `playlogSampleSize: 0`; generators can model every section without inventing
+  fields. The deprecated `Article` alias remains for already generated clients.
+- Verification impact: contract tests traverse from the Today 200 response and
+  compare every data schema's required/property set with runtime output. A pinned
+  Apple Swift OpenAPI Generator fixture generates the client, decodes representative
+  Today JSON with the generated types, and compiles for the generic iOS Simulator
+  SDK. Redocly recommended lint permits only the exact deprecated-alias exception.
+
+## 2026-07-30 — The deployed dependency tree is advisory-clean on Node.js 22
+
+- Status: accepted
+- Context: the previous Node.js 20/Firebase 13 policy left moderate advisories in
+  optional Firebase service trees that this Messaging-only server never used.
+- Decision: require Node.js 22, pin Firebase Admin 14.2.0, enable
+  `engine-strict=true`, and omit optional packages from production installation.
+  CI audits the deployed tree at moderate severity and runs the pinned OpenAPI
+  contract gate before canonical tests.
+- Alternatives: continuing to install unused optional trees and documenting their
+  reachability (rejected: deployed code should match the services actually used);
+  running `npm audit fix` without review (rejected: it can change majors and does
+  not prove runtime behavior).
+- Consequences: Firestore, Cloud Storage, Realtime Database, or another omitted
+  Firebase service cannot be added implicitly; its dependency policy and audit
+  must be reviewed first. Self-hosted deploy runners must provide Node.js 22.
+- Verification impact: clean `npm ci`, a zero-vulnerability deployed-tree audit,
+  Prisma generation/migrations, Firebase Messaging/startup tests, canonical tests,
+  and both fresh PostgreSQL gates are required together.

@@ -1,0 +1,7 @@
+# Article is an intentionally retained generated-client compatibility alias.
+# Runtime operations use the narrower PublicArticle, EditorArticle and
+# ArticleSummary schemas, so referencing the alias from an operation would
+# weaken the actual response contract.
+openapi/product-2.2.openapi.json:
+  no-unused-components:
+    - '#/components/schemas/Article'

@@ -26,6 +26,7 @@ function makeDeps({ verifyMailStartupReadiness } = {}) {
     logged,
     connectDatabase: async () => calls.push('connectDatabase'),
     disconnectDatabase: async () => calls.push('disconnectDatabase'),
+    verifyCatalogNormalizationContract: async () => calls.push('verifyCatalogNormalizationContract'),
     probeRedisConnection: async () => calls.push('probeRedisConnection'),
     initializeFirebaseAdmin: () => {
       calls.push('initializeFirebaseAdmin');
@@ -66,6 +67,11 @@ test('successful verification: listen is called exactly once, after verification
   assert.ok(server, 'startServer must return the listening server');
   assert.equal(deps.calls.filter((call) => call === 'listen').length, 1, 'listen must run exactly once');
   assert.equal(deps.calls.filter((call) => call === 'verifyMailStartupReadiness').length, 1, 'verification must run exactly once');
+  assert.equal(
+    deps.calls.filter((call) => call === 'verifyCatalogNormalizationContract').length,
+    1,
+    'catalog normalization verification must run exactly once'
+  );
   assert.ok(
     deps.calls.indexOf('verifyMailStartupReadiness') < deps.calls.indexOf('listen'),
     `SMTP verification must complete before listen: ${deps.calls.join(' -> ')}`
@@ -97,6 +103,26 @@ test('failed SMTP verification: listen is never called and the process exits non
   const failureLog = deps.logged.find((entry) => entry.level === 'error');
   assert.ok(failureLog, 'failed startup must log one clear error');
   assert.equal(failureLog.meta.error.message, 'SMTP verification failed: smtp_connection_failure');
+});
+
+test('an unreconciled catalog normalization contract aborts before other services start', async () => {
+  const deps = makeDeps();
+  deps.verifyCatalogNormalizationContract = async () => {
+    deps.calls.push('verifyCatalogNormalizationContract');
+    const error = new Error('Catalog normalization contract is not ready');
+    error.code = 'CATALOG_NORMALIZATION_CONTRACT_NOT_READY';
+    throw error;
+  };
+
+  const server = await startServer(deps);
+
+  assert.equal(server, null);
+  assert.ok(!deps.calls.includes('probeRedisConnection'));
+  assert.ok(!deps.calls.includes('initializeFirebaseAdmin'));
+  assert.ok(!deps.calls.includes('verifyMailStartupReadiness'));
+  assert.ok(!deps.calls.includes('listen'));
+  assert.ok(deps.calls.includes('disconnectDatabase'));
+  assert.ok(deps.calls.includes('exit(1)'));
 });
 
 test('startup failure logging never contains raw transport error text', async () => {
@@ -132,6 +158,8 @@ test('verification ordering: database and redis precede verification', async () 
   await startServer(deps);
 
   const order = deps.calls;
+  assert.ok(order.indexOf('connectDatabase') < order.indexOf('verifyCatalogNormalizationContract'));
+  assert.ok(order.indexOf('verifyCatalogNormalizationContract') < order.indexOf('probeRedisConnection'));
   assert.ok(order.indexOf('connectDatabase') < order.indexOf('verifyMailStartupReadiness'));
   assert.ok(order.indexOf('probeRedisConnection') < order.indexOf('verifyMailStartupReadiness'));
 });
