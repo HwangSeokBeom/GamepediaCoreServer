@@ -30,10 +30,10 @@ export NODE_ENV=test APP_ENV=test MAIL_MODE=log \
 | Schema validity | `npx prisma validate` | VERIFIED |
 | OpenAPI JSON | `node -e "JSON.parse(require('node:fs').readFileSync('openapi/product-2.2.openapi.json', 'utf8'))"` | VERIFIED |
 | OpenAPI 3.1 | `npm run test:openapi-contract` | VERIFIED — pinned Redocly 2.41.2 recommended lint, 0 errors/warnings, 1 exact ignored deprecated-alias finding |
-| iOS generated client | `npm run test:ios-openapi-contract` | VERIFIED — Apple generator 1.11.1/runtime 1.12.0, all eight successful Today sections plus the null failure branch decoded with generated types, generic iOS Simulator SDK compile |
+| iOS generated client | `npm run test:ios-openapi-contract` | VERIFIED — Apple generator 1.11.1/runtime 1.12.0, all eight successful Today sections plus the null failure branch, typed catalog confirm/status results, and catalog/Playlog pagination cursors decoded with generated types; generic iOS Simulator SDK compile |
 | Deployed dependency audit | `npm run test:dependency-security` | VERIFIED — package/workflow/deploy contract check, omitted dev/Firestore/Storage packages confirmed absent, 0 vulnerabilities at moderate severity or higher |
-| Canonical tests | `npm test` | VERIFIED — 52 files, 508 tests, 446 pass, 0 fail, 62 skipped |
-| PostgreSQL gate | `npm run test:postgres:product-2-2` | VERIFIED — exit 0, 40 fresh migrations, 33 legacy + 7 Product 2.2 upgrade migrations, 50/50 real-database tests |
+| Canonical tests | `npm test` | VERIFIED — 53 files, 515 tests, 448 pass, 0 fail, 67 skipped |
+| PostgreSQL gate | `npm run test:postgres:product-2-2` | VERIFIED — exit 0, 40 fresh migrations, 33 legacy + 7 Product 2.2 upgrade migrations, 55/55 real-database tests |
 | Seed-twice PostgreSQL gate | `npm run test:postgres:product-2-2:seed` | VERIFIED — exit 0, 40 migrations, two consecutive documented seed runs, stable 3-game/4-claim/0-identity/1-linked-revision snapshot |
 | Pre-existing auth gate | `npm run test:postgres` | VERIFIED — exit 0, 40 migrations applied, 6/6 tests pass |
 | Whitespace | `git diff --check` | VERIFIED, clean |
@@ -41,11 +41,11 @@ export NODE_ENV=test APP_ENV=test MAIL_MODE=log \
 There is no `test:canonical` script in this repository. `npm test` **is** the
 canonical runner (`node scripts/test/run-canonical-tests.js`), which discovers
 files ending exactly `.test.js` and excludes the user-owned ` 2.js` / ` 3.js`
-duplicates. All 62 skips are explicit database-isolation guards, not weakened
+duplicates. All 67 skips are explicit database-isolation guards, not weakened
 assertions:
 
-- 41 Product 2.2 top-level skips require `RUN_POSTGRES_INTEGRATION=1`; the
-  Product gate executes 49 TAP-counted cases on the fresh database (the two
+- 46 Product 2.2 top-level skips require `RUN_POSTGRES_INTEGRATION=1`; the
+  Product gate executes 54 TAP-counted cases on the fresh database (the two
   round-3 parents expand to 11 subtests) and one victim-sync case after a real
   legacy upgrade;
 - 4 top-level auth/signup/push skips run inside `npm run test:postgres`, whose
@@ -70,12 +70,13 @@ Counts are per file, each run on its own with `node --test <file>`:
 | `play-intelligence.test.js` | 24 | 24 | 0 | 0 |
 | `feed-and-product.test.js` | 41 | 41 | 0 | 0 |
 | `http-contract.test.js` | 13 | 13 | 0 | 0 |
-| `privacy-and-openapi.test.js` | 17 | 17 | 0 | 0 |
+| `privacy-and-openapi.test.js` | 19 | 19 | 0 | 0 |
 | `review-fixes.test.js` | 30 | 30 | 0 | 0 |
 | `round-2-unit.test.js` | 12 | 12 | 0 | 0 |
 | `product-2-2.postgres.test.js` | 28 | 28 | 0 | 0 in the gate (28 skipped without `RUN_POSTGRES_INTEGRATION=1`) |
 | `round-2-attacks.postgres.test.js` | 10 | 10 | 0 | 0 in the gate (10 skipped without `RUN_POSTGRES_INTEGRATION=1`) |
 | `round-3-regressions.postgres.test.js` | 11 | 11 | 0 | 0 in the gate (2 parent tests skipped without `RUN_POSTGRES_INTEGRATION=1`) |
+| `ios-contract.postgres.test.js` | 5 | 5 | 0 | 0 in the gate (5 skipped without `RUN_POSTGRES_INTEGRATION=1`) |
 | `legacy-upgrade.postgres.test.js` | 1 | 1 | 0 | 0 in the upgraded-database gate (1 skipped without `RUN_POSTGRES_INTEGRATION=1`) |
 
 ## PostgreSQL gate
@@ -210,7 +211,7 @@ fabricated verification; published fixture titles explicitly use
 | Feed ordering / partial failure | `feed-and-product.test.js` — fixed order, one failing section degrades alone, cursor |
 | Canonical correction delta | `round-3-regressions.postgres.test.js` — equal scalars, trim-equivalent body, relation reordering/duplicate upserts, and a real delta inside the locked transaction |
 | Today generated-client contract | `privacy-and-openapi.test.js` — graph traversal from the Today 200 response reaches all eight key-specific data schemas and `ArticleSummary`; every data schema requires exactly its runtime fields; `feed-and-product.test.js` checks the eight actual runtime field sets |
-| iOS generated client | `npm run test:ios-openapi-contract` — pinned Apple Swift OpenAPI Generator 1.11.1 / runtime 1.12.0, all eight successful Today sections and the required-null failure branch decoded with generated types, and generic iOS Simulator SDK compile |
+| iOS generated client | `npm run test:ios-openapi-contract` — pinned Apple Swift OpenAPI Generator 1.11.1 / runtime 1.12.0, all eight successful Today sections and the required-null failure branch, typed catalog confirm/status results, and catalog/Playlog pagination cursors decoded with generated types, plus a generic iOS Simulator SDK compile |
 | Unpaired-surrogate refusal | `catalog-identity.test.js`, `catalog-submission.test.js`, `http-contract.test.js`, and `round-3-regressions.postgres.test.js` — high/low/mixed lone surrogates fail before storage; valid astral Unicode round-trips |
 | Raw data log leak | `privacy-and-openapi.test.js` — repository scan plus planted-leak self-test |
 
