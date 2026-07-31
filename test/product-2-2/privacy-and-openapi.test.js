@@ -681,6 +681,22 @@ test('the iOS generated-client gate is version-pinned and exercises decoding plu
   assert.match(smoke, /JSONDecoder/);
   assert.match(smoke, /Components\.Schemas\.ArticleSummary/);
   assert.match(smoke, /Components\.Schemas\.TodayFeed/);
+  // The iOS-blocking operations must be decoded by the generated types, not merely
+  // declared in the document.
+  for (const generated of [
+    'SubmissionConfirmEnvelope',
+    'SubmissionStateEnvelope',
+    'CatalogSearchEnvelope',
+    'PlaySessionListEnvelope'
+  ]) {
+    assert.match(smoke, new RegExp(`Components\\.Schemas\\.${generated}`),
+      `${generated} must be exercised by the generated-client smoke`);
+  }
+
+  // And the reachability the client was blocked on must be asserted, not just decoded.
+  assert.match(smoke, /precondition\(confirmCreated\.data\.catalogGameId ==/);
+  assert.match(smoke, /precondition\(searchFirstPage\.data\.meta\.nextCursor ==/);
+  assert.match(smoke, /precondition\(playSessionPage\.data\.meta\.nextCursor\?\.isEmpty == false\)/);
   assert.match(gate, /swift run ContractSmoke/);
   assert.match(gate, /generic\/platform=iOS Simulator/);
   assert.match(gate, /Swift OpenAPI Generator emitted a warning/);
@@ -733,6 +749,215 @@ test('the contract documents the concurrency check and every editorial conflict 
   // Whatever else it says, it must promise that the destination is not echoed back.
   assert.match(contract.components.responses.ValidationError.description,
     /reason codes only, never the offending destination/);
+});
+
+test('the iOS-blocking operations answer typed schemas instead of an opaque object', () => {
+  // Four operations referenced the generic SuccessEnvelope, or declared meta as a
+  // bare `{ type: object }`. A generated Swift client could therefore reach neither
+  // the confirmed catalogGameId, nor the submission's status and resolution, nor
+  // either pagination cursor. Each now has a dedicated typed envelope.
+  const contract = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
+
+  function resolve(pointer) {
+    return pointer.replace(/^#\//, '').split('/').reduce((node, segment) => node?.[segment], contract);
+  }
+
+  function deref(schema) {
+    let current = schema;
+
+    while (current && typeof current.$ref === 'string') {
+      current = resolve(current.$ref);
+    }
+
+    return current;
+  }
+
+  /// The chain an operation's response body follows to a concrete `data` schema.
+  /// Every hop must be a $ref, which is what makes the type reachable in a
+  /// generated client rather than an inline anonymous shape.
+  function dataSchemaOf(route, method, status) {
+    const body = contract.paths[route][method].responses[status].content['application/json'].schema;
+
+    assert.equal(typeof body.$ref, 'string', `${method} ${route} ${status} must $ref a named envelope`);
+    assert.notEqual(body.$ref, '#/components/schemas/SuccessEnvelope',
+      `${method} ${route} ${status} must not reuse the generic envelope`);
+
+    const envelope = deref(body);
+
+    assert.equal(typeof envelope.properties.data.$ref, 'string',
+      `${method} ${route} ${status} must $ref a named data schema`);
+
+    return deref(envelope.properties.data);
+  }
+
+  // 1. confirmCatalogSubmission — typed result, reachable catalogGameId.
+  const confirmRoute = '/api/v1/catalog/submissions/{submissionId}/confirm';
+
+  for (const status of ['200', '201']) {
+    const result = dataSchemaOf(confirmRoute, 'post', status);
+
+    assert.equal(result.type, 'object');
+    assert.deepEqual([...result.required].sort(), [
+      'catalogGameId', 'createdNewGame', 'idempotentReplay', 'identityConflict',
+      'publicReviewStatus', 'status', 'submissionId'
+    ]);
+    // The id the client is blocked on, typed as a uuid rather than a free object.
+    assert.deepEqual(result.properties.catalogGameId.type, ['string', 'null']);
+    assert.equal(result.properties.catalogGameId.format, 'uuid');
+    assert.equal(result.properties.status.$ref, '#/components/schemas/GameSubmissionStatus');
+    assert.equal(result.properties.publicReviewStatus.$ref, '#/components/schemas/CatalogPublicationStatus');
+    assert.equal(result.properties.createdNewGame.type, 'boolean');
+    assert.equal(result.properties.idempotentReplay.type, 'boolean');
+
+    // The conflict is a named schema too, down to the provider and the reason code.
+    const conflict = deref(result.properties.identityConflict);
+
+    assert.deepEqual(conflict.type, ['object', 'null']);
+    assert.deepEqual([...conflict.required].sort(), ['existingCatalogGameId', 'provider', 'reasonCode']);
+    assert.equal(conflict.properties.provider.$ref, '#/components/schemas/CatalogIdentityProvider');
+    assert.equal(conflict.properties.existingCatalogGameId.format, 'uuid');
+    assert.deepEqual(conflict.properties.reasonCode.enum, ['verified_identity_already_exists']);
+  }
+
+  // Both statuses must describe the same result, or a client has to branch on the code.
+  assert.equal(
+    contract.paths[confirmRoute].post.responses['200'].content['application/json'].schema.$ref,
+    contract.paths[confirmRoute].post.responses['201'].content['application/json'].schema.$ref
+  );
+
+  // 2. getCatalogSubmission — typed status, resolution and resulting game.
+  const state = dataSchemaOf('/api/v1/catalog/submissions/{submissionId}', 'get', '200');
+
+  assert.deepEqual([...state.required].sort(), [
+    'aiFallbackUsed', 'candidateSummary', 'catalogGameId', 'clarifyingQuestions', 'createdAt',
+    'draftReadable', 'expired', 'expiresAt', 'inputType', 'locale', 'newGameDraft', 'platformHint',
+    'publicReviewStatus', 'regionCode', 'status', 'submissionId', 'updatedAt'
+  ]);
+  assert.equal(state.properties.status.$ref, '#/components/schemas/GameSubmissionStatus');
+  assert.equal(state.properties.inputType.$ref, '#/components/schemas/GameSubmissionInputType');
+  assert.equal(state.properties.catalogGameId.format, 'uuid');
+  assert.equal(state.properties.draftReadable.type, 'boolean');
+
+  // The resolution the client needs: the re-validated draft, reachable field by field.
+  const draft = deref(state.properties.newGameDraft);
+
+  assert.deepEqual(draft.type, ['object', 'null']);
+  assert.deepEqual([...draft.required].sort(), [
+    'fieldProvenance', 'genres', 'identities', 'localizations', 'originalTitle',
+    'platforms', 'regionalReleases', 'requiresTitleConfirmation'
+  ]);
+  // The optional draft fields are omitted by the server when empty, so requiring
+  // them would promise something the wire does not carry.
+  for (const optional of ['developerName', 'publisherName', 'firstReleaseDate',
+    'supportsSinglePlayer', 'supportsMultiplayer', 'typicalSessionMinutes']) {
+    assert.ok(draft.properties[optional], `${optional} must be declared`);
+    assert.equal(draft.required.includes(optional), false, `${optional} must not be required`);
+  }
+
+  assert.equal(deref(draft.properties.localizations.items).properties.kind.enum.length, 3);
+  assert.equal(deref(draft.properties.regionalReleases.items).properties.serviceStatus.$ref,
+    '#/components/schemas/CatalogServiceStatus');
+  assert.equal(deref(draft.properties.identities.items).properties.provider.$ref,
+    '#/components/schemas/CatalogIdentityProvider');
+  assert.equal(deref(draft.properties.fieldProvenance.items).properties.provenance.$ref,
+    '#/components/schemas/CatalogProvenance');
+  assert.ok(deref(state.properties.candidateSummary).properties.candidateCount);
+  assert.equal(state.properties.clarifyingQuestions.maxItems, 1);
+
+  // 3 & 4. Both cursors reachable as typed values.
+  const search = dataSchemaOf('/api/v1/catalog/games/search', 'get', '200');
+  const searchMeta = deref(search.properties.meta);
+
+  assert.deepEqual([...search.required].sort(), ['games', 'meta']);
+  assert.equal(search.properties.games.items.$ref, '#/components/schemas/CatalogGameSummary');
+  assert.deepEqual([...searchMeta.required].sort(), ['limit', 'matchedBy', 'nextCursor', 'totalScanned']);
+  assert.deepEqual(searchMeta.properties.nextCursor.type, ['string', 'null']);
+  assert.deepEqual(searchMeta.properties.matchedBy.enum,
+    ['empty_query', 'no_match', 'normalized_title_exact', 'ranked']);
+
+  const playSessions = dataSchemaOf('/api/v1/users/me/play-sessions', 'get', '200');
+  const playMeta = deref(playSessions.properties.meta);
+
+  assert.deepEqual([...playSessions.required].sort(), ['meta', 'playSessions']);
+  assert.equal(playSessions.properties.playSessions.items.$ref, '#/components/schemas/PlaySession');
+  // Only the two keys the runtime actually emits; no invented total or page count.
+  assert.deepEqual([...playMeta.required].sort(), ['limit', 'nextCursor']);
+  assert.deepEqual(Object.keys(playMeta.properties).sort(), ['limit', 'nextCursor']);
+  assert.deepEqual(playMeta.properties.nextCursor.type, ['string', 'null']);
+
+  // No target response may leave an untyped object behind.
+  for (const [route, method, status] of [
+    [confirmRoute, 'post', '200'], [confirmRoute, 'post', '201'],
+    ['/api/v1/catalog/submissions/{submissionId}', 'get', '200'],
+    ['/api/v1/catalog/games/search', 'get', '200'],
+    ['/api/v1/users/me/play-sessions', 'get', '200']
+  ]) {
+    (function assertNoOpaqueObject(node, pointer) {
+      if (!node || typeof node !== 'object') {
+        return;
+      }
+
+      if (node.type === 'object' && !node.properties && !node.$ref && node.additionalProperties !== true) {
+        assert.fail(`${method.toUpperCase()} ${route} ${status}: opaque object at ${pointer}`);
+      }
+
+      for (const [key, child] of Object.entries(node)) {
+        if (key !== '$ref') {
+          assertNoOpaqueObject(child, `${pointer}/${key}`);
+        }
+      }
+    })(dataSchemaOf(route, method, status), `${method} ${route} ${status}`);
+  }
+});
+
+test('the generic SuccessEnvelope is untouched, so unrelated operations still generate', () => {
+  // The typed envelopes are additive. Stretching SuccessEnvelope itself would have
+  // changed every other operation's generated type.
+  const contract = JSON.parse(fs.readFileSync(CONTRACT_PATH, 'utf8'));
+  const envelope = contract.components.schemas.SuccessEnvelope;
+
+  assert.deepEqual(envelope.required, ['success', 'data']);
+  assert.equal(envelope.properties.success.const, true);
+  assert.deepEqual(envelope.properties.data, { type: 'object' });
+
+  // It is still the schema every non-target operation answers with.
+  const stillGeneric = [];
+
+  for (const [route, item] of Object.entries(contract.paths)) {
+    for (const [method, operation] of Object.entries(item)) {
+      for (const [status, response] of Object.entries(operation.responses)) {
+        const schema = response.content?.['application/json']?.schema;
+
+        if (schema?.$ref === '#/components/schemas/SuccessEnvelope') {
+          stillGeneric.push(`${method.toUpperCase()} ${route} ${status}`);
+        }
+      }
+    }
+  }
+
+  assert.ok(stillGeneric.length > 0, 'the generic envelope must remain in use by other operations');
+
+  // ...but none of the four operations this change targeted. Matched on the exact
+  // route, because sibling routes share a prefix: /play-sessions/calendar is a
+  // separate, unpaginated operation that deliberately keeps the generic envelope.
+  const targetedOperations = new Set([
+    'POST /api/v1/catalog/submissions/{submissionId}/confirm',
+    'GET /api/v1/catalog/submissions/{submissionId}',
+    'GET /api/v1/catalog/games/search',
+    'GET /api/v1/users/me/play-sessions'
+  ]);
+
+  for (const entry of stillGeneric) {
+    const operation = entry.split(' ').slice(0, 2).join(' ');
+
+    assert.equal(targetedOperations.has(operation), false,
+      `${operation} must no longer answer the generic envelope`);
+  }
+
+  // The unpaginated calendar operation has no cursor, so no dedicated page schema
+  // was invented for it; it must still be reachable through the generic envelope.
+  assert.ok(stillGeneric.some((entry) => entry.startsWith('GET /api/v1/users/me/play-sessions/calendar ')),
+    'the calendar operation must be left as it is');
 });
 
 test('the cross-platform gate contract is unchanged and still declares its own scope', () => {

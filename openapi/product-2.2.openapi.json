@@ -3646,6 +3646,655 @@
             }
           }
         }
+      },
+      "GameSubmissionStatus": {
+        "type": "string",
+        "description": "Lifecycle of a quick-add submission, read straight from the game_submissions.status column. This server only ever writes PREVIEW, PERSONAL_CONFIRMED, PENDING_REVIEW and EXPIRED; APPROVED and REJECTED are part of the column and are listed so a value written by a future editorial flow decodes instead of failing the whole response.",
+        "enum": [
+          "PREVIEW",
+          "PERSONAL_CONFIRMED",
+          "PENDING_REVIEW",
+          "APPROVED",
+          "REJECTED",
+          "EXPIRED"
+        ]
+      },
+      "GameSubmissionInputType": {
+        "type": "string",
+        "description": "How the submission was started. The raw input itself is never stored or returned.",
+        "enum": [
+          "TEXT",
+          "URL",
+          "PROVIDER_ID"
+        ]
+      },
+      "SubmissionIdentityConflict": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "description": "Present when the submission parsed a provider key that a *verified* identity already holds on another canonical game. Nothing is merged or repointed: the conflict is reported so the client can offer the existing game. Null when there is no conflict.",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "existingCatalogGameId",
+          "reasonCode"
+        ],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/CatalogIdentityProvider"
+          },
+          "existingCatalogGameId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reasonCode": {
+            "type": "string",
+            "enum": [
+              "verified_identity_already_exists"
+            ]
+          }
+        }
+      },
+      "SubmissionConfirmResult": {
+        "type": "object",
+        "description": "Outcome of confirming a quick-add submission. The same seven fields are returned by all three paths — a new PRIVATE game was created, an existing candidate was linked, or an earlier confirmation was replayed — so a client reads createdNewGame and idempotentReplay rather than branching on the status code.",
+        "additionalProperties": false,
+        "required": [
+          "submissionId",
+          "status",
+          "catalogGameId",
+          "createdNewGame",
+          "idempotentReplay",
+          "publicReviewStatus",
+          "identityConflict"
+        ],
+        "properties": {
+          "submissionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/GameSubmissionStatus"
+          },
+          "catalogGameId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The canonical game this submission resolved to — created or linked. Non-null on every create and link path. Null only on an idempotent replay of a submission that left PREVIEW without linking a game, which is why the field is nullable rather than guaranteed."
+          },
+          "createdNewGame": {
+            "type": "boolean",
+            "description": "True only when this request created the canonical game. A replay reports false."
+          },
+          "idempotentReplay": {
+            "type": "boolean",
+            "description": "True when a concurrent or repeated confirm lost the PREVIEW claim and this response is the already committed outcome. Returned with 200, never 201."
+          },
+          "publicReviewStatus": {
+            "$ref": "#/components/schemas/CatalogPublicationStatus"
+          },
+          "identityConflict": {
+            "$ref": "#/components/schemas/SubmissionIdentityConflict"
+          }
+        }
+      },
+      "SubmissionConfirmEnvelope": {
+        "type": "object",
+        "description": "Success envelope carrying a typed confirmation result.",
+        "additionalProperties": false,
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/SubmissionConfirmResult"
+          }
+        }
+      },
+      "SubmissionDraftLocalization": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "languageCode",
+          "title"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ORIGINAL_TITLE",
+              "REGIONAL_TITLE",
+              "ALIAS"
+            ]
+          },
+          "languageCode": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "regionCode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          }
+        }
+      },
+      "SubmissionDraftRegionalRelease": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "countryCode",
+          "languageCode",
+          "platform",
+          "serviceStatus"
+        ],
+        "properties": {
+          "countryCode": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "languageCode": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "platform": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "operatorName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "serverRegion": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 60
+          },
+          "releaseDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "shutdownDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "serviceStatus": {
+            "$ref": "#/components/schemas/CatalogServiceStatus"
+          }
+        }
+      },
+      "SubmissionDraftIdentity": {
+        "type": "object",
+        "description": "A provider key parsed out of the submitted text. Parsing a string is not verification, so this is only ever recorded as a claim and never occupies the global provider key.",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "externalId",
+          "regionKey"
+        ],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/CatalogIdentityProvider"
+          },
+          "externalId": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "regionKey": {
+            "type": "string",
+            "maxLength": 16
+          }
+        }
+      },
+      "SubmissionDraftFieldProvenance": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fieldPath",
+          "provenance",
+          "confidence"
+        ],
+        "properties": {
+          "fieldPath": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/CatalogProvenance"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      },
+      "SubmissionGameDraft": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "description": "The structured draft stored for this submission, re-validated on read. Null when the stored draft no longer satisfies the current schema — draftReadable reports which. The optional fields below are absent, not null, when the extractor produced nothing for them.",
+        "additionalProperties": false,
+        "required": [
+          "originalTitle",
+          "requiresTitleConfirmation",
+          "genres",
+          "platforms",
+          "localizations",
+          "regionalReleases",
+          "identities",
+          "fieldProvenance"
+        ],
+        "properties": {
+          "originalTitle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 300,
+            "description": "Null until a title exists as a structured field. The raw natural-language input is never stored here as a fallback."
+          },
+          "requiresTitleConfirmation": {
+            "type": "boolean"
+          },
+          "developerName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "publisherName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "firstReleaseDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "genres": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "maxLength": 60
+            }
+          },
+          "platforms": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "maxLength": 40
+            }
+          },
+          "supportsSinglePlayer": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "supportsMultiplayer": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "typicalSessionMinutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1440
+          },
+          "localizations": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "$ref": "#/components/schemas/SubmissionDraftLocalization"
+            }
+          },
+          "regionalReleases": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/SubmissionDraftRegionalRelease"
+            }
+          },
+          "identities": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/SubmissionDraftIdentity"
+            }
+          },
+          "fieldProvenance": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "$ref": "#/components/schemas/SubmissionDraftFieldProvenance"
+            }
+          }
+        }
+      },
+      "SubmissionCandidateSummary": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "description": "Counts and reason codes for the candidates the preview found. Null when the preview recorded none. Every field is optional because this column is stored as JSON and is returned without re-validation, so a row written by an earlier revision must still decode; the current writer always emits all four.",
+        "required": [],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "description": "Shape version written by the preview. Currently 1."
+          },
+          "candidateCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "catalogGameIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "reasonCodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SubmissionState": {
+        "type": "object",
+        "description": "Full state of one quick-add submission, readable only by the account that created it. Every field below is always present on the wire; the nullable ones carry null rather than being omitted.",
+        "additionalProperties": false,
+        "required": [
+          "submissionId",
+          "status",
+          "inputType",
+          "locale",
+          "regionCode",
+          "platformHint",
+          "newGameDraft",
+          "draftReadable",
+          "candidateSummary",
+          "clarifyingQuestions",
+          "aiFallbackUsed",
+          "catalogGameId",
+          "publicReviewStatus",
+          "expiresAt",
+          "expired",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "submissionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/GameSubmissionStatus"
+          },
+          "inputType": {
+            "$ref": "#/components/schemas/GameSubmissionInputType"
+          },
+          "locale": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "regionCode": {
+            "type": "string",
+            "maxLength": 8
+          },
+          "platformHint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40
+          },
+          "newGameDraft": {
+            "$ref": "#/components/schemas/SubmissionGameDraft"
+          },
+          "draftReadable": {
+            "type": "boolean",
+            "description": "False when the stored draft failed re-validation, in which case newGameDraft is null and the submission has to be previewed again."
+          },
+          "candidateSummary": {
+            "$ref": "#/components/schemas/SubmissionCandidateSummary"
+          },
+          "clarifyingQuestions": {
+            "type": "array",
+            "maxItems": 1,
+            "description": "At most one question; an empty array when the extractor asked nothing.",
+            "items": {
+              "type": "string",
+              "maxLength": 300
+            }
+          },
+          "aiFallbackUsed": {
+            "type": "boolean"
+          },
+          "catalogGameId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The canonical game this submission resolved to, or null before confirmation."
+          },
+          "publicReviewStatus": {
+            "$ref": "#/components/schemas/CatalogPublicationStatus"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "Evaluated against the server clock at read time; a confirm after this is a 409."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SubmissionStateEnvelope": {
+        "type": "object",
+        "description": "Success envelope carrying a typed submission state.",
+        "additionalProperties": false,
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/SubmissionState"
+          }
+        }
+      },
+      "CatalogSearchMeta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "limit",
+          "nextCursor",
+          "matchedBy",
+          "totalScanned"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 400,
+            "description": "Opaque continuation token. Pass it back verbatim as the cursor query parameter. Null on the last page. Its encoding is a server detail and must not be parsed by a client."
+          },
+          "matchedBy": {
+            "type": "string",
+            "description": "How this page was produced. empty_query means the query normalized to nothing, which a punctuation-only query does; no_match means nothing scored above the threshold.",
+            "enum": [
+              "empty_query",
+              "no_match",
+              "normalized_title_exact",
+              "ranked"
+            ]
+          },
+          "totalScanned": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Candidates ranked before this page was cut. Not a total result count for the catalog."
+          }
+        }
+      },
+      "CatalogSearchResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "games",
+          "meta"
+        ],
+        "properties": {
+          "games": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogGameSummary"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/CatalogSearchMeta"
+          }
+        }
+      },
+      "CatalogSearchEnvelope": {
+        "type": "object",
+        "description": "Success envelope carrying typed catalog search results and their cursor.",
+        "additionalProperties": false,
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/CatalogSearchResult"
+          }
+        }
+      },
+      "PlaySessionListMeta": {
+        "type": "object",
+        "description": "Keyset pagination over (playedAt desc, id desc). Those two are unique together, so a page boundary can neither skip nor repeat a session.",
+        "additionalProperties": false,
+        "required": [
+          "limit",
+          "nextCursor"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 400,
+            "description": "Opaque continuation token. Pass it back verbatim as the cursor query parameter. Null on the last page. Its encoding is a server detail and must not be parsed by a client."
+          }
+        }
+      },
+      "PlaySessionListResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "playSessions",
+          "meta"
+        ],
+        "properties": {
+          "playSessions": {
+            "type": "array",
+            "description": "The calling account's own sessions only, newest first.",
+            "items": {
+              "$ref": "#/components/schemas/PlaySession"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/PlaySessionListMeta"
+          }
+        }
+      },
+      "PlaySessionListEnvelope": {
+        "type": "object",
+        "description": "Success envelope carrying a typed play session page and its cursor.",
+        "additionalProperties": false,
+        "required": [
+          "success",
+          "data"
+        ],
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/PlaySessionListResult"
+          }
+        }
       }
     },
     "responses": {
@@ -3798,34 +4447,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/SuccessEnvelope"
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "data": {
-                          "type": "object",
-                          "required": [
-                            "games",
-                            "meta"
-                          ],
-                          "properties": {
-                            "games": {
-                              "type": "array",
-                              "items": {
-                                "$ref": "#/components/schemas/CatalogGameSummary"
-                              }
-                            },
-                            "meta": {
-                              "type": "object"
-                            }
-                          }
-                        }
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/CatalogSearchEnvelope"
                 }
               }
             }
@@ -3962,7 +4584,7 @@
         ],
         "operationId": "confirmCatalogSubmission",
         "summary": "Confirm a previewed submission",
-        "description": "Writes only after explicit user confirmation. Creates a PRIVATE canonical game owned by the submitter, or links an existing candidate. requestPublicReview moves the submission to PENDING_REVIEW and never to PUBLISHED.",
+        "description": "Links one previewed candidate or creates a new PRIVATE canonical game owned by the submitter. 201 means this request created the game; 200 means an existing candidate was linked, or a concurrent or repeated confirm lost the PREVIEW claim and the already committed outcome is replayed. Both statuses return the same typed result, so a client reads createdNewGame and idempotentReplay instead of branching on the status code.",
         "parameters": [
           {
             "name": "submissionId",
@@ -3990,7 +4612,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "$ref": "#/components/schemas/SubmissionConfirmEnvelope"
                 }
               }
             }
@@ -4000,7 +4622,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "$ref": "#/components/schemas/SubmissionConfirmEnvelope"
                 }
               }
             }
@@ -4044,11 +4666,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Submission state.",
+            "description": "Submission state, including its status, the re-validated draft and the resulting canonical game.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessEnvelope"
+                  "$ref": "#/components/schemas/SubmissionStateEnvelope"
                 }
               }
             }
@@ -4331,34 +4953,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/SuccessEnvelope"
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "data": {
-                          "type": "object",
-                          "required": [
-                            "playSessions",
-                            "meta"
-                          ],
-                          "properties": {
-                            "playSessions": {
-                              "type": "array",
-                              "items": {
-                                "$ref": "#/components/schemas/PlaySession"
-                              }
-                            },
-                            "meta": {
-                              "type": "object"
-                            }
-                          }
-                        }
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/PlaySessionListEnvelope"
                 }
               }
             }

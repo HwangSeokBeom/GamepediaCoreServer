@@ -187,6 +187,11 @@ env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" node --test test/product
 echo "Running the round-3 real-database regressions (canonical corrections and Unicode storage boundary)."
 env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" node --test test/product-2-2/round-3-regressions.postgres.test.js
 
+# The generated iOS client is built from the OpenAPI document, so the document has
+# to match the bytes a real server puts on the wire, not merely look plausible.
+echo "Running the iOS generated-client wire-contract tests."
+env "${base_env[@]}" "DATABASE_URL=$FRESH_DATABASE_URL" node --test test/product-2-2/ios-contract.postgres.test.js
+
 # ---------------------------------------------------------------------------
 # Phase B: legacy schema, then the Product 2.2 migrations on top
 # ---------------------------------------------------------------------------
