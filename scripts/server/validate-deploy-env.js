@@ -11,7 +11,7 @@ const targetConfig = {
   production: {
     envName: 'production',
     expectedPort: '3001',
-    expectedDatabaseName: 'gamepedia_core',
+    expectedDatabaseName: 'gamepedia',
     expectedPublicUrl: 'https://gamepedia-api.duckdns.org'
   },
   staging: {
