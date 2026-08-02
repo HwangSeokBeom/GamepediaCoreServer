@@ -1,5 +1,11 @@
 const fs = require('fs');
-const admin = require('firebase-admin');
+const {
+  cert,
+  getApp,
+  getApps,
+  initializeApp
+} = require('firebase-admin/app');
+const { getMessaging } = require('firebase-admin/messaging');
 const { logger } = require('../utils/logger');
 
 let firebaseAdminState = {
@@ -115,14 +121,14 @@ function initializeFirebaseAdmin() {
     return firebaseAdminState;
   }
 
-  if (admin.apps.length > 0) {
-    const app = admin.app();
+  if (getApps().length > 0) {
+    const app = getApp();
 
     firebaseAdminState = {
       enabled: true,
       initialized: true,
       app,
-      messaging: admin.messaging(app),
+      messaging: getMessaging(app),
       projectId: app.options?.projectId ?? null,
       source: 'existing_app',
       reason: null
@@ -147,8 +153,8 @@ function initializeFirebaseAdmin() {
   }
 
   try {
-    const app = admin.initializeApp({
-      credential: admin.credential.cert(credentials.serviceAccount),
+    const app = initializeApp({
+      credential: cert(credentials.serviceAccount),
       projectId: credentials.projectId
     });
 
@@ -156,7 +162,7 @@ function initializeFirebaseAdmin() {
       enabled: true,
       initialized: true,
       app,
-      messaging: admin.messaging(app),
+      messaging: getMessaging(app),
       projectId: credentials.projectId,
       source: credentials.source,
       reason: null
