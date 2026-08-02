@@ -4,7 +4,10 @@ const path = require('path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  loadFirebaseAdminCredentials
+  getFirebaseAdminState,
+  initializeFirebaseAdmin,
+  loadFirebaseAdminCredentials,
+  resetFirebaseAdminStateForTest
 } = require('../src/config/firebase-admin');
 
 const serviceAccount = {
@@ -57,4 +60,44 @@ test('Firebase credential loader disables push when credentials are missing', ()
 
   assert.equal(result.enabled, false);
   assert.equal(result.reason, 'missing_credentials');
+});
+
+test('Firebase initializer uses the modular Admin SDK API', () => {
+  const firebaseEnvironmentKeys = [
+    'FIREBASE_ADMIN_CREDENTIALS_BASE64',
+    'FIREBASE_ADMIN_CREDENTIALS_PATH',
+    'FIREBASE_ADMIN_PROJECT_ID',
+    'FIREBASE_ADMIN_CLIENT_EMAIL',
+    'FIREBASE_ADMIN_PRIVATE_KEY'
+  ];
+  const previousValues = Object.fromEntries(firebaseEnvironmentKeys.map((key) => [key, process.env[key]]));
+
+  firebaseEnvironmentKeys.forEach((key) => delete process.env[key]);
+  resetFirebaseAdminStateForTest();
+
+  try {
+    const result = initializeFirebaseAdmin();
+
+    assert.equal(result.enabled, false);
+    assert.equal(result.initialized, true);
+    assert.equal(result.reason, 'missing_credentials');
+    assert.deepEqual(getFirebaseAdminState(), {
+      enabled: false,
+      initialized: true,
+      projectId: null,
+      source: null,
+      reason: 'missing_credentials'
+    });
+  } finally {
+    firebaseEnvironmentKeys.forEach((key) => {
+      const previousValue = previousValues[key];
+
+      if (previousValue === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previousValue;
+      }
+    });
+    resetFirebaseAdminStateForTest();
+  }
 });
