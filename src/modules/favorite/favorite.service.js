@@ -2,6 +2,7 @@ const { Prisma } = require('@prisma/client');
 const { prisma } = require('../../config/prisma');
 const { logger } = require('../../utils/logger');
 const userActivityService = require('../user/user-activity.service');
+const catalogDualWriteService = require('../catalog/catalog-dual-write.service');
 const { mapFavoriteListToDto } = require('./favorite.mapper');
 
 const favoriteOrderByMap = {
@@ -54,6 +55,12 @@ async function addFavorite({ userId, gameId }) {
         message: activityError?.message ?? 'Favorite activity create failed'
       });
     }
+  }
+
+  // Product 2.2 dual write: gameId came from the request body, so it is only
+  // *resolved* against an already verified identity, never used to create one.
+  if (favorite) {
+    await catalogDualWriteService.linkResolvedFavorite({ favoriteId: favorite.id, gameId });
   }
 
   return {

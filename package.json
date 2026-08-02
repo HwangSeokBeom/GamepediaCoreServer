@@ -9,6 +9,13 @@
     "start": "node src/server.js",
     "test": "node scripts/test/run-canonical-tests.js",
     "test:postgres": "bash scripts/test/run-auth-postgres-gate.sh",
+    "test:postgres:product-2-2": "bash scripts/test/run-product-2-2-postgres-gate.sh",
+    "test:postgres:product-2-2:seed": "bash scripts/test/run-product-2-2-seed-postgres-gate.sh",
+    "test:dependency-security": "node scripts/test/verify-dependency-runtime-contract.js && npm audit --omit=dev --omit=optional --audit-level=moderate",
+    "test:openapi-contract": "node -e \"JSON.parse(require('node:fs').readFileSync('openapi/product-2.2.openapi.json', 'utf8'))\" && redocly lint openapi/product-2.2.openapi.json --extends=recommended",
+    "test:ios-openapi-contract": "bash scripts/test/run-ios-openapi-contract-gate.sh",
+    "seed:product-2-2:dev": "node scripts/seed/product-2-2-dev-seed.js",
+    "catalog:normalization:reconcile": "node scripts/server/reconcile-catalog-normalization.js",
     "deploy:production": "bash ./deploy.sh",
     "deploy:staging": "bash ./deploy-staging.sh",
     "deploy:validate:production": "NODE_ENV=production node ./scripts/server/validate-deploy-env.js production",
@@ -19,22 +26,26 @@
     "prisma:studio": "prisma studio"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
+    "@unicode/unicode-8.0.0": "1.6.17",
     "bcrypt": "^6.0.0",
+    "commonmark": "^0.31.2",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
-    "firebase-admin": "^13.10.0",
+    "firebase-admin": "14.2.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.3",
     "prisma": "^6.19.2",
+    "unorm": "1.6.0",
     "winston": "^3.19.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@redocly/cli": "2.41.2",
     "nodemon": "^3.1.14"
   },
   "overrides": {

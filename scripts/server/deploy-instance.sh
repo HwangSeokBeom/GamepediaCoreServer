@@ -110,8 +110,8 @@ if [ ! -f package-lock.json ]; then
   exit 1
 fi
 
-echo "Installing dependencies with npm ci"
-npm ci
+echo "Installing the runtime dependency tree with npm ci"
+npm ci --omit=dev --omit=optional
 
 echo "Validating deployment environment via dotenv loader order"
 NODE_ENV="${ENV_NAME}" node "${PROJECT_DIR}/scripts/server/validate-deploy-env.js" "${TARGET_ENV}"
@@ -125,6 +125,9 @@ else
   echo "Running Prisma migrate deploy"
   NODE_ENV="${ENV_NAME}" npx prisma migrate deploy
 fi
+
+echo "Reconciling the pinned catalog normalization contract"
+NODE_ENV="${ENV_NAME}" npm run --silent catalog:normalization:reconcile
 
 get_pm2_cwd() {
   local app_name="$1"

@@ -3,6 +3,7 @@ const { prisma } = require('../../config/prisma');
 const { logger } = require('../../utils/logger');
 const moderationService = require('../moderation/moderation.service');
 const igdbService = require('../igdb/igdb.service');
+const catalogDualWriteService = require('../catalog/catalog-dual-write.service');
 const {
   buildGameImageResolverUrl,
   extractUsableIgdbCoverUrl
@@ -648,6 +649,16 @@ async function createActivityEvent({
     gameSource: normalizeGameSource(gameSource),
     externalGameId: externalGameId ?? null,
     igdbGameId: igdbGameId ?? null
+  });
+
+  // Product 2.2 dual write: the legacy gameSource/externalGameId/igdbGameId
+  // triple stays authoritative; the canonical catalog id is additive and is only
+  // resolved against an already verified identity.
+  await catalogDualWriteService.linkResolvedActivityEvent({
+    activityEventId: activityEvent.id,
+    gameSource,
+    externalGameId,
+    igdbGameId
   });
 
   await updatePresenceFromActivityEvent(activityEvent);

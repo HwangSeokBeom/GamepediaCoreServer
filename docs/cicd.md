@@ -27,7 +27,7 @@
 3. branch 에 맞는 self-hosted deploy job 만 실행
 4. EC2 내부 runner 가 전용 clone 에서만 `git fetch` 와 `git reset --hard <github.sha>` 수행
 5. 전용 clone 의 `deploy.sh` 또는 `deploy-staging.sh` 가 배포 본작업 수행
-6. 배포 스크립트가 `npm ci`, env 검증, Prisma, PM2 restart/start/save 수행
+6. 배포 스크립트가 `npm ci --omit=dev --omit=optional`, env 검증, Prisma, PM2 restart/start/save 수행
 
 중요:
 
@@ -113,7 +113,7 @@ deploy job 은 GitHub `environment` 의 `vars` 도 함께 읽습니다.
 1. 실행 위치가 환경 전용 clone 인지 검증
 2. 현재 branch 가 환경 전용 branch 인지 검증
 3. workflow 가 넘긴 `EXPECTED_GIT_SHA` 와 현재 `HEAD` 가 같은지 검증
-4. `package-lock.json` 존재 검증 후 `npm ci`
+4. `package-lock.json` 존재 검증 후 `npm ci --omit=dev --omit=optional`
 5. Node `dotenv` 로 실제 앱 로딩 순서 그대로 env 검증
 6. `NODE_ENV=<env> npx prisma generate`
 7. 필요 시 `NODE_ENV=<env> npx prisma migrate deploy`

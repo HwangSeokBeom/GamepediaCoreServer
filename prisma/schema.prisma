@@ -62,6 +62,151 @@ enum UserPresenceState {
   UNKNOWN
 }
 
+// ---------------------------------------------------------------------------
+// Product 2.2 — canonical game catalog, play intelligence, editorial feed.
+// Every enum and model below is additive. Legacy GameSource/gameId identity
+// columns stay authoritative; catalogGameId is an additional canonical index.
+// ---------------------------------------------------------------------------
+
+/// Publication state of a canonical catalog game. Personal registration is
+/// immediate (PRIVATE); public visibility always passes through PENDING_REVIEW.
+enum CatalogPublicationStatus {
+  PRIVATE
+  PENDING_REVIEW
+  PUBLISHED
+  REJECTED
+}
+
+/// Lifecycle of one regional service edition, not of the game work itself.
+enum CatalogServiceStatus {
+  ANNOUNCED
+  PRE_REGISTRATION
+  LIVE
+  MAINTENANCE
+  SUNSET_ANNOUNCED
+  SHUTDOWN
+}
+
+enum CatalogIdentityProvider {
+  IGDB
+  STEAM
+  APPLE_APP_STORE
+  GOOGLE_PLAY
+  OFFICIAL_SITE
+  COMMUNITY
+}
+
+/// Where a stored fact came from. AI_INFERRED is never a source of truth and
+/// can never be promoted to a published fact without a human confirmation.
+enum CatalogProvenance {
+  PROVIDER_VERIFIED
+  OFFICIAL_SOURCE
+  USER_CONFIRMED
+  COMMUNITY_CONFIRMED
+  EDITOR_VERIFIED
+  AI_INFERRED
+  UNKNOWN
+  DISPUTED
+}
+
+enum CatalogLocalizationKind {
+  ORIGINAL_TITLE
+  REGIONAL_TITLE
+  ALIAS
+}
+
+enum CatalogAssetKind {
+  COVER
+  HERO
+  SCREENSHOT
+  LOGO
+}
+
+enum CatalogAssetRightsStatus {
+  UNKNOWN
+  PROVIDER_LICENSED
+  OFFICIAL_PRESS_KIT
+  USER_SUBMITTED
+  CLEARED
+  RESTRICTED
+}
+
+enum GameSubmissionInputType {
+  TEXT
+  URL
+  PROVIDER_ID
+}
+
+enum GameSubmissionStatus {
+  PREVIEW
+  PERSONAL_CONFIRMED
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+enum CatalogMergeDecision {
+  CONFIRMED_MAPPING_MERGE
+  EDITOR_MERGE
+  REJECTED
+  SPLIT
+}
+
+enum PlaySessionOutcome {
+  CONTINUE
+  PAUSED
+  DROPPED
+  COMPLETED
+}
+
+enum PlaySessionVisibility {
+  PRIVATE
+  FRIENDS
+  PUBLIC
+}
+
+enum PlaySessionMood {
+  RELAXED
+  FOCUSED
+  EXCITED
+  BORED
+  FRUSTRATED
+  NOSTALGIC
+}
+
+enum PlayCompassAction {
+  SELECTED
+  EXCLUDED
+  SNOOZED
+  PLAY_CONFIRMED
+}
+
+enum EditorialArticleStatus {
+  DRAFT
+  FACT_CHECK
+  RIGHTS_REVIEW
+  SCHEDULED
+  PUBLISHED
+  CORRECTED
+  RETRACTED
+}
+
+enum ArticleSourceType {
+  OFFICIAL_RSS
+  STEAM_NEWS
+  OFFICIAL_SITE
+  EDITOR_MANUAL
+}
+
+/// Authorization roles resolved from the database on every privileged request.
+/// A JWT role claim is never trusted for editor/admin decisions.
+enum ProductRole {
+  USER
+  EDITOR
+  ADMIN
+}
+
 model User {
   id                     String                  @id @default(uuid()) @db.Uuid
   email                  String                  @unique @db.VarChar(320)
@@ -98,8 +243,36 @@ model User {
   reviewCommentReports   ReviewCommentReport[]   @relation("ReviewCommentReporter")
   socialAccounts         SocialAccount[]
   titles                 UserTitle[]
+  roles                  UserRoleAssignment[]
+  gameSubmissions        GameSubmission[]
+  gameFollows            GameFollow[]
+  playSessions           PlaySession[]
+  clientMutationReceipts ClientMutationReceipt[]
+  playCompassEvents      PlayCompassEvent[]
+  productEvents          ProductEvent[]
+  authoredArticles       EditorialArticle[]      @relation("EditorialArticleAuthor")
+  articleRevisions       ArticleRevision[]
 
   @@map("users")
+}
+
+/// Database-backed authorization. `revokedAt IS NULL` is the only source of
+/// truth for editor/admin capability checks.
+model UserRoleAssignment {
+  id              String      @id @default(uuid()) @db.Uuid
+  userId          String      @map("user_id") @db.Uuid
+  role            ProductRole
+  grantedByUserId String?     @map("granted_by_user_id") @db.Uuid
+  grantedAt       DateTime    @default(now()) @map("granted_at")
+  revokedAt       DateTime?   @map("revoked_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@index([userId, revokedAt])
+  @@index([role, revokedAt])
+  @@map("user_role_assignments")
 }
 
 model RefreshToken {
@@ -140,15 +313,19 @@ model Review {
   rating          Decimal         @db.Decimal(2, 1)
   content         String          @db.Text
   containsSpoiler Boolean         @default(false) @map("contains_spoiler")
+  // Additive Product 2.2 canonical index. gameId stays authoritative.
+  catalogGameId   String?         @map("catalog_game_id") @db.Uuid
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
   user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catalogGame     CatalogGame?    @relation(fields: [catalogGameId], references: [id], onDelete: SetNull)
   likes           ReviewLike[]
   comments        ReviewComment[]
 
   @@index([gameId, createdAt])
   @@index([userId, createdAt])
   @@index([userId, gameId, createdAt])
+  @@index([catalogGameId, createdAt])
   @@map("reviews")
 }
 
@@ -228,15 +405,18 @@ model ReviewCommentReport {
 }
 
 model FavoriteGame {
-  id        String   @id @default(uuid()) @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  gameId    String   @map("game_id") @db.VarChar(100)
-  createdAt DateTime @default(now()) @map("created_at")
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String       @id @default(uuid()) @db.Uuid
+  userId        String       @map("user_id") @db.Uuid
+  gameId        String       @map("game_id") @db.VarChar(100)
+  catalogGameId String?      @map("catalog_game_id") @db.Uuid
+  createdAt     DateTime     @default(now()) @map("created_at")
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catalogGame   CatalogGame? @relation(fields: [catalogGameId], references: [id], onDelete: SetNull)
 
   @@unique([userId, gameId])
   @@index([userId])
   @@index([gameId])
+  @@index([catalogGameId])
   @@map("favorite_games")
 }
 
@@ -304,24 +484,33 @@ model UserTitle {
 }
 
 model UserGameLibrary {
-  id              String            @id @default(uuid()) @db.Uuid
-  userId          String            @map("user_id") @db.Uuid
-  gameSource      GameSource        @map("game_source")
-  externalGameId  String            @map("external_game_id") @db.VarChar(100)
-  gameName        String            @map("game_name") @db.VarChar(200)
-  coverUrl        String?           @map("cover_url") @db.Text
-  status          GameLibraryStatus
-  startedAt       DateTime?         @map("started_at")
-  completedAt     DateTime?         @map("completed_at")
-  lastPlayedAt    DateTime?         @map("last_played_at")
-  playtimeMinutes Int?              @map("playtime_minutes")
-  createdAt       DateTime          @default(now()) @map("created_at")
-  updatedAt       DateTime          @updatedAt @map("updated_at")
-  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String            @id @default(uuid()) @db.Uuid
+  userId              String            @map("user_id") @db.Uuid
+  gameSource          GameSource        @map("game_source")
+  externalGameId      String            @map("external_game_id") @db.VarChar(100)
+  gameName            String            @map("game_name") @db.VarChar(200)
+  coverUrl            String?           @map("cover_url") @db.Text
+  status              GameLibraryStatus
+  startedAt           DateTime?         @map("started_at")
+  completedAt         DateTime?         @map("completed_at")
+  lastPlayedAt        DateTime?         @map("last_played_at")
+  playtimeMinutes     Int?              @map("playtime_minutes")
+  catalogGameId       String?           @map("catalog_game_id") @db.Uuid
+  /// How ownership of this row was established. PROVIDER_VERIFIED only when the
+  /// server itself read it from a real provider response; a manual status write is
+  /// USER_CONFIRMED; rows predating provenance tracking are UNKNOWN. gameSource is
+  /// a client-settable label and must never be used to infer this.
+  ownershipProvenance CatalogProvenance @default(UNKNOWN) @map("ownership_provenance")
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+  user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catalogGame         CatalogGame?      @relation(fields: [catalogGameId], references: [id], onDelete: SetNull)
 
   @@unique([userId, gameSource, externalGameId])
   @@index([userId, status, updatedAt])
   @@index([userId, gameSource])
+  @@index([catalogGameId])
+  @@index([userId, catalogGameId])
   @@map("user_game_library")
 }
 
@@ -434,14 +623,17 @@ model UserActivityEvent {
   dedupeKey      String?          @map("dedupe_key") @db.VarChar(160)
   metadata       Json?
   isVisible      Boolean          @default(true) @map("is_visible")
+  catalogGameId  String?          @map("catalog_game_id") @db.Uuid
   createdAt      DateTime         @default(now()) @map("created_at")
   updatedAt      DateTime         @updatedAt @map("updated_at")
   actor          User             @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+  catalogGame    CatalogGame?     @relation(fields: [catalogGameId], references: [id], onDelete: SetNull)
 
   @@index([actorUserId, createdAt])
   @@index([activityType, createdAt])
   @@index([gameSource, externalGameId, createdAt])
   @@index([dedupeKey, createdAt])
+  @@index([catalogGameId, createdAt])
   @@map("user_activity_events")
 }
 
@@ -517,6 +709,7 @@ model AiUsageLimit {
   usageDate           DateTime @map("usage_date") @db.Date
   recommendationCount Int      @default(0) @map("recommendation_count")
   searchAssistCount   Int      @default(0) @map("search_assist_count")
+  quickAddCount       Int      @default(0) @map("quick_add_count")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
   user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -544,4 +737,524 @@ model AiSearchLog {
   @@index([userId, createdAt])
   @@index([createdAt])
   @@map("ai_search_logs")
+}
+
+// ===========================================================================
+// Product 2.2 — Canonical game catalog
+// ===========================================================================
+
+/// Singleton deployment marker for the application-owned title normalization
+/// contract. The migration creates it as PENDING; the reconciliation command
+/// updates it only after every persisted title has been recomputed atomically.
+model CatalogNormalizationState {
+  singletonId       Int       @id @default(1) @map("singleton_id") @db.SmallInt
+  contractVersion   String    @map("contract_version") @db.VarChar(80)
+  catalogGameCount  Int       @default(0) @map("catalog_game_count")
+  localizationCount Int       @default(0) @map("localization_count")
+  reconciledAt      DateTime? @map("reconciled_at") @db.Timestamptz(6)
+
+  @@map("catalog_normalization_state")
+}
+
+/// One game *work*. Regional service editions live in RegionalRelease, and
+/// every provider key lives in GameExternalIdentity, so the same work can be
+/// reached from IGDB, Steam, the stores, or a community submission.
+model CatalogGame {
+  id                      String                   @id @default(uuid()) @db.Uuid
+  /// Original-language title of the work. Regional titles and aliases are in
+  /// GameLocalization and must not overwrite this value.
+  originalTitle           String                   @map("original_title") @db.VarChar(300)
+  normalizedTitle         String                   @map("normalized_title") @db.VarChar(300)
+  slug                    String?                  @unique @db.VarChar(320)
+  developerName           String?                  @map("developer_name") @db.VarChar(200)
+  publisherName           String?                  @map("publisher_name") @db.VarChar(200)
+  firstReleaseDate        DateTime?                @map("first_release_date") @db.Date
+  genres                  String[]
+  steamTags               String[]                 @map("steam_tags")
+  platforms               String[]
+  supportsSinglePlayer    Boolean?                 @map("supports_single_player")
+  supportsMultiplayer     Boolean?                 @map("supports_multiplayer")
+  typicalSessionMinutes   Int?                     @map("typical_session_minutes")
+  /// A PUBLISHED game must have verified `titleProvenance`. Enforced in the database
+  /// by catalog_games_published_requires_verified_title_check, which Prisma cannot
+  /// express, as well as by assertPublicationTrust at the write boundary.
+  publicationStatus       CatalogPublicationStatus @default(PRIVATE) @map("publication_status")
+  titleProvenance         CatalogProvenance        @default(UNKNOWN) @map("title_provenance")
+  /// Audit-only: the account that first registered this work. Kept as a plain
+  /// UUID without a relation so catalog facts outlive account deletion.
+  createdByUserId         String?                  @map("created_by_user_id") @db.Uuid
+  /// Tombstone pointer written by a merge. Reads must resolve through it.
+  mergedIntoCatalogGameId String?                  @map("merged_into_catalog_game_id") @db.Uuid
+  createdAt               DateTime                 @default(now()) @map("created_at")
+  updatedAt               DateTime                 @updatedAt @map("updated_at")
+
+  mergedInto          CatalogGame?           @relation("CatalogGameMerge", fields: [mergedIntoCatalogGameId], references: [id], onDelete: SetNull)
+  mergedFrom          CatalogGame[]          @relation("CatalogGameMerge")
+  localizations       GameLocalization[]
+  regionalReleases    RegionalRelease[]
+  identities          GameExternalIdentity[]
+  assets              GameAsset[]
+  fieldEvidence       GameFieldEvidence[]
+  submissions         GameSubmission[]
+  follows             GameFollow[]
+  playSessions        PlaySession[]
+  playCompassEvents   PlayCompassEvent[]
+  articleLinks        ArticleGameLink[]
+  reviews             Review[]
+  favoriteGames       FavoriteGame[]
+  libraryEntries      UserGameLibrary[]
+  activityEvents      UserActivityEvent[]
+  mergeAuditsAsSource CatalogMergeAudit[]    @relation("CatalogMergeSource")
+  mergeAuditsAsTarget CatalogMergeAudit[]    @relation("CatalogMergeTarget")
+  gameIdentityClaims  GameIdentityClaim[]
+
+  @@index([normalizedTitle])
+  @@index([publicationStatus, updatedAt])
+  @@index([mergedIntoCatalogGameId])
+  @@index([createdByUserId])
+  @@map("catalog_games")
+}
+
+/// Original title, per-region titles, and aliases are separate rows so a
+/// regional title can never silently replace the original title.
+model GameLocalization {
+  id              String                  @id @default(uuid()) @db.Uuid
+  catalogGameId   String                  @map("catalog_game_id") @db.Uuid
+  kind            CatalogLocalizationKind
+  languageCode    String                  @map("language_code") @db.VarChar(16)
+  /// 'GLOBAL' when the title is not region scoped. Never null: a NULL inside the
+  /// compound unique key would let PostgreSQL store unlimited duplicates,
+  /// because NULL is never equal to NULL.
+  regionCode      String                  @default("GLOBAL") @map("region_code") @db.VarChar(8)
+  title           String                  @db.VarChar(300)
+  normalizedTitle String                  @map("normalized_title") @db.VarChar(300)
+  provenance      CatalogProvenance       @default(UNKNOWN)
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+  catalogGame     CatalogGame             @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+
+  @@unique([catalogGameId, kind, languageCode, regionCode, normalizedTitle])
+  @@index([normalizedTitle, languageCode])
+  @@index([catalogGameId, kind])
+  @@map("game_localizations")
+}
+
+/// One country/language/platform service edition of a work, with its own
+/// operator, availability window, server region and lifecycle status.
+model RegionalRelease {
+  id            String                 @id @default(uuid()) @db.Uuid
+  catalogGameId String                 @map("catalog_game_id") @db.Uuid
+  countryCode   String                 @map("country_code") @db.VarChar(8)
+  languageCode  String                 @map("language_code") @db.VarChar(16)
+  platform      String                 @db.VarChar(40)
+  operatorName  String?                @map("operator_name") @db.VarChar(200)
+  serverRegion  String?                @map("server_region") @db.VarChar(60)
+  releaseDate   DateTime?              @map("release_date") @db.Date
+  shutdownDate  DateTime?              @map("shutdown_date") @db.Date
+  serviceStatus CatalogServiceStatus   @default(ANNOUNCED) @map("service_status")
+  provenance    CatalogProvenance      @default(UNKNOWN)
+  createdAt     DateTime               @default(now()) @map("created_at")
+  updatedAt     DateTime               @updatedAt @map("updated_at")
+  catalogGame   CatalogGame            @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+  identities    GameExternalIdentity[]
+  playSessions  PlaySession[]
+  follows       GameFollow[]
+
+  @@unique([catalogGameId, countryCode, languageCode, platform])
+  @@index([catalogGameId, serviceStatus])
+  @@index([countryCode, serviceStatus])
+  @@map("regional_releases")
+}
+
+/// Provider key for a work (and optionally one regional edition). The
+/// (provider, externalId, regionKey) triple is unique in the database, so the
+/// same store listing can never be attached to two canonical works.
+model GameExternalIdentity {
+  id                 String                  @id @default(uuid()) @db.Uuid
+  catalogGameId      String                  @map("catalog_game_id") @db.Uuid
+  regionalReleaseId  String?                 @map("regional_release_id") @db.Uuid
+  provider           CatalogIdentityProvider
+  externalId         String                  @map("external_id") @db.VarChar(200)
+  /// 'GLOBAL' when the provider key is not region scoped. Never null so the
+  /// uniqueness constraint always applies.
+  regionKey          String                  @default("GLOBAL") @map("region_key") @db.VarChar(16)
+  provenance         CatalogProvenance       @default(UNKNOWN)
+  confidence         Float                   @default(0)
+  /// This table is verified-only. A row may exist only when a real server-side
+  /// provider response or an editor established the key, so both columns are
+  /// required. CHECK constraints in
+  /// prisma/migrations/20260730140000_product_2_2_review_fixes_round_2 additionally
+  /// restrict `provenance` to the verified set and require a non-blank
+  /// `verificationSource`, which Prisma cannot express.
+  ///
+  /// A provider key a user merely asserted lives in GameIdentityClaim instead;
+  /// letting one sit here is what allowed a chosen appid to capture another
+  /// account's real provider sync.
+  verifiedAt         DateTime                @map("verified_at")
+  verificationSource String                  @map("verification_source") @db.VarChar(60)
+  createdAt          DateTime                @default(now()) @map("created_at")
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+  catalogGame        CatalogGame             @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+  regionalRelease    RegionalRelease?        @relation(fields: [regionalReleaseId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, externalId, regionKey])
+  @@index([catalogGameId])
+  @@index([provider, catalogGameId])
+  @@index([verifiedAt])
+  @@map("game_external_identities")
+}
+
+/// Unverified provider-key claim.
+///
+/// Deliberately separate from GameExternalIdentity: a quick-add submission parses
+/// the *syntax* of a store URL or package id, which proves nothing. Putting such a
+/// claim in the globally unique identity table would let one account squat a
+/// provider key and capture another account's future real provider sync. Scoped
+/// per catalog game, so two accounts may claim the same key and neither blocks a
+/// verified attachment.
+model GameIdentityClaim {
+  id              String                  @id @default(uuid()) @db.Uuid
+  catalogGameId   String                  @map("catalog_game_id") @db.Uuid
+  submissionId    String?                 @map("submission_id") @db.Uuid
+  /// Audit-only: no relation, so a claim's provenance survives account deletion.
+  claimedByUserId String?                 @map("claimed_by_user_id") @db.Uuid
+  provider        CatalogIdentityProvider
+  externalId      String                  @map("external_id") @db.VarChar(200)
+  regionKey       String                  @default("GLOBAL") @map("region_key") @db.VarChar(16)
+  /// Never a verified value. Enforced in the database by
+  /// game_identity_claims_unverified_provenance_check.
+  provenance      CatalogProvenance       @default(USER_CONFIRMED)
+  claimSource     String                  @map("claim_source") @db.VarChar(60)
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+  catalogGame     CatalogGame             @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+  submission      GameSubmission?         @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+
+  @@unique([catalogGameId, provider, externalId, regionKey])
+  @@index([provider, externalId, regionKey])
+  @@index([submissionId])
+  @@map("game_identity_claims")
+}
+
+model GameAsset {
+  id            String                   @id @default(uuid()) @db.Uuid
+  catalogGameId String                   @map("catalog_game_id") @db.Uuid
+  kind          CatalogAssetKind
+  url           String                   @db.Text
+  rightsStatus  CatalogAssetRightsStatus @default(UNKNOWN) @map("rights_status")
+  provenance    CatalogProvenance        @default(UNKNOWN)
+  attribution   String?                  @db.VarChar(300)
+  createdAt     DateTime                 @default(now()) @map("created_at")
+  updatedAt     DateTime                 @updatedAt @map("updated_at")
+  catalogGame   CatalogGame              @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+
+  @@unique([catalogGameId, kind, url])
+  @@index([catalogGameId, kind])
+  @@index([rightsStatus])
+  @@map("game_assets")
+}
+
+/// Per-field provenance trail. sourceInputHash is a SHA-256 fingerprint; the
+/// raw natural-language input that produced a field is never stored.
+model GameFieldEvidence {
+  id              String            @id @default(uuid()) @db.Uuid
+  catalogGameId   String?           @map("catalog_game_id") @db.Uuid
+  submissionId    String?           @map("submission_id") @db.Uuid
+  fieldPath       String            @map("field_path") @db.VarChar(120)
+  provenance      CatalogProvenance @default(UNKNOWN)
+  confidence      Float             @default(0)
+  sourceType      String            @map("source_type") @db.VarChar(40)
+  sourceUrl       String?           @map("source_url") @db.Text
+  sourceInputHash String?           @map("source_input_hash") @db.Char(64)
+  observedAt      DateTime          @default(now()) @map("observed_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  catalogGame     CatalogGame?      @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+  submission      GameSubmission?   @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([catalogGameId, fieldPath])
+  @@index([submissionId, fieldPath])
+  @@map("game_field_evidence")
+}
+
+/// A quick-add attempt. `inputFingerprint` is the SHA-256 of the normalized
+/// user input; `draft` holds only structured candidate fields. Raw natural
+/// language is never persisted here.
+model GameSubmission {
+  id                    String                   @id @default(uuid()) @db.Uuid
+  userId                String                   @map("user_id") @db.Uuid
+  status                GameSubmissionStatus     @default(PREVIEW)
+  inputType             GameSubmissionInputType  @map("input_type")
+  inputFingerprint      String                   @map("input_fingerprint") @db.Char(64)
+  locale                String                   @db.VarChar(16)
+  regionCode            String                   @map("region_code") @db.VarChar(8)
+  platformHint          String?                  @map("platform_hint") @db.VarChar(40)
+  /// Structured draft fields plus per-field provenance/confidence. Validated
+  /// by Zod before every write.
+  draft                 Json
+  candidateSummary      Json?                    @map("candidate_summary")
+  clarifyingQuestion    String?                  @map("clarifying_question") @db.VarChar(300)
+  aiModel               String?                  @map("ai_model") @db.VarChar(100)
+  aiFallbackUsed        Boolean                  @default(false) @map("ai_fallback_used")
+  personalCatalogGameId String?                  @map("personal_catalog_game_id") @db.Uuid
+  publicReviewStatus    CatalogPublicationStatus @default(PRIVATE) @map("public_review_status")
+  reviewedByUserId      String?                  @map("reviewed_by_user_id") @db.Uuid
+  reviewedAt            DateTime?                @map("reviewed_at")
+  expiresAt             DateTime                 @map("expires_at")
+  createdAt             DateTime                 @default(now()) @map("created_at")
+  updatedAt             DateTime                 @updatedAt @map("updated_at")
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  personalCatalogGame   CatalogGame?             @relation(fields: [personalCatalogGameId], references: [id], onDelete: SetNull)
+  fieldEvidence         GameFieldEvidence[]
+  gameIdentityClaims    GameIdentityClaim[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([userId, inputFingerprint, createdAt])
+  @@map("game_submissions")
+}
+
+/// Append-only merge/split decision log. Automatic merges are only ever
+/// written for a CONFIRMED Steam↔IGDB mapping.
+model CatalogMergeAudit {
+  id                  String               @id @default(uuid()) @db.Uuid
+  sourceCatalogGameId String               @map("source_catalog_game_id") @db.Uuid
+  targetCatalogGameId String               @map("target_catalog_game_id") @db.Uuid
+  decision            CatalogMergeDecision
+  reasonCode          String               @map("reason_code") @db.VarChar(60)
+  evidence            Json?
+  actorUserId         String?              @map("actor_user_id") @db.Uuid
+  createdAt           DateTime             @default(now()) @map("created_at")
+  sourceCatalogGame   CatalogGame          @relation("CatalogMergeSource", fields: [sourceCatalogGameId], references: [id], onDelete: Cascade)
+  targetCatalogGame   CatalogGame          @relation("CatalogMergeTarget", fields: [targetCatalogGameId], references: [id], onDelete: Cascade)
+
+  @@index([sourceCatalogGameId, createdAt])
+  @@index([targetCatalogGameId, createdAt])
+  @@index([decision, createdAt])
+  @@map("catalog_merge_audits")
+}
+
+model GameFollow {
+  id                String           @id @default(uuid()) @db.Uuid
+  userId            String           @map("user_id") @db.Uuid
+  catalogGameId     String           @map("catalog_game_id") @db.Uuid
+  regionalReleaseId String?          @map("regional_release_id") @db.Uuid
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catalogGame       CatalogGame      @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+  regionalRelease   RegionalRelease? @relation(fields: [regionalReleaseId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, catalogGameId])
+  @@index([userId, createdAt])
+  @@index([catalogGameId, createdAt])
+  @@map("game_follows")
+}
+
+// ===========================================================================
+// Product 2.2 — Playlog and play intelligence
+// ===========================================================================
+
+/// One recorded play session. `note` and `mood` are private user content: they
+/// are never logged and never emitted as Product Event properties.
+model PlaySession {
+  id                String                @id @default(uuid()) @db.Uuid
+  userId            String                @map("user_id") @db.Uuid
+  catalogGameId     String                @map("catalog_game_id") @db.Uuid
+  regionalReleaseId String?               @map("regional_release_id") @db.Uuid
+  playedAt          DateTime              @map("played_at")
+  durationMinutes   Int?                  @map("duration_minutes")
+  progressPercent   Int?                  @map("progress_percent")
+  mood              PlaySessionMood?
+  note              String?               @db.VarChar(2000)
+  outcome           PlaySessionOutcome
+  visibility        PlaySessionVisibility @default(PRIVATE)
+  provenance        CatalogProvenance     @default(USER_CONFIRMED)
+  /// Client-supplied idempotency key. Unique per user so a retried create can
+  /// never produce a duplicate session.
+  clientMutationId  String                @map("client_mutation_id") @db.VarChar(120)
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catalogGame       CatalogGame           @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+  regionalRelease   RegionalRelease?      @relation(fields: [regionalReleaseId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, clientMutationId])
+  @@index([userId, playedAt])
+  @@index([userId, catalogGameId, playedAt])
+  @@index([userId, outcome, playedAt])
+  @@map("play_sessions")
+}
+
+/// Idempotency ledger for non-create mutations (update/delete) that carry a
+/// clientMutationId. Scope keeps keys from colliding across features.
+model ClientMutationReceipt {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @map("user_id") @db.Uuid
+  scope            String   @db.VarChar(60)
+  clientMutationId String   @map("client_mutation_id") @db.VarChar(120)
+  resourceId       String?  @map("resource_id") @db.VarChar(120)
+  outcomeCode      String   @map("outcome_code") @db.VarChar(60)
+  createdAt        DateTime @default(now()) @map("created_at")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, scope, clientMutationId])
+  @@index([userId, createdAt])
+  @@map("client_mutation_receipts")
+}
+
+/// Play Compass feedback. Only allowlisted actions are storable.
+model PlayCompassEvent {
+  id            String            @id @default(uuid()) @db.Uuid
+  userId        String            @map("user_id") @db.Uuid
+  catalogGameId String            @map("catalog_game_id") @db.Uuid
+  action        PlayCompassAction
+  requestHash   String?           @map("request_hash") @db.Char(64)
+  reasonCodes   String[]          @map("reason_codes")
+  occurredAt    DateTime          @map("occurred_at")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catalogGame   CatalogGame       @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+
+  @@index([userId, occurredAt])
+  @@index([userId, catalogGameId, action, occurredAt])
+  @@map("play_compass_events")
+}
+
+// ===========================================================================
+// Product 2.2 — Editorial magazine, Today feed and product controls
+// ===========================================================================
+
+model EditorialArticle {
+  id                String                 @id @default(uuid()) @db.Uuid
+  slug              String                 @unique @db.VarChar(200)
+  status            EditorialArticleStatus @default(DRAFT)
+  locale            String                 @db.VarChar(16)
+  headline          String                 @db.VarChar(200)
+  /// Short editorial excerpt. Never a full copy of a third-party article.
+  excerpt           String                 @db.VarChar(600)
+  authorUserId      String?                @map("author_user_id") @db.Uuid
+  /// The revision whose body is served. Maintained atomically with every revision
+  /// append, so the public endpoint always has a definite body to return.
+  currentRevisionId String?                @unique @map("current_revision_id") @db.Uuid
+  scheduledFor      DateTime?              @map("scheduled_for")
+  publishedAt       DateTime?              @map("published_at")
+  correctedAt       DateTime?              @map("corrected_at")
+  retractedAt       DateTime?              @map("retracted_at")
+  aiDraftUsed       Boolean                @default(false) @map("ai_draft_used")
+  createdAt         DateTime               @default(now()) @map("created_at")
+  updatedAt         DateTime               @updatedAt @map("updated_at")
+  author            User?                  @relation("EditorialArticleAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  currentRevision   ArticleRevision?       @relation("EditorialArticleCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: SetNull)
+  revisions         ArticleRevision[]      @relation("ArticleRevisionArticle")
+  sources           ArticleSource[]
+  gameLinks         ArticleGameLink[]
+  assets            ArticleAsset[]
+
+  @@index([status, publishedAt])
+  @@index([locale, status, publishedAt])
+  @@map("editorial_articles")
+}
+
+model ArticleRevision {
+  id                String                 @id @default(uuid()) @db.Uuid
+  articleId         String                 @map("article_id") @db.Uuid
+  revisionNumber    Int                    @map("revision_number")
+  status            EditorialArticleStatus
+  headline          String                 @db.VarChar(200)
+  excerpt           String                 @db.VarChar(600)
+  bodyMarkdown      String?                @map("body_markdown") @db.Text
+  changeNote        String?                @map("change_note") @db.VarChar(300)
+  aiDraft           Boolean                @default(false) @map("ai_draft")
+  editorUserId      String?                @map("editor_user_id") @db.Uuid
+  createdAt         DateTime               @default(now()) @map("created_at")
+  article           EditorialArticle       @relation("ArticleRevisionArticle", fields: [articleId], references: [id], onDelete: Cascade)
+  editor            User?                  @relation(fields: [editorUserId], references: [id], onDelete: SetNull)
+  currentForArticle EditorialArticle?      @relation("EditorialArticleCurrentRevision")
+
+  @@unique([articleId, revisionNumber])
+  @@index([articleId, createdAt])
+  @@map("article_revisions")
+}
+
+/// Third-party reference for an article. Only the headline, a short excerpt,
+/// the source URL, timestamps and a content hash are stored — never the full
+/// original text.
+model ArticleSource {
+  id           String            @id @default(uuid()) @db.Uuid
+  articleId    String            @map("article_id") @db.Uuid
+  sourceType   ArticleSourceType @map("source_type")
+  publisherKey String            @map("publisher_key") @db.VarChar(80)
+  headline     String            @db.VarChar(300)
+  excerpt      String?           @db.VarChar(400)
+  sourceUrl    String            @map("source_url") @db.Text
+  publishedAt  DateTime?         @map("published_at")
+  fetchedAt    DateTime          @map("fetched_at")
+  contentHash  String            @map("content_hash") @db.Char(64)
+  provenance   CatalogProvenance @default(OFFICIAL_SOURCE)
+  createdAt    DateTime          @default(now()) @map("created_at")
+  article      EditorialArticle  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, contentHash])
+  @@index([publisherKey, publishedAt])
+  @@map("article_sources")
+}
+
+model ArticleGameLink {
+  id            String           @id @default(uuid()) @db.Uuid
+  articleId     String           @map("article_id") @db.Uuid
+  catalogGameId String           @map("catalog_game_id") @db.Uuid
+  relation      String           @db.VarChar(40)
+  createdAt     DateTime         @default(now()) @map("created_at")
+  article       EditorialArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  catalogGame   CatalogGame      @relation(fields: [catalogGameId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, catalogGameId])
+  @@index([catalogGameId, createdAt])
+  @@map("article_game_links")
+}
+
+model ArticleAsset {
+  id           String                   @id @default(uuid()) @db.Uuid
+  articleId    String                   @map("article_id") @db.Uuid
+  kind         CatalogAssetKind
+  url          String                   @db.Text
+  rightsStatus CatalogAssetRightsStatus @default(UNKNOWN) @map("rights_status")
+  attribution  String?                  @db.VarChar(300)
+  isHero       Boolean                  @default(false) @map("is_hero")
+  createdAt    DateTime                 @default(now()) @map("created_at")
+  article      EditorialArticle         @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, url])
+  @@index([articleId, isHero])
+  @@map("article_assets")
+}
+
+/// Allowlisted analytics event. eventId is client generated and unique, so a
+/// retried batch can never double count.
+model ProductEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  eventId    String   @unique @map("event_id") @db.VarChar(120)
+  userId     String?  @map("user_id") @db.Uuid
+  eventCode  String   @map("event_code") @db.VarChar(60)
+  occurredAt DateTime @map("occurred_at")
+  /// Allowlisted, non-free-text properties only.
+  properties Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([eventCode, occurredAt])
+  @@index([userId, occurredAt])
+  @@map("product_events")
+}
+
+/// Independent kill switch overrides. A missing row means "use the configured
+/// environment default", so a fresh database keeps shipped behavior.
+model ProductFeatureFlag {
+  key             String   @id @db.VarChar(60)
+  enabled         Boolean
+  updatedByUserId String?  @map("updated_by_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("product_feature_flags")
 }

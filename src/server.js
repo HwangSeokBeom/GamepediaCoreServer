@@ -5,6 +5,9 @@ const { connectDatabase, disconnectDatabase } = require('./config/prisma');
 const { initializeFirebaseAdmin } = require('./config/firebase-admin');
 const { probeRedisConnection } = require('./config/redis');
 const {
+  verifyCatalogNormalizationContract
+} = require('./modules/catalog/catalog-normalization.service');
+const {
   startProfileImageCleanupWorker,
   stopProfileImageCleanupWorker
 } = require('./modules/user/profile-image-cleanup.service');
@@ -49,6 +52,7 @@ async function startServer(overrides = {}) {
   const deps = {
     connectDatabase,
     disconnectDatabase,
+    verifyCatalogNormalizationContract,
     probeRedisConnection,
     initializeFirebaseAdmin,
     startProfileImageCleanupWorker,
@@ -62,6 +66,7 @@ async function startServer(overrides = {}) {
 
   try {
     await deps.connectDatabase();
+    await deps.verifyCatalogNormalizationContract();
     await deps.probeRedisConnection();
     const firebaseState = deps.initializeFirebaseAdmin();
 

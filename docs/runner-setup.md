@@ -124,7 +124,7 @@ GitHub UI 에서 runner 상태가 `Idle` 또는 `Online` 으로 보이면 정상
 
 runner 등록 전에 아래 조건이 준비되어 있어야 합니다.
 
-- Node.js 20 이상 설치
+- Node.js 22 이상 설치 (`package.json`의 `engine-strict` 계약과 일치해야 함)
 - `npm`, `git`, `pm2` 설치
 - `~/GamePediaCoreServer-prod` clone 존재
 - `~/GamePediaCoreServer-staging` clone 존재
