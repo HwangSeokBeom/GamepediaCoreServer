@@ -115,6 +115,10 @@ if (apiPublicBaseUrl && normalizeUrl(apiPublicBaseUrl, 'API_PUBLIC_BASE_URL') !=
   fail(`API_PUBLIC_BASE_URL must be ${config.expectedPublicUrl}`);
 }
 
+if (!env.twitchClientId || !env.twitchClientSecret) {
+  fail('TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET must both be configured');
+}
+
 const loadedEnvFiles = getEnvFilePaths(config.envName, projectDir)
   .filter((filePath) => fs.existsSync(filePath))
   .map((filePath) => path.relative(projectDir, filePath));

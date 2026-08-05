@@ -900,6 +900,9 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/HealthSuccess"
+          },
+          "503": {
+            "$ref": "#/components/responses/HealthDegraded"
           }
         }
       }
@@ -1779,11 +1782,30 @@
         "type": "object",
         "required": [
           "status",
+          "igdb",
           "push"
         ],
         "properties": {
           "status": {
-            "const": "ok"
+            "enum": [
+              "ok",
+              "degraded"
+            ]
+          },
+          "igdb": {
+            "type": "object",
+            "required": [
+              "required",
+              "configured"
+            ],
+            "properties": {
+              "required": {
+                "type": "boolean"
+              },
+              "configured": {
+                "type": "boolean"
+              }
+            }
           },
           "push": {
             "type": "object",
@@ -2452,6 +2474,27 @@
     "responses": {
       "HealthSuccess": {
         "description": "Server health",
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/SuccessEnvelope"
+                },
+                {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/HealthData"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "HealthDegraded": {
+        "description": "Server process is alive but a required runtime dependency is not configured",
         "content": {
           "application/json": {
             "schema": {

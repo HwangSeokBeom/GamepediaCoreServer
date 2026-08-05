@@ -40,6 +40,7 @@ case "${TARGET_ENV}" in
     BRANCH="main"
     APP_NAME="core-server"
     ENV_NAME="production"
+    APP_PORT="3001"
     EXPECTED_DIR_NAME="GamePediaCoreServer-prod"
     PM2_CWD_ENV_VAR="CORE_SERVER_PRODUCTION_CWD"
     ;;
@@ -47,6 +48,7 @@ case "${TARGET_ENV}" in
     BRANCH="staging"
     APP_NAME="core-server-staging"
     ENV_NAME="staging"
+    APP_PORT="3101"
     EXPECTED_DIR_NAME="GamePediaCoreServer-staging"
     PM2_CWD_ENV_VAR="CORE_SERVER_STAGING_CWD"
     ;;
@@ -182,6 +184,12 @@ if [ "${PM2_FINAL_CWD}" != "${PROJECT_DIR}" ]; then
   echo "Deployment aborted: PM2 cwd for ${APP_NAME} is ${PM2_FINAL_CWD:-<unknown>}, expected ${PROJECT_DIR}"
   exit 1
 fi
+
+echo "Verifying application and IGDB readiness through localhost"
+NODE_ENV="${ENV_NAME}" node "${PROJECT_DIR}/scripts/server/verify-runtime-readiness.js" \
+  --base-url "http://127.0.0.1:${APP_PORT}" \
+  --attempts 10 \
+  --interval-ms 1000
 
 echo "Saving PM2 process list"
 pm2 save

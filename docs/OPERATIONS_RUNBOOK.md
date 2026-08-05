@@ -59,9 +59,11 @@ curl -fsS http://127.0.0.1:3001/health | jq
 - Nginx와 `pm2-ec2-user`가 `active`, `enabled`
 - `core-server`가 `online`
 - localhost/public `/health`가 HTTP 200
+- health의 IGDB `required=true`, `configured=true`
 - health의 SMTP `verified=true`
 - Firebase push `enabled=true`, `initialized=true`
 - Firebase project가 `gamepedia-eb58c`
+- `curl -fsS 'https://gamepedia-api.duckdns.org/games/highlights?limit=1' | jq`가 HTTP 200과 `success=true`를 반환
 
 ## 3. 로그
 
