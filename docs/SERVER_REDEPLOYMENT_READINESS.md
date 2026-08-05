@@ -79,17 +79,23 @@ Production must resolve to:
 Run `npm run deploy:validate:production` after the real secret values are
 injected and before PM2 is allowed to start.
 
-## Health limitation
+## Health and provider readiness
 
-`/health` reports process, mail, and push initialization state. It is not a
-complete PostgreSQL/Redis readiness probe. Until a dedicated readiness check
-exists, the cutover gate must separately prove:
+`/health` reports process, mail, push, and IGDB configuration readiness.
+Production and staging return HTTP 503 with `status=degraded` unless both
+Twitch credential fields are configured. The deployment script additionally
+calls the IGDB-backed highlights endpoint after each PM2 restart, so a missing,
+rejected, or unusable provider configuration cannot finish deployment.
+
+`/health` is still not a complete PostgreSQL/Redis readiness probe. The cutover
+gate must separately prove:
 
 1. a PostgreSQL query succeeds against the restored database;
 2. Redis `PING` succeeds against the service-specific Redis instance;
 3. SMTP startup verification succeeds;
 4. Firebase initialization matches the intended production project;
-5. `/health` returns 200 through localhost and then through Nginx.
+5. `/health` returns 200 through localhost and then through Nginx;
+6. `/games/highlights?limit=1` returns 200 through localhost and then through Nginx.
 
 ## Data state
 

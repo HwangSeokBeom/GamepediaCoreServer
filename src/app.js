@@ -51,31 +51,51 @@ function logSocialAuthRequest(req, res, next) {
 
 app.use(logSocialAuthRequest);
 
-app.get('/health', (req, res) => {
-  const push = getFirebaseAdminState();
-  // Mail readiness reflects the startup verification result only; in SMTP
-  // mode the server never listens before verification has succeeded.
-  const mail = getMailReadinessState();
+function getIgdbReadiness(runtimeEnv = env) {
+  const configured = Boolean(runtimeEnv.twitchClientId && runtimeEnv.twitchClientSecret);
 
-  res.status(200).json({
-    success: true,
-    data: {
-      status: 'ok',
-      mail: {
-        mode: mail.mode,
-        verified: mail.verified,
-        skipped: mail.skipped
-      },
-      push: {
-        enabled: push.enabled,
-        initialized: push.initialized,
-        projectId: push.projectId,
-        source: push.source,
-        reason: push.reason
+  return {
+    required: !runtimeEnv.isDevelopmentLike,
+    configured
+  };
+}
+
+function createHealthHandler({
+  runtimeEnv = env,
+  getPushState = getFirebaseAdminState,
+  getMailState = getMailReadinessState
+} = {}) {
+  return (req, res) => {
+    const push = getPushState();
+    const igdb = getIgdbReadiness(runtimeEnv);
+    const ready = !igdb.required || igdb.configured;
+    // Mail readiness reflects the startup verification result only; in SMTP
+    // mode the server never listens before verification has succeeded.
+    const mail = getMailState();
+
+    res.status(ready ? 200 : 503).json({
+      success: true,
+      data: {
+        status: ready ? 'ok' : 'degraded',
+        igdb,
+        mail: {
+          mode: mail.mode,
+          verified: mail.verified,
+          skipped: mail.skipped
+        },
+        push: {
+          enabled: push.enabled,
+          initialized: push.initialized,
+          projectId: push.projectId,
+          source: push.source,
+          reason: push.reason
+        }
       }
-    },
-  });
-});
+    });
+  };
+}
+
+app.get('/health', createHealthHandler());
 
 app.use('/auth', authRoutes);
 app.use(aiRoutes);
@@ -93,5 +113,7 @@ app.use(errorHandler);
 
 module.exports = {
   app,
+  createHealthHandler,
+  getIgdbReadiness,
   logSocialAuthRequest
 };

@@ -407,8 +407,8 @@ production/staging은 서버가 listen하기 전에 SMTP 연결·인증을 검�
 | `GOOGLE_CLIENT_ID` | Google 로그인 검증용 Client ID | Google 로그인 사용 시 |
 | `STEAM_API_KEY` | Steam Web API Key | Steam 라이브러리 사용 시 |
 | `STEAM_WEB_API_BASE_URL` | Steam Web API base URL. 기본값은 `https://api.steampowered.com/` | 선택 |
-| `TWITCH_CLIENT_ID` | IGDB 접근용 Twitch Client ID | 게임 API 사용 시 |
-| `TWITCH_CLIENT_SECRET` | IGDB 접근용 Twitch Client Secret | 게임 API 사용 시 |
+| `TWITCH_CLIENT_ID` | IGDB 접근용 Twitch Client ID | production/staging 필수 |
+| `TWITCH_CLIENT_SECRET` | IGDB 접근용 Twitch Client Secret | production/staging 필수 |
 
 ### 6.6 AI 추천
 
